@@ -1,6 +1,6 @@
+use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -8,9 +8,8 @@ use thiserror::Error;
 use crate::hash::hash_to_point;
 
 // C = value*H + blinding*G, H has unknown DL w.r.t. G
-pub static G_VALUE: Lazy<RistrettoPoint> = Lazy::new(|| {
-    hash_to_point(b"Hyphen_pedersen_value_generator_v1")
-});
+pub static G_VALUE: Lazy<RistrettoPoint> =
+    Lazy::new(|| hash_to_point(b"Hyphen_pedersen_value_generator_v1"));
 
 pub const G_BLIND: RistrettoPoint = RISTRETTO_BASEPOINT_POINT;
 

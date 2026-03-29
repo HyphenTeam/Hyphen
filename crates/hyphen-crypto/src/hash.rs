@@ -47,7 +47,6 @@ impl fmt::Display for Hash256 {
     }
 }
 
-
 #[inline]
 pub fn blake3_hash(data: &[u8]) -> Hash256 {
     Hash256(blake3::hash(data).into())
