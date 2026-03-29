@@ -1,0 +1,17 @@
+[package]
+name = "hyphen-pow"
+version.workspace = true
+edition.workspace = true
+description = "PageWeave CPU-first Proof-of-Work for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace = true
+hyphen-core.workspace   = true
+blake3.workspace        = true
+rand.workspace          = true
+rand_chacha.workspace   = true
+byteorder.workspace     = true
+thiserror.workspace     = true
+parking_lot.workspace   = true
+log.workspace           = true
+serde.workspace         = true

@@ -1,0 +1,24 @@
+[package]
+name = "hyphen-network"
+version.workspace = true
+edition.workspace = true
+description = "libp2p-based P2P networking for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-tx.workspace        = true
+hyphen-consensus.workspace = true
+hyphen-mempool.workspace   = true
+libp2p.workspace           = true
+tokio.workspace            = true
+futures.workspace          = true
+async-trait.workspace      = true
+prost.workspace            = true
+serde.workspace            = true
+bincode.workspace          = true
+thiserror.workspace        = true
+tracing.workspace          = true
+parking_lot.workspace      = true
+unsigned-varint.workspace  = true
+rand.workspace             = true

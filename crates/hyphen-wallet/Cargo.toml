@@ -1,0 +1,22 @@
+[package]
+name = "hyphen-wallet"
+version.workspace = true
+edition.workspace = true
+description = "Wallet, address generation and key derivation for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-tx.workspace        = true
+hyphen-proof.workspace     = true
+curve25519-dalek.workspace = true
+blake3.workspace           = true
+bs58.workspace             = true
+serde.workspace            = true
+bincode.workspace          = true
+rand.workspace             = true
+rand_core.workspace        = true
+thiserror.workspace        = true
+zeroize.workspace          = true
+hex.workspace              = true
+once_cell.workspace        = true

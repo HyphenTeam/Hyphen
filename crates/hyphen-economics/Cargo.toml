@@ -1,0 +1,10 @@
+[package]
+name = "hyphen-economics"
+version.workspace = true
+edition.workspace = true
+description = "Block rewards, emission schedule and fee model for the Hyphen blockchain"
+
+[dependencies]
+hyphen-core.workspace = true
+serde.workspace       = true
+thiserror.workspace   = true

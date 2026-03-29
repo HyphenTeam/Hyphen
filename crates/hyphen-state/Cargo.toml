@@ -1,0 +1,19 @@
+[package]
+name = "hyphen-state"
+version.workspace = true
+edition.workspace = true
+description = "Persistent state management (sled) for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace = true
+hyphen-core.workspace   = true
+hyphen-tx.workspace     = true
+blake3.workspace        = true
+sled.workspace          = true
+zstd.workspace          = true
+serde.workspace         = true
+bincode.workspace       = true
+thiserror.workspace     = true
+parking_lot.workspace   = true
+log.workspace           = true
+hex.workspace           = true

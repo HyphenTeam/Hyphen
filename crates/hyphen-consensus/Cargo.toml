@@ -1,0 +1,23 @@
+[package]
+name = "hyphen-consensus"
+version.workspace = true
+edition.workspace = true
+description = "Consensus validation and chain management for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-pow.workspace       = true
+hyphen-proof.workspace     = true
+hyphen-tx.workspace        = true
+hyphen-economics.workspace = true
+hyphen-state.workspace     = true
+curve25519-dalek.workspace = true
+serde.workspace            = true
+bincode.workspace          = true
+sled.workspace             = true
+hex.workspace              = true
+thiserror.workspace        = true
+log.workspace              = true
+parking_lot.workspace      = true
+chrono.workspace           = true

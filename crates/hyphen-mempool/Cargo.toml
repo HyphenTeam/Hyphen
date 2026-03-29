@@ -1,0 +1,17 @@
+[package]
+name = "hyphen-mempool"
+version.workspace = true
+edition.workspace = true
+description = "Transaction memory pool for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-tx.workspace        = true
+hyphen-proof.workspace     = true
+curve25519-dalek.workspace = true
+parking_lot.workspace      = true
+thiserror.workspace        = true
+log.workspace              = true
+serde.workspace            = true
+chrono.workspace           = true

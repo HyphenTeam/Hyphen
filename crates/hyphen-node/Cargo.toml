@@ -1,0 +1,32 @@
+[package]
+name = "hyphen-node"
+version.workspace = true
+edition.workspace = true
+description = "Full-node binary for the Hyphen blockchain"
+
+[[bin]]
+name = "hyphen-node"
+path = "src/main.rs"
+
+[dependencies]
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-pow.workspace       = true
+hyphen-proof.workspace     = true
+hyphen-tx.workspace        = true
+hyphen-economics.workspace = true
+hyphen-state.workspace     = true
+hyphen-consensus.workspace = true
+hyphen-mempool.workspace   = true
+hyphen-network.workspace   = true
+tokio.workspace            = true
+clap.workspace             = true
+tracing.workspace          = true
+tracing-subscriber.workspace = true
+serde.workspace            = true
+bincode.workspace          = true
+parking_lot.workspace      = true
+rand.workspace             = true
+hex.workspace              = true
+chrono.workspace           = true
+libp2p.workspace           = true

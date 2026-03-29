@@ -1,0 +1,23 @@
+[package]
+name = "hyphen-rpc"
+version.workspace = true
+edition.workspace = true
+description = "RPC server for the Hyphen blockchain"
+
+[dependencies]
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-state.workspace     = true
+hyphen-tx.workspace        = true
+hyphen-mempool.workspace   = true
+hyphen-consensus.workspace = true
+hyphen-token.workspace     = true
+prost.workspace            = true
+prost-types.workspace      = true
+tokio.workspace            = true
+serde.workspace            = true
+bincode.workspace          = true
+thiserror.workspace        = true
+tracing.workspace          = true
+hex.workspace              = true
+parking_lot.workspace      = true
