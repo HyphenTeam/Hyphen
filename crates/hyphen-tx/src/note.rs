@@ -24,7 +24,7 @@ impl Note {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OwnedNote {
     pub note: Note,
     pub value: u64,

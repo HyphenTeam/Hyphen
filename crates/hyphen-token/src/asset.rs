@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 pub struct AssetId(pub [u8; 32]);
 
 impl AssetId {
-    // Native HYP token
     pub const NATIVE: Self = Self([0u8; 32]);
 
     pub fn from_issuance(issuer_pk: &[u8; 32], nonce: u64) -> Self {
@@ -101,7 +100,6 @@ impl AssetMetadata {
 
     pub fn verify_id(&self) -> bool {
         let expected = AssetId::from_issuance(&self.issuer, 0);
-        // We trust that the nonce was correct at creation time
         self.asset_id == expected || !self.asset_id.is_native()
     }
 }

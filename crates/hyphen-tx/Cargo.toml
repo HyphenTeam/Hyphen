@@ -6,7 +6,6 @@ description = "Shielded UTXO transaction model for the Hyphen blockchain"
 
 [dependencies]
 hyphen-crypto.workspace    = true
-hyphen-core.workspace      = true
 hyphen-proof.workspace     = true
 curve25519-dalek.workspace = true
 serde.workspace            = true

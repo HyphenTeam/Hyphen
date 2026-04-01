@@ -116,3 +116,28 @@ pub const METHOD_GET_CHAIN_INFO: u32 = 3;
 pub const METHOD_SUBMIT_TX: u32 = 4;
 pub const METHOD_GET_MEMPOOL: u32 = 5;
 pub const METHOD_GET_TX_LOCATION: u32 = 6;
+pub const METHOD_GET_RANDOM_OUTPUTS: u32 = 7;
+
+#[derive(Clone, prost::Message)]
+pub struct GetRandomOutputsRequest {
+    #[prost(uint32, tag = "1")]
+    pub count: u32,
+    #[prost(uint64, tag = "2")]
+    pub below_index: u64,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct OutputInfo {
+    #[prost(bytes = "vec", tag = "1")]
+    pub one_time_pubkey: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub commitment: Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub global_index: u64,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct RandomOutputsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub outputs: Vec<OutputInfo>,
+}

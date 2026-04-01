@@ -19,6 +19,11 @@ hyphen-state.workspace     = true
 hyphen-consensus.workspace = true
 hyphen-mempool.workspace   = true
 hyphen-network.workspace   = true
+hyphen-transport.workspace = true
+hyphen-explorer.workspace  = true
+hyphen-rpc.workspace       = true
+
+
 tokio.workspace            = true
 clap.workspace             = true
 tracing.workspace          = true
@@ -30,3 +35,4 @@ rand.workspace             = true
 hex.workspace              = true
 chrono.workspace           = true
 libp2p.workspace           = true
+prost.workspace            = true

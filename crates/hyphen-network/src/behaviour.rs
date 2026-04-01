@@ -87,7 +87,7 @@ impl HyphenNetwork {
                 }
             })?
             .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(Duration::from_secs(60))
+                c.with_idle_connection_timeout(Duration::from_secs(600))
             })
             .build();
 
@@ -110,6 +110,12 @@ impl HyphenNetwork {
                 .behaviour_mut()
                 .kademlia
                 .add_address(peer_id, addr.clone());
+        }
+
+        if !boot_nodes.is_empty() {
+            if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                tracing::warn!("Kademlia bootstrap failed: {e:?}");
+            }
         }
 
         Ok(Self {
@@ -150,5 +156,25 @@ impl HyphenNetwork {
 
     pub async fn next_event(&mut self) -> Option<SwarmEvent<HyphenBehaviourEvent>> {
         self.swarm.next().await
+    }
+
+    /// Attempts a Kademlia bootstrap.  Safe to call periodically —
+    /// harmless when no peers are configured yet.
+    pub fn try_bootstrap(&mut self) {
+        let _ = self.swarm.behaviour_mut().kademlia.bootstrap();
+    }
+
+    /// Dynamically add a peer address to Kademlia and attempt bootstrap.
+    pub fn add_peer(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(&peer_id, addr);
+        let _ = self.swarm.behaviour_mut().kademlia.bootstrap();
+    }
+
+    /// Number of peers currently connected via the swarm.
+    pub fn connected_peer_count(&self) -> usize {
+        self.swarm.connected_peers().count()
     }
 }

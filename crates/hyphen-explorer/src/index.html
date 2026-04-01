@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hyphen Blockchain Explorer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box
+        }
+
+        :root {
+            --bg: #1a1a2e;
+            --bg2: #16213e;
+            --bg3: #0f3460;
+            --accent: #e94560;
+            --text: #eee;
+            --text2: #aab;
+            --border: #2a2a4a;
+            --green: #4ecca3;
+            --link: #53a8b6;
+            --hover: #e94560;
+            --card: #16213e;
+            --table-header: #0f3460;
+            --table-row: #1a1a2e;
+            --table-hover: #222244;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh
+        }
+
+        a {
+            color: var(--link);
+            text-decoration: none;
+            transition: color .2s
+        }
+
+        a:hover {
+            color: var(--hover)
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg2);
+            border-bottom: 2px solid var(--accent);
+            padding: 12px 0
+        }
+
+        .header-inner {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px
+        }
+
+        .logo {
+            font-size: 1.4em;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: 1px;
+            cursor: pointer
+        }
+
+        .logo span {
+            color: var(--text)
+        }
+
+        .search-box {
+            display: flex;
+            gap: 6px
+        }
+
+        .search-box input {
+            background: #111;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 14px;
+            border-radius: 4px;
+            width: 320px;
+            font-size: 0.9em;
+            outline: none;
+            transition: border .2s
+        }
+
+        .search-box input:focus {
+            border-color: var(--accent)
+        }
+
+        .search-box button {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: opacity .2s
+        }
+
+        .search-box button:hover {
+            opacity: 0.85
+        }
+
+        /* Stats bar */
+        .stats-bar {
+            background: var(--bg2);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 0
+        }
+
+        .stats-inner {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px
+        }
+
+        .stat-item {
+            text-align: center
+        }
+
+        .stat-label {
+            font-size: 0.72em;
+            color: var(--text2);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 2px
+        }
+
+        .stat-value {
+            font-size: 1.05em;
+            font-weight: 600;
+            color: var(--green);
+            font-variant-numeric: tabular-nums
+        }
+
+        /* Container */
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 20px
+        }
+
+        /* Blocks table */
+        .section-title {
+            font-size: 1.15em;
+            font-weight: 600;
+            margin-bottom: 14px;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 8px
+        }
+
+        .section-title .icon {
+            color: var(--accent)
+        }
+
+        .table-wrap {
+            overflow-x: auto;
+            border-radius: 6px;
+            border: 1px solid var(--border)
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.88em
+        }
+
+        thead {
+            background: var(--table-header)
+        }
+
+        th {
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text2);
+            text-transform: uppercase;
+            font-size: 0.78em;
+            letter-spacing: 0.5px;
+            white-space: nowrap
+        }
+
+        td {
+            padding: 9px 14px;
+            border-top: 1px solid var(--border);
+            white-space: nowrap
+        }
+
+        tr:hover td {
+            background: var(--table-hover)
+        }
+
+        .hash-cell {
+            max-width: 180px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.92em
+        }
+
+        .mono {
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.92em
+        }
+
+        .right {
+            text-align: right
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 12px;
+            margin-top: 18px
+        }
+
+        .pagination button {
+            background: var(--bg3);
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 6px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.88em;
+            transition: background .2s
+        }
+
+        .pagination button:hover:not(:disabled) {
+            background: var(--accent);
+            border-color: var(--accent)
+        }
+
+        .pagination button:disabled {
+            opacity: 0.4;
+            cursor: default
+        }
+
+        .pagination .page-info {
+            color: var(--text2);
+            font-size: 0.88em
+        }
+
+        /* Block detail */
+        .detail-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 18px
+        }
+
+        .detail-card h2 {
+            font-size: 1.1em;
+            color: var(--accent);
+            margin-bottom: 14px;
+            font-weight: 600
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 0
+        }
+
+        .detail-label {
+            padding: 8px 12px;
+            color: var(--text2);
+            font-size: 0.85em;
+            border-bottom: 1px solid var(--border);
+            font-weight: 500
+        }
+
+        .detail-value {
+            padding: 8px 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.85em;
+            border-bottom: 1px solid var(--border);
+            word-break: break-all
+        }
+
+        .detail-grid .detail-label:last-of-type,
+        .detail-grid .detail-value:last-of-type {
+            border-bottom: none
+        }
+
+        /* TX list */
+        .tx-list {
+            list-style: none;
+            padding: 0
+        }
+
+        .tx-list li {
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border)
+        }
+
+        .tx-list li:last-child {
+            border-bottom: none
+        }
+
+        .tx-list a {
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.88em
+        }
+
+        /* Loading / error */
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: var(--text2);
+            font-size: 1em
+        }
+
+        .error-msg {
+            text-align: center;
+            padding: 40px;
+            color: var(--accent);
+            font-size: 1em
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin .8s linear infinite;
+            margin-bottom: 12px
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg)
+            }
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 30px 20px;
+            color: var(--text2);
+            font-size: 0.78em;
+            border-top: 1px solid var(--border);
+            margin-top: 40px
+        }
+
+        /* Responsive */
+        @media(max-width:768px) {
+            .search-box input {
+                width: 180px
+            }
+
+            .detail-grid {
+                grid-template-columns: 140px 1fr
+            }
+
+            .header-inner {
+                flex-direction: column;
+                align-items: stretch
+            }
+
+            .stats-inner {
+                grid-template-columns: repeat(2, 1fr)
+            }
+        }
+
+        @media(max-width:480px) {
+            .detail-grid {
+                grid-template-columns: 1fr
+            }
+
+            .detail-label {
+                border-bottom: none;
+                padding-bottom: 2px;
+                font-weight: 600
+            }
+
+            .stats-inner {
+                grid-template-columns: 1fr 1fr
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <div class="header-inner">
+            <div class="logo" onclick="navigate('')">HYPHEN<span>Explorer</span></div>
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Search by block height, hash, or tx hash..."
+                    onkeydown="if(event.key==='Enter')doSearch()">
+                <button onclick="doSearch()">Search</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="statsBar" class="stats-bar" style="display:none">
+        <div class="stats-inner" id="statsContent"></div>
+    </div>
+
+    <div class="container" id="content">
+        <div class="loading">
+            <div class="spinner"></div><br>Loading...
+        </div>
+    </div>
+
+    <div class="footer">Hyphen Blockchain Explorer &mdash; Powered by Hyphen Network</div>
+
+    <script>
+        const API = '';
+        let currentPage = 0;
+        const LIMIT = 20;
+        let liveTipHeight = null;
+        let liveRefreshTimer = null;
+
+        // ── Routing ─────────────────────────────────────────────────────
+        function navigate(path) {
+            window.location.hash = path ? '#/' + path : '#/';
+        }
+
+        function getRoute() {
+            const h = window.location.hash.slice(1) || '/';
+            return h;
+        }
+
+        window.addEventListener('hashchange', route);
+        window.addEventListener('load', route);
+
+        function route() {
+            const path = getRoute();
+            if (path.startsWith('/block/')) {
+                const id = path.slice(7);
+                showBlock(id);
+            } else if (path.startsWith('/tx/')) {
+                const hash = path.slice(4);
+                showTx(hash);
+            } else {
+                currentPage = 0;
+                showHome();
+            }
+        }
+
+        function ensureLiveRefresh() {
+            if (liveRefreshTimer !== null) return;
+            liveRefreshTimer = setInterval(async () => {
+                try {
+                    const path = getRoute();
+                    if (path !== '/' || currentPage !== 0 || liveTipHeight == null) {
+                        return;
+                    }
+                    const update = await apiGet(`/api/updates?since=${liveTipHeight}`);
+                    if (update.changed) {
+                        liveTipHeight = update.info.height;
+                        await showHome();
+                    }
+                } catch (_) {
+                    // Keep the existing UI state and try again on the next tick.
+                }
+            }, 4000);
+        }
+
+        // ── API calls ───────────────────────────────────────────────────
+        async function apiGet(endpoint) {
+            const r = await fetch(API + endpoint);
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({ error: r.statusText }));
+                throw new Error(err.error || r.statusText);
+            }
+            return r.json();
+        }
+
+        // ── Time formatting ─────────────────────────────────────────────
+        function timeAgo(ts) {
+            const now = Date.now();
+            const diff = Math.floor(now / 1000) - Math.floor(ts / 1000);
+            if (diff < 60) return diff + 's ago';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            return Math.floor(diff / 86400) + 'd ago';
+        }
+
+        function formatDate(ts) {
+            const d = new Date(ts < 1e12 ? ts * 1000 : ts);
+            return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+        }
+
+        function shortHash(h) {
+            if (!h || h.length < 16) return h || '';
+            return h.slice(0, 8) + '...' + h.slice(-8);
+        }
+
+        function formatNumber(n) {
+            if (typeof n === 'string') n = parseFloat(n);
+            if (isNaN(n)) return '0';
+            return n.toLocaleString('en-US');
+        }
+
+        // ── Stats bar ───────────────────────────────────────────────────
+        async function loadStats() {
+            try {
+                const info = await apiGet('/api/info');
+                liveTipHeight = info.height;
+                const bar = document.getElementById('statsBar');
+                bar.style.display = '';
+                document.getElementById('statsContent').innerHTML = `
+      <div class="stat-item"><div class="stat-label">Height</div><div class="stat-value">${formatNumber(info.height)}</div></div>
+      <div class="stat-item"><div class="stat-label">Network</div><div class="stat-value">${esc(info.network)}</div></div>
+      <div class="stat-item"><div class="stat-label">Difficulty</div><div class="stat-value">${formatNumber(info.difficulty)}</div></div>
+      <div class="stat-item"><div class="stat-label">Block Reward</div><div class="stat-value">${esc(info.current_reward)} HPN</div></div>
+      <div class="stat-item"><div class="stat-label">Total Supply</div><div class="stat-value">${esc(info.total_supply)} HPN</div></div>
+      <div class="stat-item"><div class="stat-label">Epoch</div><div class="stat-value">${info.current_epoch} (len ${formatNumber(info.epoch_length)})</div></div>
+      <div class="stat-item"><div class="stat-label">Outputs</div><div class="stat-value">${formatNumber(info.total_outputs)}</div></div>
+      <div class="stat-item"><div class="stat-label">Block Target</div><div class="stat-value">${info.block_time_target_secs}s</div></div>
+    `;
+                return info;
+            } catch (e) {
+                document.getElementById('statsBar').style.display = 'none';
+                return null;
+            }
+        }
+
+        // ── Home page ───────────────────────────────────────────────────
+        async function showHome() {
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading blocks...</div>';
+            ensureLiveRefresh();
+
+            try {
+                await loadStats();
+                const data = await apiGet(`/api/blocks?page=${currentPage}&limit=${LIMIT}`);
+                renderBlocksTable(data);
+            } catch (e) {
+                content.innerHTML = `<div class="error-msg">Error: ${esc(e.message)}</div>`;
+            }
+        }
+
+        function renderBlocksTable(data) {
+            const content = document.getElementById('content');
+            const totalPages = Math.ceil((data.total_height + 1) / data.limit);
+
+            let html = `<div class="section-title"><span class="icon">&#9638;</span> Recent Blocks</div>`;
+            html += `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>Height</th><th>Age</th><th>Hash</th><th class="right">Txs</th>
+      <th class="right">Size</th><th class="right">Difficulty</th>
+      <th class="right">Reward</th><th>Miner</th>
+    </tr></thead><tbody>`;
+
+            for (const b of data.blocks) {
+                html += `<tr>
+      <td><a href="#/block/${b.height}">${b.height}</a></td>
+      <td>${timeAgo(b.timestamp)}</td>
+      <td class="hash-cell"><a href="#/block/${b.hash}">${shortHash(b.hash)}</a></td>
+      <td class="right">${b.tx_count}</td>
+      <td class="right">${formatNumber(b.block_size)}</td>
+      <td class="right">${formatNumber(b.difficulty)}</td>
+      <td class="right mono">${esc(b.reward)}</td>
+      <td class="hash-cell">${shortHash(b.miner_pubkey)}</td>
+    </tr>`;
+            }
+
+            html += '</tbody></table></div>';
+
+            html += `<div class="pagination">
+    <button ${currentPage >= totalPages - 1 ? 'disabled' : ''} onclick="currentPage++;showHome()">&#9664; Older</button>
+    <span class="page-info">Page ${currentPage + 1} of ${totalPages}</span>
+    <button ${currentPage <= 0 ? 'disabled' : ''} onclick="currentPage--;showHome()">Newer &#9654;</button>
+  </div>`;
+
+            content.innerHTML = html;
+        }
+
+        // ── Block detail page ───────────────────────────────────────────
+        async function showBlock(id) {
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading block...</div>';
+            await loadStats();
+
+            try {
+                const b = await apiGet(`/api/block/${encodeURIComponent(id)}`);
+                let html = `<div class="section-title"><span class="icon">&#9638;</span> Block #${b.header.height}</div>`;
+
+                html += `<div class="detail-card"><h2>Block Header</h2><div class="detail-grid">`;
+                const fields = [
+                    ['Hash', b.hash],
+                    ['Height', b.header.height],
+                    ['Timestamp', formatDate(b.header.timestamp) + ' (' + timeAgo(b.header.timestamp) + ')'],
+                    ['Version', b.header.version],
+                    ['Previous Hash', `<a href="#/block/${b.header.prev_hash}">${b.header.prev_hash}</a>`],
+                    ['Difficulty', formatNumber(b.header.difficulty)],
+                    ['Nonce', b.header.nonce],
+                    ['Extra Nonce', b.header.extra_nonce],
+                    ['Reward', esc(b.header.reward) + ' HPN (' + formatNumber(b.header.reward_atomic) + ' atomic)'],
+                    ['Total Fee', esc(b.header.total_fee) + ' HPN (' + formatNumber(b.header.total_fee_atomic) + ' atomic)'],
+                    ['Miner', b.header.miner_pubkey],
+                    ['Block Size', formatNumber(b.header.block_size) + ' bytes'],
+                    ['Tx Count', b.tx_count],
+                    ['Uncle Count', b.uncle_count],
+                    ['View Tag', b.header.view_tag],
+                    ['PoW Commitment', b.header.pow_commitment],
+                    ['Epoch Seed', b.header.epoch_seed],
+                    ['Tx Root', b.header.tx_root],
+                    ['Commitment Root', b.header.commitment_root],
+                    ['Nullifier Root', b.header.nullifier_root],
+                    ['State Root', b.header.state_root],
+                    ['Receipt Root', b.header.receipt_root],
+                    ['Uncle Root', b.header.uncle_root],
+                ];
+
+                for (const [label, value] of fields) {
+                    html += `<div class="detail-label">${label}</div><div class="detail-value">${value}</div>`;
+                }
+                html += '</div></div>';
+
+                if (b.tx_hashes.length > 0) {
+                    html += `<div class="detail-card"><h2>Transactions (${b.tx_count})</h2><ul class="tx-list">`;
+                    for (let i = 0; i < b.tx_hashes.length; i++) {
+                        html += `<li>#${i} &mdash; <a href="#/tx/${b.tx_hashes[i]}">${b.tx_hashes[i]}</a></li>`;
+                    }
+                    html += '</ul></div>';
+                }
+
+                if (b.uncle_hashes.length > 0) {
+                    html += `<div class="detail-card"><h2>Uncles (${b.uncle_count})</h2><ul class="tx-list">`;
+                    for (const uh of b.uncle_hashes) {
+                        html += `<li><a href="#/block/${uh}">${uh}</a></li>`;
+                    }
+                    html += '</ul></div>';
+                }
+
+                // Navigation
+                html += `<div class="pagination">`;
+                if (b.header.height > 0) {
+                    html += `<button onclick="navigate('block/${b.header.height - 1}')">&#9664; Block ${b.header.height - 1}</button>`;
+                } else {
+                    html += `<button disabled>&#9664; Previous</button>`;
+                }
+                html += `<button onclick="navigate('')">Home</button>`;
+                html += `<button onclick="navigate('block/${b.header.height + 1}')">Block ${b.header.height + 1} &#9654;</button>`;
+                html += `</div>`;
+
+                content.innerHTML = html;
+            } catch (e) {
+                content.innerHTML = `<div class="error-msg">Block not found: ${esc(id)}<br><br><a href="#/">Back to home</a></div>`;
+            }
+        }
+
+        // ── Transaction detail page ─────────────────────────────────────
+        async function showTx(hash) {
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading transaction...</div>';
+            await loadStats();
+
+            try {
+                const tx = await apiGet(`/api/tx/${encodeURIComponent(hash)}`);
+                let html = `<div class="section-title"><span class="icon">&#9638;</span> Transaction</div>`;
+
+                html += `<div class="detail-card"><h2>Transaction Details</h2><div class="detail-grid">`;
+                html += `<div class="detail-label">TX Hash</div><div class="detail-value">${tx.tx_hash}</div>`;
+                html += `<div class="detail-label">Block</div><div class="detail-value"><a href="#/block/${tx.block_height}">#${tx.block_height}</a> (<a href="#/block/${tx.block_hash}">${shortHash(tx.block_hash)}</a>)</div>`;
+                html += `<div class="detail-label">Index in Block</div><div class="detail-value">${tx.index_in_block}</div>`;
+                html += '</div></div>';
+
+                html += `<div class="pagination"><button onclick="navigate('')">Home</button></div>`;
+
+                content.innerHTML = html;
+            } catch (e) {
+                content.innerHTML = `<div class="error-msg">Transaction not found: ${esc(hash)}<br><br><a href="#/">Back to home</a></div>`;
+            }
+        }
+
+        // ── Search ──────────────────────────────────────────────────────
+        async function doSearch() {
+            const q = document.getElementById('searchInput').value.trim();
+            if (!q) return;
+
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Searching...</div>';
+
+            try {
+                const result = await apiGet(`/api/search?q=${encodeURIComponent(q)}`);
+                if (result.result_type === 'block') {
+                    navigate('block/' + (result.height != null ? result.height : result.hash));
+                } else if (result.result_type === 'tx') {
+                    navigate('tx/' + q);
+                } else {
+                    content.innerHTML = `<div class="error-msg">No results found for: ${esc(q)}<br><br><a href="#/">Back to home</a></div>`;
+                }
+            } catch (e) {
+                content.innerHTML = `<div class="error-msg">Search error: ${esc(e.message)}<br><br><a href="#/">Back to home</a></div>`;
+            }
+        }
+
+        // ── Escape HTML ─────────────────────────────────────────────────
+        function esc(s) {
+            if (s == null) return '';
+            const d = document.createElement('div');
+            d.textContent = String(s);
+            return d.innerHTML;
+        }
+    </script>
+</body>
+
+</html>

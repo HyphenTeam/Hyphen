@@ -22,6 +22,7 @@ pub struct TxOutput {
     pub one_time_pubkey: [u8; 32],
     pub ephemeral_pubkey: [u8; 32],
     pub encrypted_amount: [u8; 32],
+    pub view_tag: u8,
 }
 
 impl TxOutput {
@@ -31,6 +32,7 @@ impl TxOutput {
             &self.one_time_pubkey,
             &self.ephemeral_pubkey,
             &self.encrypted_amount,
+            &[self.view_tag],
         ])
     }
 }
@@ -73,6 +75,10 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    pub fn is_coinbase(&self) -> bool {
+        self.version == 0 && self.inputs.is_empty()
+    }
+
     pub fn serialise(&self) -> Vec<u8> {
         bincode::serialize(self).expect("tx serialization infallible")
     }

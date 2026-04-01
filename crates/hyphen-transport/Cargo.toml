@@ -1,0 +1,13 @@
+[package]
+name = "hyphen-transport"
+version.workspace = true
+edition.workspace = true
+description = "Template Provider protocol for Hyphen node-pool communication"
+
+[dependencies]
+hyphen-crypto.workspace = true
+prost.workspace         = true
+thiserror.workspace     = true
+tokio.workspace         = true
+async-trait.workspace   = true
+rand.workspace          = true

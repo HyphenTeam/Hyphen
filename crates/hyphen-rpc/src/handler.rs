@@ -21,13 +21,13 @@ pub enum HandlerError {
 }
 
 pub struct RpcHandler {
-    pub chain: Arc<parking_lot::RwLock<Blockchain>>,
+    pub chain: Arc<Blockchain>,
     pub mempool: Arc<parking_lot::RwLock<Mempool>>,
 }
 
 impl RpcHandler {
     pub fn new(
-        chain: Arc<parking_lot::RwLock<Blockchain>>,
+        chain: Arc<Blockchain>,
         mempool: Arc<parking_lot::RwLock<Mempool>>,
     ) -> Self {
         Self { chain, mempool }
@@ -41,6 +41,7 @@ impl RpcHandler {
             METHOD_SUBMIT_TX => self.handle_submit_tx(&request.payload),
             METHOD_GET_MEMPOOL => self.handle_get_mempool(),
             METHOD_GET_TX_LOCATION => self.handle_get_tx_location(&request.payload),
+            METHOD_GET_RANDOM_OUTPUTS => self.handle_get_random_outputs(&request.payload),
             _ => Err(HandlerError::InvalidRequest(format!(
                 "unknown method: {}", request.method
             ))),
@@ -71,16 +72,20 @@ impl RpcHandler {
         hash_arr.copy_from_slice(&req.hash);
         let hash = hyphen_crypto::Hash256::from_bytes(hash_arr);
 
-        let chain = self.chain.read();
-        let block = chain.store().get_block_by_hash(&hash)
+        let block = self.chain.store().get_block_by_hash(&hash)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
         let header_data = bincode::serialize(&block.header)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
+        let mut transactions = block.transactions;
+        if let Ok(coinbase_blob) = self.chain.store().get_coinbase(block.header.height) {
+            transactions.push(coinbase_blob);
+        }
+
         let resp = BlockResponse {
             header_data,
-            transactions: block.transactions,
+            transactions,
             hash: hash.to_vec(),
             height: block.header.height,
             timestamp: block.header.timestamp,
@@ -90,16 +95,21 @@ impl RpcHandler {
 
     fn handle_get_block_by_height(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = GetBlockByHeightRequest::decode(payload)?;
-        let chain = self.chain.read();
-        let block = chain.store().get_block_by_height(req.height)
+        let block = self.chain.store().get_block_by_height(req.height)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
         let header_data = bincode::serialize(&block.header)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
+        let mut transactions = block.transactions;
+        // Append coinbase transaction if one was generated for this block
+        if let Ok(coinbase_blob) = self.chain.store().get_coinbase(req.height) {
+            transactions.push(coinbase_blob);
+        }
+
         let resp = BlockResponse {
             header_data,
-            transactions: block.transactions,
+            transactions,
             hash: block.header.hash().to_vec(),
             height: block.header.height,
             timestamp: block.header.timestamp,
@@ -108,8 +118,7 @@ impl RpcHandler {
     }
 
     fn handle_get_chain_info(&self) -> Result<Vec<u8>, HandlerError> {
-        let chain = self.chain.read();
-        let tip = chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
         let resp = ChainInfoResponse {
             height: tip.height,
             tip_hash: tip.hash.to_vec(),
@@ -130,8 +139,7 @@ impl RpcHandler {
         hash_arr.copy_from_slice(&req.tx_hash);
         let tx_hash = hyphen_crypto::Hash256::from_bytes(hash_arr);
 
-        let chain = self.chain.read();
-        match chain.store().get_tx_location(&tx_hash) {
+        match self.chain.store().get_tx_location(&tx_hash) {
             Ok((block_hash, idx)) => {
                 let resp = TxLocationResponse {
                     block_hash: block_hash.to_vec(),
@@ -185,6 +193,31 @@ impl RpcHandler {
             total_size: 0,
             tx_hashes,
         };
+        Ok(resp.encode_to_vec())
+    }
+
+    fn handle_get_random_outputs(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        let req = GetRandomOutputsRequest::decode(payload)?;
+        let count = (req.count as usize).min(128);
+        let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let ceiling = if req.below_index > 0 {
+            req.below_index.min(tip.total_outputs)
+        } else {
+            tip.total_outputs
+        };
+        let random_outs = self.chain
+            .store()
+            .get_random_outputs(count, ceiling)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let outputs = random_outs
+            .into_iter()
+            .map(|(pk, cm, idx)| OutputInfo {
+                one_time_pubkey: pk.to_vec(),
+                commitment: cm.to_vec(),
+                global_index: idx,
+            })
+            .collect();
+        let resp = RandomOutputsResponse { outputs };
         Ok(resp.encode_to_vec())
     }
 }

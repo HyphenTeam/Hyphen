@@ -10,11 +10,13 @@ members = [
     "crates/hyphen-consensus",
     "crates/hyphen-mempool",
     "crates/hyphen-network",
+    "crates/hyphen-transport",
     "crates/hyphen-node",
     "crates/hyphen-wallet",
     "crates/hyphen-token",
     "crates/hyphen-rpc",
     "crates/hyphen-vm",
+    "crates/hyphen-explorer"
 ]
 resolver = "2"
 
@@ -38,10 +40,12 @@ hyphen-consensus = { path = "crates/hyphen-consensus" }
 hyphen-mempool   = { path = "crates/hyphen-mempool" }
 hyphen-network   = { path = "crates/hyphen-network" }
 hyphen-node      = { path = "crates/hyphen-node" }
+hyphen-transport        = { path = "crates/hyphen-transport" }
 hyphen-wallet    = { path = "crates/hyphen-wallet" }
 hyphen-token     = { path = "crates/hyphen-token" }
 hyphen-rpc       = { path = "crates/hyphen-rpc" }
 hyphen-vm        = { path = "crates/hyphen-vm" }
+hyphen-explorer  = { path = "crates/hyphen-explorer" }
 
 # ── cryptography ──
 blake3           = "1.8"
@@ -64,6 +68,7 @@ wasmer           = "5"
 # ── async / networking ──
 tokio            = { version = "1", features = ["full"] }
 futures          = "0.3"
+axum             = "0.8"
 libp2p           = { version = "0.56", features = [
     "tcp", "noise", "yamux", "gossipsub", "kad",
     "identify", "ping", "request-response", "cbor",
@@ -71,6 +76,7 @@ libp2p           = { version = "0.56", features = [
     "autonat",
 ] }
 async-trait      = "0.1"
+tower-http       = { version = "0.6", features = ["cors"] }
 
 # ── utilities ──
 rand             = "0.8"
@@ -82,6 +88,7 @@ log              = "0.4"
 env_logger       = "0.11"
 tracing          = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json       = "1"
 chrono           = { version = "0.4", features = ["serde"] }
 parking_lot      = "0.12"
 byteorder        = "1"
@@ -89,6 +96,7 @@ clap             = { version = "4", features = ["derive"] }
 once_cell        = "1"
 zeroize          = { version = "1", features = ["derive"] }
 unsigned-varint  = "0.8"
+sntpc            = "0.3"
 
 [package]
 name = "hyphen"
@@ -110,3 +118,4 @@ hyphen-wallet.workspace    = true
 hyphen-token.workspace     = true
 hyphen-rpc.workspace       = true
 hyphen-vm.workspace        = true
+hyphen-explorer.workspace  = true

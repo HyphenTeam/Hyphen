@@ -190,3 +190,15 @@ pub fn decrypt_amount(encrypted: &[u8; 32], shared_secret: &Scalar) -> u64 {
     }
     u64::from_le_bytes(buf)
 }
+
+pub fn derive_commitment_blinding(shared_secret: &Scalar) -> Scalar {
+    hash_to_scalar(
+        b"Hyphen_commitment_blind",
+        shared_secret.as_bytes(),
+    )
+}
+
+pub fn compute_view_tag(shared_secret: &Scalar) -> u8 {
+    let tag = blake3_hash_many(&[b"Hyphen_view_tag", shared_secret.as_bytes()]);
+    tag.as_bytes()[0]
+}

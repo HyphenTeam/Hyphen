@@ -22,6 +22,8 @@ pub struct BlockStore {
     blocks: CompressedTree,
     height_index: sled::Tree,
     tx_index: sled::Tree,
+    output_index: sled::Tree,
+    coinbase_index: sled::Tree,
 }
 
 impl BlockStore {
@@ -30,6 +32,8 @@ impl BlockStore {
             blocks: CompressedTree::new(db.open_tree("blocks")?),
             height_index: db.open_tree("height_index")?,
             tx_index: db.open_tree("tx_index")?,
+            output_index: db.open_tree("output_index")?,
+            coinbase_index: db.open_tree("coinbase_index")?,
         })
     }
 
@@ -99,6 +103,78 @@ impl BlockStore {
         self.blocks.flush()?;
         self.height_index.flush()?;
         self.tx_index.flush()?;
+        self.output_index.flush()?;
+        self.coinbase_index.flush()?;
         Ok(())
+    }
+
+    /// Store the serialised coinbase transaction for a given block height.
+    pub fn insert_coinbase(&self, height: u64, data: &[u8]) -> Result<()> {
+        self.coinbase_index
+            .insert(height.to_be_bytes(), data)?;
+        Ok(())
+    }
+
+    /// Retrieve the serialised coinbase transaction at a given height.
+    pub fn get_coinbase(&self, height: u64) -> Result<Vec<u8>> {
+        let data = self
+            .coinbase_index
+            .get(height.to_be_bytes())?
+            .ok_or_else(|| StoreError::NotFound(format!("coinbase at height {height}")))?;
+        Ok(data.to_vec())
+    }
+
+    /// Store an output by its global index.
+    /// Value layout: `[one_time_pubkey: 32] [commitment: 32]`
+    pub fn insert_output(
+        &self,
+        global_index: u64,
+        one_time_pubkey: &[u8; 32],
+        commitment: &[u8; 32],
+    ) -> Result<()> {
+        let mut val = [0u8; 64];
+        val[..32].copy_from_slice(one_time_pubkey);
+        val[32..64].copy_from_slice(commitment);
+        self.output_index
+            .insert(global_index.to_be_bytes(), &val[..])?;
+        Ok(())
+    }
+
+    /// Get an output (one_time_pubkey, commitment) by global index.
+    pub fn get_output(&self, global_index: u64) -> Result<([u8; 32], [u8; 32])> {
+        let val = self
+            .output_index
+            .get(global_index.to_be_bytes())?
+            .ok_or_else(|| StoreError::NotFound(format!("output index {global_index}")))?;
+        let mut pk = [0u8; 32];
+        let mut cm = [0u8; 32];
+        pk.copy_from_slice(&val[..32]);
+        cm.copy_from_slice(&val[32..64]);
+        Ok((pk, cm))
+    }
+
+    /// Get `count` random outputs below `ceiling` global index.
+    /// Returns (one_time_pubkey, commitment, global_index) tuples.
+    pub fn get_random_outputs(
+        &self,
+        count: usize,
+        ceiling: u64,
+    ) -> Result<Vec<([u8; 32], [u8; 32], u64)>> {
+        use rand::Rng;
+        if ceiling == 0 {
+            return Ok(Vec::new());
+        }
+        let mut rng = rand::thread_rng();
+        let mut result = Vec::with_capacity(count);
+        let mut attempts = 0;
+        let max_attempts = count * 10;
+        while result.len() < count && attempts < max_attempts {
+            attempts += 1;
+            let idx: u64 = rng.gen_range(0..ceiling);
+            if let Ok((pk, cm)) = self.get_output(idx) {
+                result.push((pk, cm, idx));
+            }
+        }
+        Ok(result)
     }
 }

@@ -2,11 +2,34 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroize;
 
-use hyphen_crypto::stealth::{self, EphemeralKey, SpendKey, StealthAddress, ViewKey};
+use hyphen_crypto::stealth::{self, derive_commitment_blinding, EphemeralKey, SpendKey, StealthAddress, ViewKey};
 use hyphen_tx::note::OwnedNote;
 
 use crate::address::HyphenAddress;
 use crate::derivation::{DerivedKeys, MasterKey};
+
+fn derive_wallet_key(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
+    let mut state = hyphen_crypto::hash::blake3_hash(
+        &[salt.as_slice(), password].concat(),
+    );
+    for _ in 0..100_000 {
+        state = hyphen_crypto::hash::blake3_hash(state.as_bytes());
+    }
+    *state.as_bytes()
+}
+
+fn xof_encrypt(key: &[u8; 32], data: &[u8]) -> Vec<u8> {
+    let mut h = blake3::Hasher::new_keyed(key);
+    h.update(b"Hyphen_wallet_stream");
+    let mut stream = h.finalize_xof();
+    let mut out = vec![0u8; data.len()];
+    let mut keystream = vec![0u8; data.len()];
+    stream.fill(&mut keystream);
+    for (i, b) in data.iter().enumerate() {
+        out[i] = b ^ keystream[i];
+    }
+    out
+}
 
 #[derive(Debug, Error)]
 pub enum WalletError {
@@ -31,8 +54,6 @@ pub struct Wallet {
     scan_height: u64,
 }
 
-// OwnedNote contains Scalar (not directly serializable with bincode in all configs),
-// so we store the raw bytes instead.
 #[derive(Clone, Serialize, Deserialize, Zeroize)]
 #[zeroize(drop)]
 struct SerializableOwnedNote {
@@ -155,7 +176,7 @@ impl Wallet {
         };
         let value = stealth::decrypt_amount(encrypted_amount, &ss);
 
-        let blinding_scalar = ss;
+        let blinding_scalar = derive_commitment_blinding(&ss);
 
         let note = SerializableOwnedNote {
             commitment: commitment_bytes,
@@ -212,10 +233,44 @@ impl Wallet {
         Ok(())
     }
 
+    pub fn save_encrypted(&self, path: &std::path::Path, password: &[u8]) -> Result<(), WalletError> {
+        let data = bincode::serialize(self).map_err(|e| WalletError::Serialize(e.to_string()))?;
+        let mut salt = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
+        let key = derive_wallet_key(password, &salt);
+        let encrypted = xof_encrypt(&key, &data);
+        let mac = hyphen_crypto::hash::blake3_keyed(&key, &encrypted);
+        let mut out = Vec::with_capacity(32 + 32 + encrypted.len());
+        out.extend_from_slice(&salt);
+        out.extend_from_slice(mac.as_bytes());
+        out.extend_from_slice(&encrypted);
+        std::fs::write(path, &out)?;
+        Ok(())
+    }
+
     pub fn load(path: &std::path::Path) -> Result<Self, WalletError> {
         let data = std::fs::read(path)?;
         let w: Self =
             bincode::deserialize(&data).map_err(|e| WalletError::Serialize(e.to_string()))?;
+        Ok(w)
+    }
+
+    pub fn load_encrypted(path: &std::path::Path, password: &[u8]) -> Result<Self, WalletError> {
+        let data = std::fs::read(path)?;
+        if data.len() < 64 {
+            return Err(WalletError::Serialize("wallet file too short".into()));
+        }
+        let salt: [u8; 32] = data[..32].try_into().unwrap();
+        let stored_mac: [u8; 32] = data[32..64].try_into().unwrap();
+        let ciphertext = &data[64..];
+        let key = derive_wallet_key(password, &salt);
+        let computed_mac = hyphen_crypto::hash::blake3_keyed(&key, ciphertext);
+        if computed_mac.as_bytes() != &stored_mac {
+            return Err(WalletError::Serialize("wrong password or corrupted file".into()));
+        }
+        let plaintext = xof_encrypt(&key, ciphertext);
+        let w: Self =
+            bincode::deserialize(&plaintext).map_err(|e| WalletError::Serialize(e.to_string()))?;
         Ok(w)
     }
 }
@@ -273,5 +328,20 @@ mod tests {
         assert_eq!(w.balance(), 1500);
         w.mark_spent(1);
         assert_eq!(w.balance(), 500);
+    }
+
+    #[test]
+    fn encrypted_save_load_roundtrip() {
+        let w = Wallet::from_seed([0x77; 32]);
+        let dir = std::env::temp_dir().join("hyphen_wallet_enc_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_enc.wallet");
+        w.save_encrypted(&path, b"test_password").unwrap();
+        let w2 = Wallet::load_encrypted(&path, b"test_password").unwrap();
+        assert_eq!(w.address(true).encode(), w2.address(true).encode());
+        assert_eq!(w.balance(), w2.balance());
+        let bad = Wallet::load_encrypted(&path, b"wrong_password");
+        assert!(bad.is_err());
+        let _ = std::fs::remove_file(&path);
     }
 }

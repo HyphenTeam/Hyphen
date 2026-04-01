@@ -52,4 +52,19 @@ pub enum CoreError {
 
     #[error("configuration error: {0}")]
     Config(String),
+
+    #[error("too many uncles: {count}, max {max}")]
+    TooManyUncles { count: usize, max: usize },
+
+    #[error("uncle too old: depth {depth}, max {max}")]
+    UncleTooOld { depth: u64, max: u64 },
+
+    #[error("uncle is not a sibling of an ancestor")]
+    UncleNotSibling,
+
+    #[error("duplicate uncle: {0}")]
+    DuplicateUncle(String),
+
+    #[error("uncle already included: {0}")]
+    UncleAlreadyIncluded(String),
 }

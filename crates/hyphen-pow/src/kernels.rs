@@ -11,6 +11,10 @@ pub fn execute_kernel(kernel_id: u8, page: &[u8], state: &[u8; 64]) -> [u8; 64] 
         5 => kernel_var_decode(page, state),
         6 => kernel_hash_mix(page, state),
         7 => kernel_branch_maze(page, state),
+        8 => kernel_aes_cascade(page, state),
+        9 => kernel_float_emulate(page, state),
+        10 => kernel_scatter_gather(page, state),
+        11 => kernel_mod_exp_chain(page, state),
         _ => kernel_div_chain(page, state), // fallback
     }
 }
@@ -244,7 +248,7 @@ fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
         match val & 0x07 {
             0 => {
                 acc[slot] = acc[slot].wrapping_add(val);
-                cursor = (cursor.wrapping_add(val as usize * 7)) % page.len();
+                cursor = (cursor.wrapping_add((val as usize).wrapping_mul(7))) % page.len();
             }
             1 => {
                 acc[slot] = acc[slot].wrapping_sub(val.rotate_left(13));
@@ -265,7 +269,7 @@ fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
                 cursor = (cursor.wrapping_add(acc[(slot + 1) % 8] as usize)) % page.len();
             }
             5 => {
-                acc[slot] = acc[slot].wrapping_add(val.count_ones() as u64 * step);
+                acc[slot] = acc[slot].wrapping_add((val.count_ones() as u64).wrapping_mul(step));
                 cursor = (cursor.wrapping_add(3 + val as usize)) % page.len();
             }
             6 => {
@@ -284,6 +288,187 @@ fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
     to_output(&acc)
 }
 
+// ─── Kernel 8: AES S-Box cascade with data-dependent mixing ───
+// Uses the full AES S-Box in a feedback loop where every output byte feeds
+// the next round as index.  GPUs lack native AES-NI; CPUs with AES-NI can
+// accelerate SubBytes but the serial dependency chain prevents parallelism.
+fn kernel_aes_cascade(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+    let mut buf = [0u8; 64];
+    buf.copy_from_slice(state);
+
+    for round in 0..24u32 {
+        let page_off = (round as usize).wrapping_mul(197) % page.len().saturating_sub(64).max(1);
+
+        // SubBytes through AES S-Box (serial dependency chain)
+        for i in 0..64 {
+            buf[i] = SBOX[buf[i] as usize];
+        }
+
+        // ShiftRows-inspired rotation: each 16-byte lane rotated by lane index
+        for lane in 0..4usize {
+            let base = lane * 16;
+            let shift = lane + 1;
+            let mut tmp = [0u8; 16];
+            for i in 0..16 {
+                tmp[i] = buf[base + (i + shift) % 16];
+            }
+            buf[base..base + 16].copy_from_slice(&tmp);
+        }
+
+        // XOR with page data (memory dependency)
+        let safe_len = page.len().min(page_off + 64) - page_off;
+        for i in 0..safe_len.min(64) {
+            buf[i] ^= page[page_off + i];
+        }
+
+        // MixColumns-style: Galois field multiply-accumulate across columns
+        for col in 0..16 {
+            let a = buf[col] as u16;
+            let b = buf[col + 16] as u16;
+            let c = buf[col + 32] as u16;
+            let d = buf[col + 48] as u16;
+            let mixed = (a.wrapping_mul(2) ^ b.wrapping_mul(3) ^ c ^ d) as u8;
+            buf[col] ^= mixed;
+            buf[col + 16] ^= (a ^ b.wrapping_mul(2) ^ c.wrapping_mul(3) ^ d) as u8;
+            buf[col + 32] ^= (a ^ b ^ c.wrapping_mul(2) ^ d.wrapping_mul(3)) as u8;
+            buf[col + 48] ^= (a.wrapping_mul(3) ^ b ^ c ^ d.wrapping_mul(2)) as u8;
+        }
+    }
+    buf
+}
+
+// ─── Kernel 9: Floating-point emulated arithmetic ───
+// Emulates an IEEE-754-like pipeline using integer arithmetic.
+// ASICs optimise for either integer or float, rarely both well.
+// We encode f64 ops as u64 bit patterns to create execution diversity.
+fn kernel_float_emulate(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+    let mut acc = [0u64; 8];
+    for i in 0..8 {
+        acc[i] = state_u64(state, i);
+    }
+
+    for step in 0..64u64 {
+        let data = read_u64_le(page, (step as usize).wrapping_mul(73) % page.len());
+        let slot = step as usize % 8;
+
+        // Convert to f64, perform transcendental-like computation, convert back
+        // We avoid actual f64 (non-deterministic on some HW) and instead
+        // emulate fixed-point arithmetic at 32.32 precision.
+        let a_hi = (acc[slot] >> 32) as u32;
+        let a_lo = acc[slot] as u32;
+        let d_hi = (data >> 32) as u32;
+        let d_lo = data as u32;
+
+        // Fixed-point multiply: (a_hi.a_lo) * (d_hi.d_lo) keeping middle bits
+        let cross1 = (a_hi as u64).wrapping_mul(d_lo as u64);
+        let cross2 = (a_lo as u64).wrapping_mul(d_hi as u64);
+        let full = (a_hi as u64).wrapping_mul(d_hi as u64);
+        let mid = cross1.wrapping_add(cross2).wrapping_add(full << 16);
+
+        // Approximate reciprocal: Newton–Raphson style
+        let denom = data | 0x8000_0000_0000_0001; // ensure nonzero
+        let est = (u64::MAX / denom).wrapping_add(1);
+        let refined = est.wrapping_mul(2u64.wrapping_sub(denom.wrapping_mul(est) >> 32));
+
+        acc[slot] = mid ^ refined;
+        acc[(slot + 3) % 8] = acc[(slot + 3) % 8].wrapping_add(
+            mid.wrapping_mul(0x517CC1B727220A95).rotate_left((step as u32) & 63),
+        );
+        acc[(slot + 6) % 8] ^= refined.wrapping_sub(acc[slot]);
+    }
+    to_output(&acc)
+}
+
+// ─── Kernel 10: Recursive memory scatter-gather ───
+// Reads from data-dependent page offsets, then writes results back to a
+// local scratchpad before re-reading.  This creates a long dependency chain
+// that rewards large CPU caches and deep out-of-order pipelines.
+fn kernel_scatter_gather(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+    // Local scratchpad: 2 KiB, fits in L1 cache on CPUs
+    let mut scratch = [0u8; 2048];
+    // Seed scratchpad from state
+    for i in 0..2048 {
+        scratch[i] = state[i % 64] ^ (i as u8).wrapping_mul(0x9D);
+    }
+
+    let mut acc = [0u64; 8];
+    for i in 0..8 {
+        acc[i] = state_u64(state, i);
+    }
+
+    for step in 0..80u64 {
+        let slot = step as usize % 8;
+
+        // Gather: read from page at data-dependent offset
+        let page_idx = (acc[slot] as usize) % page.len().saturating_sub(7).max(1);
+        let page_val = read_u64_le(page, page_idx);
+
+        // Read from scratchpad at another data-dependent offset
+        let scratch_idx = (page_val as usize) % (2048 - 7);
+        let scratch_val = u64::from_le_bytes(
+            scratch[scratch_idx..scratch_idx + 8].try_into().unwrap(),
+        );
+
+        // Compute
+        let mixed = page_val
+            .wrapping_mul(scratch_val | 1)
+            .rotate_left((acc[(slot + 1) % 8] & 63) as u32);
+        acc[slot] = acc[slot].wrapping_add(mixed);
+
+        // Scatter: write back to scratchpad (creates dependency for future reads)
+        let wb_idx = (acc[slot] as usize) % (2048 - 7);
+        scratch[wb_idx..wb_idx + 8].copy_from_slice(&acc[slot].to_le_bytes());
+
+        // Cross-lane mixing
+        acc[(slot + 4) % 8] ^= acc[slot].wrapping_mul(0x2545F4914F6CDD1D);
+    }
+    to_output(&acc)
+}
+
+// ─── Kernel 11: Modular exponentiation chain ───
+// Performs repeated modular multiplications over a 128-bit modulus.
+// Division / modulo operations are expensive for ASICs but cheap on CPUs
+// with hardware dividers.  The chain is fully serial.
+fn kernel_mod_exp_chain(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+    let mut acc = [0u64; 8];
+    for i in 0..8 {
+        acc[i] = state_u64(state, i);
+    }
+
+    for step in 0..56u64 {
+        let slot = step as usize % 8;
+        let data = read_u64_le(page, (step as usize).wrapping_mul(89) % page.len());
+
+        // Build a 64-bit modulus from page+state data (always odd, never zero)
+        let modulus = data.wrapping_add(acc[(slot + 2) % 8]) | 0x8000_0000_0000_0001;
+
+        // Sequential modular multiply chain (6 iterations)
+        let mut base = acc[slot];
+        let mut result: u64 = 1;
+        let exp_bits = acc[(slot + 1) % 8];
+
+        for bit in 0..6u32 {
+            // Square
+            let sq = (base as u128).wrapping_mul(base as u128);
+            base = (sq % modulus as u128) as u64;
+
+            // Conditional multiply
+            if (exp_bits >> (bit * 10)) & 1 == 1 {
+                let prod = (result as u128).wrapping_mul(base as u128);
+                result = (prod % modulus as u128) as u64;
+            }
+        }
+
+        acc[slot] = result;
+        // Feedback: combine remainder into another lane
+        let remainder = acc[slot] % (data | 1);
+        acc[(slot + 5) % 8] = acc[(slot + 5) % 8]
+            .wrapping_add(remainder)
+            .rotate_left((step as u32) & 63);
+    }
+    to_output(&acc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,9 +477,8 @@ mod tests {
     fn all_kernels_produce_output() {
         let page = vec![0xABu8; 4096];
         let state = [0x42u8; 64];
-        for k in 0..8 {
+        for k in 0..12 {
             let out = execute_kernel(k, &page, &state);
-        // output should not be all zeros
             assert!(out.iter().any(|&b| b != 0), "kernel {k} produced zero output");
         }
     }

@@ -8,7 +8,7 @@ use hyphen_crypto::clsag;
 use hyphen_crypto::pedersen::{Commitment, PedersenGens};
 use hyphen_crypto::stealth::{
     self, StealthAddress,
-    encrypt_amount,
+    encrypt_amount, derive_commitment_blinding, compute_view_tag,
 };
 use hyphen_proof::range_proof::AggregatedRangeProof;
 
@@ -36,7 +36,7 @@ pub enum BuilderError {
 
 pub struct InputSpec {
     pub owned: OwnedNote,
-    pub decoys: Vec<(RistrettoPoint, RistrettoPoint)>,
+    pub decoys: Vec<(RistrettoPoint, RistrettoPoint, u64)>,
     pub real_index: usize,
 }
 
@@ -108,22 +108,22 @@ impl TransactionBuilder {
                 stealth::derive_one_time_key(&ospec.address, idx as u64)
                     .map_err(|e| BuilderError::Stealth(e.to_string()))?;
 
-            let blinding = Scalar::random(&mut OsRng);
+            let blinding = derive_commitment_blinding(&shared_secret);
             let commitment = gens.commit(Scalar::from(ospec.value), blinding);
-
             let enc_amount = encrypt_amount(ospec.value, &shared_secret);
+            let view_tag = compute_view_tag(&shared_secret);
 
             tx_outputs.push(TxOutput {
                 commitment: Commitment::from_point(&commitment),
                 one_time_pubkey: one_time_pk.compress().to_bytes(),
                 ephemeral_pubkey: eph.0,
                 encrypted_amount: enc_amount,
+                view_tag,
             });
             out_blindings.push(blinding);
             out_values.push(ospec.value);
         }
 
-        // ∑ pseudo_blindings = ∑ out_blindings
         let sum_out_blind: Scalar = out_blindings.iter().sum();
         let mut pseudo_blindings = Vec::with_capacity(self.inputs.len());
         for _i in 0..self.inputs.len() - 1 {
@@ -134,31 +134,6 @@ impl TransactionBuilder {
 
         let mut tx_inputs = Vec::with_capacity(self.inputs.len());
         let mut clsag_sigs = Vec::with_capacity(self.inputs.len());
-
-        let _temp_inputs: Vec<TxInput> = self
-            .inputs
-            .iter()
-            .enumerate()
-            .map(|(i, ispec)| {
-                let pseudo_commit = gens.commit(
-                    Scalar::from(ispec.owned.value),
-                    pseudo_blindings[i],
-                );
-                TxInput {
-                    ring: ispec
-                        .owned
-                        .note
-                        .global_index
-                        .to_le_bytes()
-                        .iter()
-                        .map(|_| OutputRef { global_index: 0 })
-                        .take(1 + ispec.decoys.len())
-                        .collect(),
-                    key_image: [0u8; 32],
-                    pseudo_output: Commitment::from_point(&pseudo_commit),
-                }
-            })
-            .collect();
 
         let mut prefix_data = Vec::new();
         prefix_data.push(1u8);
@@ -191,12 +166,12 @@ impl TransactionBuilder {
                         global_index: ispec.owned.note.global_index,
                     });
                 } else {
-                    let (dk, dc) = decoy_iter
+                    let (dk, dc, di) = decoy_iter
                         .next()
                         .ok_or(BuilderError::RingSizeMismatch(i))?;
                     ring_keys.push(*dk);
                     ring_commits.push(*dc);
-                    ring_refs.push(OutputRef { global_index: 0 });
+                    ring_refs.push(OutputRef { global_index: *di });
                 }
             }
 
@@ -237,4 +212,55 @@ impl TransactionBuilder {
             },
         })
     }
+}
+
+/// Build a coinbase transaction (version 0) that creates a shielded output
+/// paying the block reward to the miner's stealth address.
+///
+/// The output uses the same stealth address protocol as normal transactions
+/// so the miner's wallet scanner can detect and spend it.
+pub fn build_coinbase_tx(
+    view_public: [u8; 32],
+    spend_public: [u8; 32],
+    amount: u64,
+    height: u64,
+) -> Result<Transaction, BuilderError> {
+    let addr = StealthAddress { view_public, spend_public };
+    let gens = PedersenGens::default();
+
+    let (eph, one_time_pk, shared_secret) =
+        stealth::derive_one_time_key(&addr, 0)
+            .map_err(|e| BuilderError::Stealth(e.to_string()))?;
+
+    let blinding = derive_commitment_blinding(&shared_secret);
+    let commitment = gens.commit(Scalar::from(amount), blinding);
+    let enc_amount = encrypt_amount(amount, &shared_secret);
+    let view_tag = compute_view_tag(&shared_secret);
+
+    let output = TxOutput {
+        commitment: Commitment::from_point(&commitment),
+        one_time_pubkey: one_time_pk.compress().to_bytes(),
+        ephemeral_pubkey: eph.0,
+        encrypted_amount: enc_amount,
+        view_tag,
+    };
+
+    let (range_proof, _) =
+        AggregatedRangeProof::prove(&[amount], &[blinding])
+            .map_err(|e| BuilderError::RangeProof(e.to_string()))?;
+
+    // Encode block height in extra field for uniqueness per block
+    let extra = height.to_le_bytes().to_vec();
+
+    Ok(Transaction {
+        version: 0,
+        inputs: Vec::new(),
+        outputs: vec![output],
+        fee: 0,
+        extra,
+        prunable: TxPrunable {
+            clsag_signatures: Vec::new(),
+            range_proof,
+        },
+    })
 }

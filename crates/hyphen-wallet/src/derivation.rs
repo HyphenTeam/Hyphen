@@ -33,6 +33,13 @@ pub struct DerivedKeys {
     pub spend_public: RistrettoPoint,
 }
 
+impl Drop for DerivedKeys {
+    fn drop(&mut self) {
+        self.view_secret.zeroize();
+        self.spend_secret.zeroize();
+    }
+}
+
 impl MasterKey {
     pub fn generate() -> Self {
         let mut seed = [0u8; 32];
