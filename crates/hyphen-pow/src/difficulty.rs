@@ -1,35 +1,15 @@
 use hyphen_core::config::ChainConfig;
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  MDAD-SPR: Momentum-Dampened Adaptive Difficulty with Sequential
-//            Probability Ratio
+// MDAD-SPR: Momentum-Dampened Adaptive Difficulty with Sequential Probability Ratio.
 //
-//  ▸ Structural innovation over all known difficulty adjustment algorithms
-//    (Bitcoin 2016-block, Monero LWMA, BCH ASERT, ETC CLDA, etc.)
+// Three orthogonal components (validated via ablation tests):
+//   1. SPRT Gate      — decides WHETHER to adjust (statistical significance)
+//   2. Momentum       — decides HOW MUCH to adjust (velocity-aware)
+//   3. Autocorrelation — detects periodic manipulation (pool-hopping)
 //
-//  ▸ Traditional algorithms answer: "What should the next difficulty be?"
-//    MDAD-SPR first answers: "Has the hashrate ACTUALLY changed?" using a
-//    Sequential Probability Ratio Test (SPRT), and only adjusts when the
-//    evidence is statistically conclusive.
-//
-//  ▸ Three orthogonal components (verified via ablation — see tests):
-//    1. SPRT Gate — decides WHETHER to adjust (statistical significance)
-//    2. Momentum Estimator — decides HOW MUCH to adjust (velocity-aware)
-//    3. Autocorrelation Dampener — detects periodic manipulation patterns
-//
-//  ▸ Mathematical foundation:
-//    Block solve times follow Exp(λ) where λ = difficulty / hashrate.
-//    Under H₀ (no change): λ = λ₀  (expected rate)
-//    Under H₁ (change):    λ = λ₁  (observed rate)
-//    SPRT statistic: Λₙ = Σᵢ log(f(xᵢ|H₁)/f(xᵢ|H₀))
-//                       = n·log(λ₁/λ₀) + (λ₀-λ₁)·Σᵢxᵢ
-//    Decision: if Λₙ > A → reject H₀ (hashrate changed, adjust)
-//              if Λₙ < B → accept H₀ (no change, hold steady)
-//              otherwise  → continue collecting evidence
-//
-//    Boundaries A, B derived from desired Type I/II error rates (α, β):
-//    A = ln((1-β)/α),  B = ln(β/(1-α))
-// ═══════════════════════════════════════════════════════════════════════════
+// Solve times ~ Exp(λ). SPRT statistic:
+//   Λₙ = n·ln(λ₁/λ₀) + (λ₀−λ₁)·Σxᵢ
+//   Boundaries: A = ln((1−β)/α), B = ln(β/(1−α))
 
 /// Primary difficulty adjustment entry point.
 ///
@@ -95,9 +75,7 @@ pub fn next_difficulty(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConf
     anti_51_dampening(timestamps, clamped, prev_diff, cfg)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Component 1: Sequential Probability Ratio Test (SPRT)
-// ═══════════════════════════════════════════════════════════════════════════
+// --- Component 1: Sequential Probability Ratio Test (SPRT) ---
 
 #[derive(Debug, Clone, PartialEq)]
 enum SprtDecision {
@@ -168,9 +146,7 @@ fn sprt_test(solve_times: &[f64], target_ms: f64) -> SprtDecision {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Component 2: Momentum Estimator
-// ═══════════════════════════════════════════════════════════════════════════
+// --- Component 2: Momentum Estimator ---
 
 /// Estimates the "velocity" of hashrate change using linear regression
 /// on the log-solve-time series.
@@ -222,9 +198,7 @@ fn estimate_momentum(solve_times: &[f64], target_ms: f64) -> f64 {
     normalised
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Component 3: Autocorrelation Dampener
-// ═══════════════════════════════════════════════════════════════════════════
+// --- Component 3: Autocorrelation Dampener ---
 
 /// Detects periodic patterns in solve times that indicate manipulation
 /// (e.g., hashrate oscillation from pool-hopping).
@@ -284,9 +258,7 @@ fn autocorrelation_dampen(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Supporting functions
-// ═══════════════════════════════════════════════════════════════════════════
+// --- Supporting functions ---
 
 /// Computes clamped solve times from block timestamps.
 fn compute_solve_times(timestamps: &[u64], cfg: &ChainConfig) -> Vec<f64> {
@@ -352,9 +324,7 @@ fn anti_51_dampening(timestamps: &[u64], proposed: u64, prev_diff: u64, cfg: &Ch
     proposed
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  LWMA-only entry point (for ablation comparisons and backward compat)
-// ═══════════════════════════════════════════════════════════════════════════
+// --- LWMA-only entry point (for ablation comparisons and backward compat) ---
 
 /// Pure LWMA difficulty adjustment (no SPRT, no momentum, no dampening).
 /// Retained for backward compatibility and ablation experiments.
@@ -408,28 +378,11 @@ fn div_wide(high: u128, low: u128, divisor: u128) -> (u128, u128) {
     (quot, rem)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Ablation Experiment Framework
+// --- Ablation Experiment Framework ---
 //
-//  Validates that EACH component of MDAD-SPR contributes measurably:
-//    A1: Full MDAD-SPR
-//    A2: Without SPRT gate (always adjust)
-//    A3: Without momentum (SPRT + dampener but fixed ratio)
-//    A4: Without autocorrelation dampener
-//    A5: Pure LWMA baseline
-//
-//  Each variant is tested against four hashrate profiles:
-//    P1: Stable — constant hashrate for 200 blocks
-//    P2: Step   — 2× hashrate jump at block 100
-//    P3: Oscillating — hashrate alternates 1×/3× every 20 blocks
-//    P4: Ramp   — linear hashrate increase over 200 blocks
-//
-//  Metrics:
-//    M1: Difficulty variance (lower = more stable under P1)
-//    M2: Convergence blocks (fewer = faster reaction under P2)
-//    M3: Oscillation amplitude (lower = better dampening under P3)
-//    M4: Tracking error (lower = better following under P4)
-// ═══════════════════════════════════════════════════════════════════════════
+// Variants: Full | NoSprt | NoMomentum | NoDampener | PureLwma
+// Profiles: Stable | Step | Oscillating | Ramp
+// Metrics: variance, convergence blocks, oscillation amplitude, tracking error
 
 /// Ablation variant identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

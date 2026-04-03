@@ -41,6 +41,8 @@ pub struct ChainInfoResponse {
     pub total_outputs: u64,
     #[prost(string, tag = "6")]
     pub network: String,
+    #[prost(bytes = "vec", tag = "7")]
+    pub epoch_seed: Vec<u8>,
 }
 
 #[derive(Clone, prost::Message)]
@@ -117,6 +119,19 @@ pub const METHOD_SUBMIT_TX: u32 = 4;
 pub const METHOD_GET_MEMPOOL: u32 = 5;
 pub const METHOD_GET_TX_LOCATION: u32 = 6;
 pub const METHOD_GET_RANDOM_OUTPUTS: u32 = 7;
+pub const METHOD_GET_OUTPUT_INFO: u32 = 8;
+
+#[derive(Clone, prost::Message)]
+pub struct GetOutputInfoRequest {
+    #[prost(uint64, repeated, tag = "1")]
+    pub global_indices: Vec<u64>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct GetOutputInfoResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub outputs: Vec<OutputInfo>,
+}
 
 #[derive(Clone, prost::Message)]
 pub struct GetRandomOutputsRequest {
@@ -134,6 +149,8 @@ pub struct OutputInfo {
     pub commitment: Vec<u8>,
     #[prost(uint64, tag = "3")]
     pub global_index: u64,
+    #[prost(uint64, tag = "4")]
+    pub block_height: u64,
 }
 
 #[derive(Clone, prost::Message)]

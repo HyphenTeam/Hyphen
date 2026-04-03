@@ -14,6 +14,24 @@ pub struct TxInput {
     pub ring: Vec<OutputRef>,
     pub key_image: [u8; 32],
     pub pseudo_output: Commitment,
+    // ── TERA: Temporal Entangled Ring Authorization ────────────────────────
+    /// Deterministic binding to the current epoch:  
+    ///   epoch_context = blake3("TERA_v1" ‖ epoch_seed)
+    /// Validators reject inputs whose epoch_context does not match any
+    /// epoch within ±tera_epoch_tolerance of the tip.
+    pub epoch_context: [u8; 32],
+    /// Per-spend temporal nonce derived from the signing secret AND epoch:
+    ///   temporal_nonce = Hs("TERA_nonce" ‖ spend_sk ‖ epoch_context)
+    /// Within a single epoch the nullifier set rejects duplicate nonces
+    /// for the same key_image, providing epoch-scoped double-spend
+    /// detection *without* cross-epoch linkability.
+    pub temporal_nonce: [u8; 32],
+    /// Causal binding that ties the authorization to the specific output
+    /// being spent AND the epoch:
+    ///   causal_binding = blake3("TERA_causal" ‖ spend_sk ‖ note_hash ‖ epoch_context)
+    /// Included in the CLSAG message hash so the ring signature
+    /// transitively proves it was produced by the true owner.
+    pub causal_binding: [u8; 32],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,33 +119,32 @@ impl Transaction {
         hyphen_crypto::blake3_hash(&data)
     }
 
-    // ∑ pseudo_outputs == ∑ output_commitments + fee · G
+    // ∑ pseudo_outputs == ∑ output_commitments + fee · H
     pub fn check_balance(&self) -> bool {
-        use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
         use curve25519_dalek::scalar::Scalar;
+        use hyphen_crypto::pedersen::G_VALUE;
 
-        let fee_point = Scalar::from(self.fee) * G;
+        let fee_point = Scalar::from(self.fee) * *G_VALUE;
 
-        let sum_pseudo: curve25519_dalek::ristretto::RistrettoPoint = self
+        let sum_pseudo: Option<curve25519_dalek::ristretto::RistrettoPoint> = self
             .inputs
             .iter()
-            .map(|inp| {
-                inp.pseudo_output
-                    .to_point()
-                    .expect("invalid pseudo-output commitment")
-            })
-            .sum();
+            .try_fold(
+                curve25519_dalek::ristretto::RistrettoPoint::default(),
+                |acc, inp| inp.pseudo_output.to_point().ok().map(|p| acc + p),
+            );
 
-        let sum_out: curve25519_dalek::ristretto::RistrettoPoint = self
+        let sum_out: Option<curve25519_dalek::ristretto::RistrettoPoint> = self
             .outputs
             .iter()
-            .map(|out| {
-                out.commitment
-                    .to_point()
-                    .expect("invalid output commitment")
-            })
-            .sum();
+            .try_fold(
+                curve25519_dalek::ristretto::RistrettoPoint::default(),
+                |acc, out| out.commitment.to_point().ok().map(|p| acc + p),
+            );
 
-        sum_pseudo == sum_out + fee_point
+        match (sum_pseudo, sum_out) {
+            (Some(sp), Some(so)) => sp == so + fee_point,
+            _ => false,
+        }
     }
 }

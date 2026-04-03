@@ -1,21 +1,115 @@
 #![allow(clippy::needless_range_loop)]
 
+// EMK: Epoch-Mutating Kernels — kernel constants (rotation amounts,
+// S-Box permutations, mixing coefficients, stride salts) are derived from
+// the epoch seed each epoch, making fixed-function hardware sub-optimal.
+
+/// Epoch-derived parameters that mutate kernel behaviour.
+///
+/// Generated deterministically from the epoch seed so that all nodes
+/// agree on the same constants for the same epoch.
+#[derive(Clone)]
+pub struct EpochKernelParams {
+    /// 256-byte S-Box, Fisher-Yates shuffled from the AES S-Box using
+    /// epoch-derived randomness.
+    pub sbox: [u8; 256],
+    /// 12 per-kernel rotation offsets (one per kernel).  Each is in [0, 63].
+    pub rot_offsets: [u32; 12],
+    /// 12 per-kernel mixing multiplicands.
+    pub mix_constants: [u64; 12],
+    /// 8 slot-permutation indices for cross-lane mixing.
+    pub slot_perm: [usize; 8],
+    /// Stride mutator for page-offset stepping in each kernel.
+    pub stride_salt: [u64; 12],
+}
+
+impl EpochKernelParams {
+    /// Derive all mutable kernel parameters from a 32-byte epoch seed.
+    pub fn derive(epoch_seed: &[u8; 32]) -> Self {
+        // Use BLAKE3 in keyed mode to produce a long deterministic stream
+        let key: [u8; 32] = *epoch_seed;
+        let mut h = blake3::Hasher::new_keyed(&key);
+        h.update(b"EMK_epoch_kernel_params_v1");
+        let mut xof = h.finalize_xof();
+
+        // ── S-Box: Fisher-Yates shuffle of the base AES S-Box ──
+        let mut sbox = BASE_SBOX;
+        let mut rand_buf = [0u8; 512]; // enough for 256 swaps
+        xof.fill(&mut rand_buf);
+        for i in (1..256).rev() {
+            let j = (u16::from_le_bytes([rand_buf[i * 2], rand_buf[i * 2 + 1]]) as usize)
+                % (i + 1);
+            sbox.swap(i, j);
+        }
+
+        // ── rotation offsets ──
+        let mut rot_buf = [0u8; 12];
+        xof.fill(&mut rot_buf);
+        let mut rot_offsets = [0u32; 12];
+        for i in 0..12 {
+            rot_offsets[i] = (rot_buf[i] & 63) as u32;
+        }
+
+        // ── mixing multiplicands (odd, to preserve invertibility) ──
+        let mut mix_buf = [0u8; 96];
+        xof.fill(&mut mix_buf);
+        let mut mix_constants = [0u64; 12];
+        for i in 0..12 {
+            mix_constants[i] =
+                u64::from_le_bytes(mix_buf[i * 8..(i + 1) * 8].try_into().unwrap()) | 1;
+        }
+
+        // ── slot permutation (Knuth shuffle of [0..8]) ──
+        let mut slot_perm = [0usize, 1, 2, 3, 4, 5, 6, 7];
+        let mut perm_buf = [0u8; 8];
+        xof.fill(&mut perm_buf);
+        for i in (1..8).rev() {
+            let j = (perm_buf[i] as usize) % (i + 1);
+            slot_perm.swap(i, j);
+        }
+
+        // ── per-kernel stride salts ──
+        let mut stride_buf = [0u8; 96];
+        xof.fill(&mut stride_buf);
+        let mut stride_salt = [0u64; 12];
+        for i in 0..12 {
+            // Stride between 31 and 251 (prime-ish range) for good page coverage
+            let raw =
+                u64::from_le_bytes(stride_buf[i * 8..(i + 1) * 8].try_into().unwrap());
+            stride_salt[i] = 31 + (raw % 221);
+        }
+
+        Self {
+            sbox,
+            rot_offsets,
+            mix_constants,
+            slot_perm,
+            stride_salt,
+        }
+    }
+}
+
 #[inline]
-pub fn execute_kernel(kernel_id: u8, page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+pub fn execute_kernel(
+    kernel_id: u8,
+    page: &[u8],
+    state: &[u8; 64],
+    epoch: &EpochKernelParams,
+) -> [u8; 64] {
     match kernel_id {
-        0 => kernel_div_chain(page, state),
-        1 => kernel_bit_weave(page, state),
-        2 => kernel_sparse_step(page, state),
-        3 => kernel_prefix_scan(page, state),
-        4 => kernel_micro_sort(page, state),
-        5 => kernel_var_decode(page, state),
-        6 => kernel_hash_mix(page, state),
-        7 => kernel_branch_maze(page, state),
-        8 => kernel_aes_cascade(page, state),
-        9 => kernel_float_emulate(page, state),
-        10 => kernel_scatter_gather(page, state),
-        11 => kernel_mod_exp_chain(page, state),
-        _ => kernel_div_chain(page, state), // fallback
+        0 => kernel_div_chain(page, state, epoch),
+        1 => kernel_bit_weave(page, state, epoch),
+        2 => kernel_sparse_step(page, state, epoch),
+        3 => kernel_prefix_scan(page, state, epoch),
+        4 => kernel_micro_sort(page, state, epoch),
+        5 => kernel_var_decode(page, state, epoch),
+        6 => kernel_hash_mix(page, state, epoch),
+        7 => kernel_branch_maze(page, state, epoch),
+        8 => kernel_aes_cascade(page, state, epoch),
+        9 => kernel_float_emulate(page, state, epoch),
+        10 => kernel_scatter_gather(page, state, epoch),
+        11 => kernel_mod_exp_chain(page, state, epoch),
+        _ => kernel_div_chain(page, state, epoch), // fallback
     }
 }
 
@@ -38,65 +132,75 @@ fn to_output(vals: &[u64; 8]) -> [u8; 64] {
     out
 }
 
-fn kernel_div_chain(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_div_chain(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let stride = ep.stride_salt[0] as usize;
+    let rot = ep.rot_offsets[0];
 
-    // 64 iterations: each uses page data as divisor, previous acc as dividend
     for step in 0..64u64 {
-        let page_val = read_u64_le(page, (step as usize * 61) % page.len());
+        let page_val = read_u64_le(page, (step as usize).wrapping_mul(stride) % page.len());
         let divisor = page_val.wrapping_add(3) | 3;
         let slot = step as usize % 8;
         let dividend = acc[slot].wrapping_add(acc[(slot + 1) % 8]).wrapping_add(step);
         acc[slot] = dividend / divisor;
-        acc[(slot + 3) % 8] = acc[(slot + 3) % 8].wrapping_add(dividend % divisor);
+        acc[(slot + 3) % 8] = acc[(slot + 3) % 8]
+            .wrapping_add(dividend % divisor)
+            .rotate_left(rot);
     }
     to_output(&acc)
 }
 
-fn kernel_bit_weave(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_bit_weave(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let stride = ep.stride_salt[1] as usize;
+    let mix_c = ep.mix_constants[1];
+    let rot_off = ep.rot_offsets[1];
     for step in 0..64u64 {
-        let data = read_u64_le(page, (step as usize * 43 + 17) % page.len());
-        let rot_amount = (data & 63) as u32;
+        let data = read_u64_le(page, (step as usize).wrapping_mul(stride).wrapping_add(17) % page.len());
+        let rot_amount = ((data & 63) as u32).wrapping_add(rot_off) & 63;
         let slot = step as usize % 8;
         acc[slot] = acc[slot].rotate_left(rot_amount) ^ data;
         acc[(slot + 5) % 8] = acc[(slot + 5) % 8].rotate_right((acc[slot] & 63) as u32);
-        acc[(slot + 2) % 8] ^= acc[slot].wrapping_mul(0x9E3779B97F4A7C15);
+        acc[(slot + 2) % 8] ^= acc[slot].wrapping_mul(mix_c);
     }
     to_output(&acc)
 }
 
-fn kernel_sparse_step(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_sparse_step(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let stride = ep.stride_salt[2] as usize;
+    let mix_c = ep.mix_constants[2];
 
-    // Simulate sparse matrix-vector multiply:
-    // use page offsets as indirect indices into a virtual 512-element vector
     for step in 0..48u64 {
-        let idx_raw = read_u64_le(page, (step as usize * 83) % page.len());
+        let idx_raw = read_u64_le(page, (step as usize).wrapping_mul(stride) % page.len());
         let idx = (idx_raw as usize) % (page.len() / 8);
         let val = read_u64_le(page, idx * 8 % page.len());
         let slot = step as usize % 8;
         acc[slot] = acc[slot]
             .wrapping_add(val.wrapping_mul(acc[(slot + 1) % 8] | 1));
-        acc[(slot + 4) % 8] ^= val.rotate_left((acc[slot] & 31) as u32);
+        acc[(slot + 4) % 8] ^= val.rotate_left((acc[slot] & 31) as u32)
+            .wrapping_mul(mix_c);
     }
     to_output(&acc)
 }
 
-fn kernel_prefix_scan(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_prefix_scan(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
+    let stride = ep.stride_salt[3] as usize;
+    let mix = ep.mix_constants[3];
     let mut arr = [0u64; 64];
     for i in 0..64 {
-        arr[i] = read_u64_le(page, i * 61 % page.len())
-            .wrapping_add(state_u64(state, i % 8));
+        arr[i] = read_u64_le(page, i.wrapping_mul(stride) % page.len())
+            .wrapping_add(state_u64(state, i % 8))
+            ^ mix.wrapping_mul(i as u64);
     }
     // Blelloch-style up-sweep
     let mut d = 1;
@@ -137,13 +241,14 @@ fn kernel_prefix_scan(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
     to_output(&acc)
 }
 
-fn kernel_micro_sort(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_micro_sort(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
+    let stride = ep.stride_salt[4] as usize;
+    let mix_c = ep.mix_constants[4];
     let mut arr = [0u64; 32];
     for i in 0..32 {
-        arr[i] = read_u64_le(page, i * 127 % page.len())
+        arr[i] = read_u64_le(page, i.wrapping_mul(stride) % page.len())
             ^ state_u64(state, i % 8);
     }
-    // Insertion sort – strongly branch-dependent, CPU-friendly
     for i in 1..32 {
         let key = arr[i];
         let mut j = i;
@@ -155,20 +260,20 @@ fn kernel_micro_sort(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
     }
     let mut acc = [0u64; 8];
     for i in 0..32 {
-        acc[i % 8] = acc[i % 8].wrapping_add(arr[i].wrapping_mul(i as u64 + 1));
+        acc[i % 8] = acc[i % 8].wrapping_add(arr[i].wrapping_mul((i as u64 + 1).wrapping_mul(mix_c)));
     }
     to_output(&acc)
 }
 
-fn kernel_var_decode(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
-    // LEB128-style variable-length decoding
+fn kernel_var_decode(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let rot_off = ep.rot_offsets[5];
+    let mix_c = ep.mix_constants[5];
     let mut cursor = (state_u64(state, 0) as usize) % page.len();
     for step in 0..48u64 {
-        // decode one LEB128 value
         let mut result: u64 = 0;
         let mut shift: u32 = 0;
         for _ in 0..10 {
@@ -181,13 +286,13 @@ fn kernel_var_decode(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
             }
         }
         let slot = step as usize % 8;
-        acc[slot] = acc[slot].wrapping_add(result);
-        acc[(slot + 3) % 8] ^= result.rotate_left((step as u32) & 63);
+        acc[slot] = acc[slot].wrapping_add(result.wrapping_mul(mix_c));
+        acc[(slot + 3) % 8] ^= result.rotate_left(((step as u32) & 63).wrapping_add(rot_off) & 63);
     }
     to_output(&acc)
 }
 
-static SBOX: [u8; 256] = [
+static BASE_SBOX: [u8; 256] = [
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
     0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
@@ -206,15 +311,16 @@ static SBOX: [u8; 256] = [
     0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16,
 ];
 
-fn kernel_hash_mix(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_hash_mix(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut block = [0u8; 64];
     block.copy_from_slice(state);
+    let stride = ep.stride_salt[6] as usize;
 
     for round in 0..16u32 {
-        let page_off = (round as usize * 251) % (page.len().saturating_sub(16).max(1));
-        // SubBytes
+        let page_off = (round as usize).wrapping_mul(stride) % (page.len().saturating_sub(16).max(1));
+        // SubBytes through epoch-mutated S-Box
         for b in block.iter_mut() {
-            *b = SBOX[*b as usize];
+            *b = ep.sbox[*b as usize];
         }
         // XOR with page data
         for i in 0..16 {
@@ -233,29 +339,32 @@ fn kernel_hash_mix(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
     block
 }
 
-fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_branch_maze(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let mix_c = ep.mix_constants[7];
+    let rot_off = ep.rot_offsets[7];
+    let stride = ep.stride_salt[7] as usize;
 
     let mut cursor = (acc[0] as usize) % page.len();
     for step in 0..64u64 {
         let val = read_u64_le(page, cursor);
         let slot = step as usize % 8;
+        let cross = ep.slot_perm[slot];
 
-        // Multi-way branch
         match val & 0x07 {
             0 => {
                 acc[slot] = acc[slot].wrapping_add(val);
-                cursor = (cursor.wrapping_add((val as usize).wrapping_mul(7))) % page.len();
+                cursor = (cursor.wrapping_add((val as usize).wrapping_mul(stride))) % page.len();
             }
             1 => {
-                acc[slot] = acc[slot].wrapping_sub(val.rotate_left(13));
+                acc[slot] = acc[slot].wrapping_sub(val.rotate_left(rot_off & 63));
                 cursor = (cursor.wrapping_add(acc[slot] as usize)) % page.len();
             }
             2 => {
-                acc[slot] ^= val.wrapping_mul(0xBF58476D1CE4E5B9);
+                acc[slot] ^= val.wrapping_mul(mix_c);
                 cursor = (cursor.wrapping_add(17 + step as usize)) % page.len();
             }
             3 => {
@@ -264,13 +373,13 @@ fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
                 cursor = (cursor.wrapping_add(div as usize)) % page.len();
             }
             4 => {
-                acc[slot] = acc[slot].rotate_left((val & 63) as u32);
-                acc[(slot + 1) % 8] ^= val;
-                cursor = (cursor.wrapping_add(acc[(slot + 1) % 8] as usize)) % page.len();
+                acc[slot] = acc[slot].rotate_left(((val & 63) as u32).wrapping_add(rot_off) & 63);
+                acc[cross] ^= val;
+                cursor = (cursor.wrapping_add(acc[cross] as usize)) % page.len();
             }
             5 => {
                 acc[slot] = acc[slot].wrapping_add((val.count_ones() as u64).wrapping_mul(step));
-                cursor = (cursor.wrapping_add(3 + val as usize)) % page.len();
+                cursor = (cursor.wrapping_add(stride + val as usize)) % page.len();
             }
             6 => {
                 acc[slot] = (acc[slot] ^ val).reverse_bits();
@@ -279,11 +388,13 @@ fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
             _ => {
                 acc[slot] = acc[slot]
                     .wrapping_add(val)
-                    .wrapping_mul(0x94D049BB133111EB);
+                    .wrapping_mul(mix_c);
                 let jump = (val >> 8) as usize;
                 cursor = (cursor.wrapping_add(jump)) % page.len();
             }
         }
+        // Epoch-dependent post-step diffusion
+        acc[slot] ^= mix_c.wrapping_mul(step.wrapping_add(1));
     }
     to_output(&acc)
 }
@@ -292,16 +403,17 @@ fn kernel_branch_maze(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
 // Uses the full AES S-Box in a feedback loop where every output byte feeds
 // the next round as index.  GPUs lack native AES-NI; CPUs with AES-NI can
 // accelerate SubBytes but the serial dependency chain prevents parallelism.
-fn kernel_aes_cascade(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_aes_cascade(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut buf = [0u8; 64];
     buf.copy_from_slice(state);
+    let stride = ep.stride_salt[8] as usize;
 
     for round in 0..24u32 {
-        let page_off = (round as usize).wrapping_mul(197) % page.len().saturating_sub(64).max(1);
+        let page_off = (round as usize).wrapping_mul(stride) % page.len().saturating_sub(64).max(1);
 
-        // SubBytes through AES S-Box (serial dependency chain)
+        // SubBytes through epoch-mutated S-Box (serial dependency chain)
         for i in 0..64 {
-            buf[i] = SBOX[buf[i] as usize];
+            buf[i] = ep.sbox[buf[i] as usize];
         }
 
         // ShiftRows-inspired rotation: each 16-byte lane rotated by lane index
@@ -341,14 +453,16 @@ fn kernel_aes_cascade(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
 // Emulates an IEEE-754-like pipeline using integer arithmetic.
 // ASICs optimise for either integer or float, rarely both well.
 // We encode f64 ops as u64 bit patterns to create execution diversity.
-fn kernel_float_emulate(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_float_emulate(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let stride = ep.stride_salt[9] as usize;
+    let mix_c = ep.mix_constants[9];
 
     for step in 0..64u64 {
-        let data = read_u64_le(page, (step as usize).wrapping_mul(73) % page.len());
+        let data = read_u64_le(page, (step as usize).wrapping_mul(stride) % page.len());
         let slot = step as usize % 8;
 
         // Convert to f64, perform transcendental-like computation, convert back
@@ -372,7 +486,7 @@ fn kernel_float_emulate(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
 
         acc[slot] = mid ^ refined;
         acc[(slot + 3) % 8] = acc[(slot + 3) % 8].wrapping_add(
-            mid.wrapping_mul(0x517CC1B727220A95).rotate_left((step as u32) & 63),
+            mid.wrapping_mul(mix_c).rotate_left((step as u32) & 63),
         );
         acc[(slot + 6) % 8] ^= refined.wrapping_sub(acc[slot]);
     }
@@ -383,10 +497,8 @@ fn kernel_float_emulate(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
 // Reads from data-dependent page offsets, then writes results back to a
 // local scratchpad before re-reading.  This creates a long dependency chain
 // that rewards large CPU caches and deep out-of-order pipelines.
-fn kernel_scatter_gather(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
-    // Local scratchpad: 2 KiB, fits in L1 cache on CPUs
+fn kernel_scatter_gather(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut scratch = [0u8; 2048];
-    // Seed scratchpad from state
     for i in 0..2048 {
         scratch[i] = state[i % 64] ^ (i as u8).wrapping_mul(0x9D);
     }
@@ -395,32 +507,31 @@ fn kernel_scatter_gather(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let mix_c = ep.mix_constants[10];
+    let rot_off = ep.rot_offsets[10];
 
     for step in 0..80u64 {
         let slot = step as usize % 8;
+        let cross = ep.slot_perm[slot];
 
-        // Gather: read from page at data-dependent offset
         let page_idx = (acc[slot] as usize) % page.len().saturating_sub(7).max(1);
         let page_val = read_u64_le(page, page_idx);
 
-        // Read from scratchpad at another data-dependent offset
         let scratch_idx = (page_val as usize) % (2048 - 7);
         let scratch_val = u64::from_le_bytes(
             scratch[scratch_idx..scratch_idx + 8].try_into().unwrap(),
         );
 
-        // Compute
         let mixed = page_val
             .wrapping_mul(scratch_val | 1)
-            .rotate_left((acc[(slot + 1) % 8] & 63) as u32);
+            .rotate_left(((acc[(slot + 1) % 8] & 63) as u32).wrapping_add(rot_off) & 63);
         acc[slot] = acc[slot].wrapping_add(mixed);
 
-        // Scatter: write back to scratchpad (creates dependency for future reads)
         let wb_idx = (acc[slot] as usize) % (2048 - 7);
         scratch[wb_idx..wb_idx + 8].copy_from_slice(&acc[slot].to_le_bytes());
 
-        // Cross-lane mixing
-        acc[(slot + 4) % 8] ^= acc[slot].wrapping_mul(0x2545F4914F6CDD1D);
+        // Cross-lane mixing via epoch-permuted slot
+        acc[cross] ^= acc[slot].wrapping_mul(mix_c);
     }
     to_output(&acc)
 }
@@ -429,15 +540,17 @@ fn kernel_scatter_gather(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
 // Performs repeated modular multiplications over a 128-bit modulus.
 // Division / modulo operations are expensive for ASICs but cheap on CPUs
 // with hardware dividers.  The chain is fully serial.
-fn kernel_mod_exp_chain(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
+fn kernel_mod_exp_chain(page: &[u8], state: &[u8; 64], ep: &EpochKernelParams) -> [u8; 64] {
     let mut acc = [0u64; 8];
     for i in 0..8 {
         acc[i] = state_u64(state, i);
     }
+    let stride = ep.stride_salt[11] as usize;
+    let mix_c = ep.mix_constants[11];
 
     for step in 0..56u64 {
         let slot = step as usize % 8;
-        let data = read_u64_le(page, (step as usize).wrapping_mul(89) % page.len());
+        let data = read_u64_le(page, (step as usize).wrapping_mul(stride) % page.len());
 
         // Build a 64-bit modulus from page+state data (always odd, never zero)
         let modulus = data.wrapping_add(acc[(slot + 2) % 8]) | 0x8000_0000_0000_0001;
@@ -463,7 +576,7 @@ fn kernel_mod_exp_chain(page: &[u8], state: &[u8; 64]) -> [u8; 64] {
         // Feedback: combine remainder into another lane
         let remainder = acc[slot] % (data | 1);
         acc[(slot + 5) % 8] = acc[(slot + 5) % 8]
-            .wrapping_add(remainder)
+            .wrapping_add(remainder.wrapping_mul(mix_c))
             .rotate_left((step as u32) & 63);
     }
     to_output(&acc)
@@ -475,11 +588,26 @@ mod tests {
 
     #[test]
     fn all_kernels_produce_output() {
+        let seed = [0xAA_u8; 32];
+        let ep = EpochKernelParams::derive(&seed);
         let page = vec![0xABu8; 4096];
         let state = [0x42u8; 64];
         for k in 0..12 {
-            let out = execute_kernel(k, &page, &state);
+            let out = execute_kernel(k, &page, &state, &ep);
             assert!(out.iter().any(|&b| b != 0), "kernel {k} produced zero output");
+        }
+    }
+
+    #[test]
+    fn different_epochs_different_results() {
+        let page = vec![0xABu8; 4096];
+        let state = [0x42u8; 64];
+        let ep1 = EpochKernelParams::derive(&[1u8; 32]);
+        let ep2 = EpochKernelParams::derive(&[2u8; 32]);
+        for k in 0..12 {
+            let out1 = execute_kernel(k, &page, &state, &ep1);
+            let out2 = execute_kernel(k, &page, &state, &ep2);
+            assert_ne!(out1, out2, "kernel {k} should differ across epochs");
         }
     }
 }

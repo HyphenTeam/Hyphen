@@ -2,7 +2,7 @@
 
 A privacy-focused, CPU-first Proof-of-Work blockchain built in Rust.
 
-Hyphen combines a memory-hard multi-kernel PoW, full privacy primitives (CLSAG ring signatures, Bulletproofs range proofs, stealth addresses), post-quantum hybrid signatures, NTP-synchronized millisecond timestamps, GHOST-style uncle blocks, MDAD-SPR multi-phase difficulty adjustment, and anti-51% difficulty dampening into a single production-grade blockchain.
+Hyphen combines a memory-hard multi-kernel PoW with epoch-mutated constants (EMK), full privacy primitives (CLSAG ring signatures, Bulletproofs range proofs, stealth addresses, multi-dimensional VRE), post-quantum hybrid signatures, NTP-synchronized millisecond timestamps, GHOST-style uncle blocks, MDAD-SPR multi-phase difficulty adjustment with anti-51% dampening, Temporal Epoch-Referenced Anchoring (TERA) for replay resistance, Mining Stability Equalizer (MSE) for revenue smoothing, Gradual Trust Mining (GTM) for Sybil-resistant pool onboarding, and consensus-enforced coinbase validation into a single production-grade blockchain.
 
 ## Architecture
 
@@ -19,12 +19,12 @@ Hyphen is organized as a Cargo workspace for the core chain stack plus 2 standal
 | `hyphen-economics` | Lorentzian Continuous Decay (LCD) emission with tail emission, fee calculation with partial burn |
 | `hyphen-state` | sled-backed persistent storage — block store, chain state, nullifier set, commitment tree |
 | `hyphen-consensus` | Block/transaction/uncle validation, chain management, genesis block |
-| `hyphen-mempool` | Fee-priority transaction pool with key-image conflict detection |
+| `hyphen-mempool` | Fee-density-priority transaction pool with BTC-style fee market — transactions ordered by fee-per-byte (negative fee density for max-heap extraction), key-image conflict detection preventing double-spend, and bounded pool size with automatic eviction of lowest-fee transactions |
 | `hyphen-wallet` | Wallet with ICD key derivation, subaddresses, stealth address scanning |
 | `hyphen-network` | libp2p P2P stack — Gossipsub broadcast, Kademlia discovery, Request-Response sync |
 | `hyphen-transport` | Template Provider protocol — signed envelope framing, protobuf message types, and `TemplateProvider` trait for node-pool communication |
 | `hyphen-vm` | Smart contract VM with gas metering |
-| `hyphen-rpc` | Length-prefixed protobuf RPC — chain info, block queries, transaction submission, output index lookups (GET_RANDOM_OUTPUTS for decoy selection) |
+| `hyphen-rpc` | Length-prefixed protobuf RPC — chain info, block queries, transaction submission, output index lookups (GET_RANDOM_OUTPUTS for decoy selection, GET_OUTPUT_INFO for pre-flight output verification) |
 | `hyphen-node` | Full-node binary with Template Provider server and integrated block explorer; it is the default runtime host for the explorer |
 | `hyphen-explorer` | Explorer library crate that provides the HTTP UI/API router consumed by `hyphen-node` |
 | `hyphen-pool` | Standalone mining pool server with its own Cargo manifest, crates.io dependency graph, and local compatibility implementation for Hyphen's pool-side protocol, crypto envelope signing, and PoW verification |
@@ -64,11 +64,11 @@ HyphenPoW is a novel CPU-first PoW combining a 2 GiB epoch arena, an 8 MiB scrat
 | K10 | ScatterGather | 2 KiB L1 scratchpad with data-dependent read/write patterns |
 | K11 | ModExpChain | 128-bit modular exponentiation (u128 mul+mod) with serial dependency |
 
-**ASIC Resistance Theorem.** Let $\mathcal{K} = \{K_0, \ldots, K_{11}\}$ be the kernel set. For a given nonce, the sequence of kernel invocations $\sigma = (\sigma_1, \ldots, \sigma_{1024})$ where $\sigma_i \in \mathcal{K}$ depends on runtime state. An ASIC optimized for any strict subset $\mathcal{K}' \subset \mathcal{K}$ incurs a slowdown factor of at least:
+**ASIC Resistance Theorem.** Let $\mathcal{K} = \{K_0, \ldots, K_{11}\}$ be the kernel set. For a given nonce, the sequence of kernel invocations $\sigma = (\sigma_1, \ldots, \sigma_{1024})$ where $\sigma_i \in \mathcal{K}$ depends on runtime state. An ASIC optimized for a strict subset $\mathcal{K}' \subset \mathcal{K}$ must emulate the remaining kernels at higher cost. Let $p = |\mathcal{K}'|/|\mathcal{K}|$ be the fraction of kernels with native hardware and $\alpha = T_{\text{emulate}} / T_{\text{native}}$ the cost ratio for emulated kernels. The expected per-hash slowdown is:
 
-$$S \geq \frac{|\mathcal{K}|}{|\mathcal{K}'|} \cdot \frac{T_{\text{emulate}}}{T_{\text{native}}}$$
+$$S = p + (1 - p) \cdot \alpha$$
 
-where $T_{\text{emulate}} / T_{\text{native}}$ is the ratio of emulated-to-native execution cost for the missing kernels. Since the kernels span integer division, AES pipelines, branch prediction, floating-point, and cache hierarchy, no single hardware architecture can accelerate all simultaneously.
+For $p = 1/6$ (2 of 12 kernels in hardware) and $\alpha = 5$: $S = 1/6 + 5/6 \cdot 5 = 26/6 \approx 4.33\times$. For $p = 1/2$ and $\alpha = 3$: $S = 1/2 + 1/2 \cdot 3 = 2.0\times$. Since the kernels span integer division, AES pipelines, branch prediction, floating-point, and cache hierarchy, no single ASIC architecture can bring $p$ close to 1 without replicating a general-purpose CPU.
 
 **Comparison with existing PoW:**
 
@@ -77,6 +77,23 @@ where $T_{\text{emulate}} / T_{\text{native}}$ is the ratio of emulated-to-nativ
 | Memory | 2 MiB | 256 MiB | 4+ GiB DAG | 2 GiB arena + 8 MiB scratchpad |
 | Instruction diversity | Fixed AES+MUL | Random program/block | Light hash chain | 12 kernels, selected per round |
 | Data-dependent branching | No | Limited | No | Yes (BranchMaze, ScatterGather) |
+| Epoch-mutated constants | No | Yes (random program) | No | Yes (EMK: S-Box, rotations, multiplicands, permutation, strides) |
+
+### 1a. Epoch Mutation Kernels (EMK)
+
+HyphenPoW kernel constants are not static — they are **re-derived every epoch** from the epoch seed via Blake3 XOF. This renders pre-computed lookup tables and fixed-function ASIC pipelines obsolete at each epoch boundary.
+
+**Derivation.** `EpochKernelParams::derive(epoch_seed)` uses Blake3 in keyed mode with domain `"EMK_epoch_kernel_params_v1"` to generate a deterministic XOF stream that produces:
+
+| Component | Size | Algorithm |
+| --- | --- | --- |
+| `sbox` | `[u8; 256]` | Fisher-Yates shuffle of the AES S-Box using u16 values from the XOF |
+| `rot_offsets` | `[u32; 12]` | Per-kernel rotation offset masked to `[0, 63]` |
+| `mix_constants` | `[u64; 12]` | Per-kernel odd multiplicand (`raw \| 1` preserves invertibility) |
+| `slot_perm` | `[usize; 8]` | Knuth shuffle of `[0..8]` for cross-lane mixing |
+| `stride_salt` | `[u64; 12]` | Per-kernel stride mutator in `[31, 251]` via `31 + (raw % 221)` |
+
+**ASIC amplification.** An ASIC that hard-wires a single epoch's S-Box or multiplicand table faces $S_{\text{total}} = S_{\text{kernel}} \cdot E$ where $E \geq 2$ reflects the cost of reconfiguring hard-wired constants at epoch boundaries.
 
 ### 2. Iterative Commitment Derivation (ICD) — Novel Key Derivation
 
@@ -217,16 +234,83 @@ Hyphen hardens the BIP39 mnemonic-to-seed derivation with a post-quantum passwor
 
 **Security property:** Even if an attacker can reverse PBKDF2-HMAC-SHA512 (the BIP39 KDF), they would still need to invert the WOTS+ hash chain to recover the original password. WOTS+ is provably secure against quantum adversaries under the second-preimage resistance of blake3.
 
+### 10. Temporal Epoch-Referenced Anchoring (TERA)
+
+TERA binds every transaction input to a specific epoch window, preventing replay attacks and stale-transaction injection.
+
+**Construction.** Each `TxInput` carries three 32-byte TERA fields:
+
+$$\texttt{epoch\_context} = \text{Blake3\_keyed}(\texttt{"TERA\_v1\_context\_\_Hyphen\_2025\_ctx"},\; \text{epoch\_seed})$$
+
+$$\texttt{temporal\_nonce} = H_s(\texttt{"TERA\_nonce"} \| \text{spend\_sk} \| \texttt{epoch\_context})$$
+
+$$\texttt{causal\_binding} = \text{Blake3}(\texttt{"TERA\_causal"} \| \text{spend\_sk} \| \text{note\_hash} \| \texttt{epoch\_context})$$
+
+**Validation.** The validator maintains a list of valid epoch contexts covering $\pm T$ epochs from the chain tip, where $T = \texttt{tera\_epoch\_tolerance}$ (mainnet: 2, testnet: 4). A transaction whose `epoch_context` does not appear in this list is rejected with `TeraEpochMismatch`.
+
+**Replay resistance.** A transaction signed for epoch $e$ cannot be replayed after $e + T$ epochs have passed, because its `epoch_context` will no longer be in the valid set.
+
+### 11. Mining Stability Equalizer (MSE)
+
+MSE adjusts the block reward based on the ratio of actual-to-target difficulty, creating a negative-feedback loop that smooths miner revenue across hashrate fluctuations.
+
+**Formula.** Let $D_{\text{ratio}} = D_{\text{actual}} / D_{\text{target}}$. The MSE multiplier is:
+
+$$\mu = \text{clamp}\!\left(1 + \gamma \cdot (D_{\text{ratio}} - 1),\; 0.80,\; 1.20\right)$$
+
+where $\gamma = 0.10$ (`mse_gamma = 100` in basis points). The effective block reward is:
+
+$$R_{\text{eff}}(h) = R_{\text{lcd}}(h) \cdot \mu$$
+
+| Condition | $\mu$ range | Effect |
+| --- | --- | --- |
+| $D_{\text{actual}} > D_{\text{target}}$ | $\mu > 1$ (up to 1.20) | Reward increases — compensates higher security cost |
+| $D_{\text{actual}} = D_{\text{target}}$ | $\mu = 1$ | Neutral — base LCD reward |
+| $D_{\text{actual}} < D_{\text{target}}$ | $\mu < 1$ (down to 0.80) | Reward decreases — prevents overpayment |
+
+This creates an economic equilibrium: miners migrate toward the network when rewards are high and away when rewards are low, stabilizing both hashrate and miner revenue.
+
+### 12. Gradual Trust Mining (GTM)
+
+GTM prevents Sybil-based difficulty manipulation at the pool level by exponentially ramping a new miner's share difficulty from `d_init` to `d_target` over a warmup window.
+
+**Warmup formula:**
+
+$$d(n) = d_{\text{init}} + (d_{\text{target}} - d_{\text{init}}) \cdot \left(1 - e^{-5n/W}\right)$$
+
+where $W = 100$ (`GTM_WARMUP_SHARES`) and $d_{\text{init}} = 100$ (`VARDIFF_INITIAL`).
+
+**Convergence:**
+- At $n = 0$: $d \approx d_{\text{init}} = 100$
+- At $n = 20$: $d \approx 0.63 \cdot d_{\text{target}}$ (practical operating difficulty)
+- At $n = W = 100$: $d \approx 0.993 \cdot d_{\text{target}}$ (within 1% of target)
+
+**Sybil resistance:** A Sybil attacker opening $k$ parallel connections is constrained to `GTM_MAX_CONNECTIONS_PER_IP = 32` connections per IP. Each connection starts at $d_{\text{init}}$ regardless of claimed hashrate, so the attacker must invest $k \cdot W$ shares of real work before reaching full difficulty on all connections.
+
+### 13. Consensus-Enforced Coinbase Validation
+
+Hyphen validates coinbase transactions at the consensus level with five structural rules:
+
+1. **No inputs** — coinbase must have zero `TxInput` entries
+2. **Single output** — exactly one commitment output
+3. **Zero fee** — coinbase fee must be 0
+4. **Extra field** — minimum 8 bytes (encodes block height)
+5. **Range proof** — valid Bulletproof on the output commitment
+
+Additionally, `accept_block` verifies that `block.header.reward` exactly matches `lcd_base_reward(height, cfg)`, preventing miners from claiming inflated rewards.
+
 ## Privacy Model
 
 Hyphen uses a shielded UTXO model combining:
 
 1. **Pedersen Commitments** — amounts hidden as $C = v \cdot H + r \cdot G$ where $H = H_p(\texttt{"Hyphen\_pedersen\_value\_generator\_v1"})$
 2. **Stealth Addresses** — ECDH-derived one-time output keys with output-index binding and blake3-based amount encryption
-3. **CLSAG Ring Signatures** — compact linkable ring signatures over Ristretto255 with key image and commitment key image
+3. **CLSAG Ring Signatures** — compact linkable ring signatures over Ristretto255 with key image and commitment key image; the transaction builder performs self-verification of each CLSAG signature immediately after signing (pre-submission integrity check)
 4. **Bulletproofs Range Proofs** — prove $v \in [0, 2^{64})$ with $O(\log n)$ proof size; aggregation up to 16 outputs
 5. **View Tag** — single-byte tag $\tau = H(\texttt{"Hyphen\_view\_tag"} \| ss)[0]$ enabling 256× scanning speedup by filtering non-owned outputs without full ECDH
 6. **Deterministic Commitment Blinding** — blinding factor $r = H_s(\texttt{"Hyphen\_commitment\_blind"} \| ss)$ derived deterministically from the shared secret, ensuring sender and receiver always compute the same commitment (no blinding mismatch)
+7. **Pre-Flight Output Verification** — before building a transaction, the wallet fetches output data from the chain via GET_OUTPUT_INFO RPC and verifies each selected input's public key and commitment against the locally cached values, preventing stale-output and index-mismatch errors
+8. **Spent Output Tracking** — after a successful transaction send, the wallet receives spent global indices from the builder and immediately removes them from the local UTXO cache, preventing double-spend attempts on already-consumed outputs
 
 ### Verifiable Ring Entropy (VRE) — Novel Consensus Innovation
 
@@ -238,25 +322,39 @@ In all existing ring-signature-based privacy coins (Monero, etc.), the decoy sel
 - Statistical analysis of decoy age distributions can narrow the anonymity set
 - The network has **no way to reject** transactions with poor decoy quality
 
-**Hyphen's VRE** solves this with two consensus-enforced rules:
+**Hyphen's VRE** solves this with four consensus-enforced rules:
 
-**Rule 1: Minimum Height Span.** Given ring member block heights $\{h_1, \ldots, h_n\}$:
+**VRE-1: Minimum Height Span.** Given ring member block heights $\{h_1, \ldots, h_n\}$:
 
 $$\max(h_i) - \min(h_i) \geq S_{\min}$$
 
 where $S_{\min} = 100$ (mainnet), $S_{\min} = 20$ (testnet). This ensures ring members span a significant time range, preventing temporal clustering attacks.
 
-**Rule 2: Minimum Distinct Height Fraction.** Let $D = |\{h_1, \ldots, h_n\}|$ be the count of distinct heights in the ring:
+**VRE-2: Minimum Distinct Height Fraction.** Let $D = |\{h_1, \ldots, h_n\}|$ be the count of distinct heights in the ring:
 
 $$D \geq \lceil 3n/4 \rceil$$
 
 For ring size 16, at least 12 members must come from distinct block heights. This prevents mass decoy reuse from popular blocks.
 
-**Security Improvement.** Under VRE, the effective anonymity set is provably bounded below. Without VRE, a transaction with all decoys from height $h$ has effective anonymity $\leq 1$ (the real input is trivially the only member from a different height). With VRE, the minimum effective anonymity is:
+**VRE-3: Age Band Diversity.** Each ring member's age $a_i = \max(h) - h_i$ is assigned to a band $b_i = \lfloor a_i / w \rfloor$ where $w = \texttt{vre\_age\_band\_width}$ (mainnet: 2048, testnet: 128). The number of distinct bands must satisfy:
+
+$$|\{b_1, \ldots, b_n\}| \geq B_{\min}$$
+
+where $B_{\min} = \texttt{vre\_min\_age\_bands}$ (mainnet: 3, testnet: 2). This forces ring members to span multiple temporal regions, defeating age-clustering deanonymization.
+
+**VRE-4: Global Index Span.** Let $g_{\min}, g_{\max}$ be the minimum and maximum global output indices in the ring, and $N$ the total output set size:
+
+$$\frac{(g_{\max} - g_{\min}) \cdot 10000}{N} \geq \tau$$
+
+where $\tau = \texttt{vre\_min\_index\_span\_bps}$ (mainnet: 500 = 5%, testnet: 300 = 3%). This ensures ring members are drawn from a broad range of the output set, preventing index-clustering attacks.
+
+**Security Improvement.** Under the four VRE rules, the effective anonymity set is provably bounded below. Without VRE, a transaction with all decoys from height $h$ has effective anonymity $\leq 1$. With VRE-1 through VRE-4, the minimum effective anonymity is:
 
 $$A_{\text{eff}} \geq \lceil 3n/4 \rceil = 12 \text{ (for } n=16\text{)}$$
 
-**No existing privacy coin provides a consensus-level guarantee on ring anonymity quality.**
+and decoys are guaranteed to span multiple age bands and a minimum fraction of the global output space.
+
+**No existing privacy coin provides consensus-level guarantees on ring anonymity quality.**
 
 ### Encrypted Wallet Storage
 
@@ -312,7 +410,16 @@ $$R(h) = R_{\text{tail}} + (R_0 - R_{\text{tail}}) \cdot \frac{c^2}{h^2 + c^2}$$
 | Max uncles | 2 | 2 |
 | Max uncle depth | 7 | 7 |
 | Ring size | 16 | 4 |
-| Min ring span (VRE) | 100 blocks | 20 blocks |
+| Min ring span (VRE-1) | 100 blocks | 20 blocks |
+| Min distinct heights (VRE-2) | ⌈3n/4⌉ | ⌈3n/4⌉ |
+| Min age bands (VRE-3) | 3 | 2 |
+| Age band width (VRE-3) | 2048 blocks | 128 blocks |
+| Min index span (VRE-4) | 500 bps (5%) | 300 bps (3%) |
+| TERA epoch tolerance | ±2 epochs | ±4 epochs |
+| MSE γ | 100 bps (0.10) | 100 bps (0.10) |
+| MSE floor | 8000 bps (0.80×) | 8000 bps (0.80×) |
+| MSE ceiling | 12000 bps (1.20×) | 12000 bps (1.20×) |
+| Epoch length | 2048 blocks | 2048 blocks |
 | Timestamp future limit | 120,000 ms | 60,000 ms |
 | Arena size | 2 GiB | 64 MiB |
 | Scratchpad size | 8 MiB | 256 KiB |
@@ -1133,9 +1240,9 @@ The `hyphen_wallet/` directory contains a cross-platform Flutter wallet app with
 - **Quantum-resistant security** — WOTS+ hybrid signatures, blake3-XOF stream encryption with encrypt-then-MAC wallet storage, blake3-based 100k-round KDF
 - **ICD key derivation** — Pedersen commitment-based BIP44-compatible key tree on Ristretto255
 - **Stealth addresses** — one-time output keys with view tag scanning
-- **Private transfers** — full shielded transaction pipeline: blockchain output scanning via RPC, CLSAG ring-signature construction with decoy outputs fetched from the node's output index (GET_RANDOM_OUTPUTS), Bulletproofs range proofs, bincode serialization, and transaction submission to the mempool; greedy input selection with automatic change output generation
+- **Private transfers** — full shielded transaction pipeline: blockchain output scanning via RPC, CLSAG ring-signature construction with decoy outputs fetched from the node's output index (GET_RANDOM_OUTPUTS), pre-flight output verification via GET_OUTPUT_INFO, CLSAG self-verification after signing, Bulletproofs range proofs, bincode serialization, and transaction submission to the mempool; greedy input selection with automatic change output generation; spent output tracking with automatic UTXO cache invalidation after successful sends
 - **NFC contactless** — share wallet address via NFC tap on Android (full NFC) and iOS (NDEF/TAG reader session with entitlements); uses `nfc_manager` 3.5.0 with Kotlin 2.2 compatibility workaround
-- **Biometric authentication** — fingerprint and Face ID lock/unlock via `local_auth` 2.3.0; biometric-gated mnemonic reveal and transaction confirmation
+- **Biometric authentication** — fingerprint and Face ID lock/unlock via `local_auth` 2.3.0; Android uses `FlutterFragmentActivity` for BiometricPrompt API compatibility; biometric-gated mnemonic reveal and transaction confirmation
 - **Network switching** — toggle between mainnet and testnet with automatic address re-derivation
 - **Mining payout address** — displays the wallet's `hy1...` address for use as `--pool-wallet` or `--wallet-address` in mining configuration; one-tap copy to clipboard
 - **Receive QR code** — generates a scannable QR code of the wallet's `hy1...` address on the Receive screen, rendered with rounded eye/data module styling via `qr_flutter`

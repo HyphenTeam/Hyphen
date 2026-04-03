@@ -1795,6 +1795,7 @@ dependencies = [
  "serde",
  "sled",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -1991,6 +1992,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "blake3",
+ "curve25519-dalek",
  "hex",
  "hyphen-core",
  "hyphen-crypto",

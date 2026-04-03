@@ -42,6 +42,7 @@ impl RpcHandler {
             METHOD_GET_MEMPOOL => self.handle_get_mempool(),
             METHOD_GET_TX_LOCATION => self.handle_get_tx_location(&request.payload),
             METHOD_GET_RANDOM_OUTPUTS => self.handle_get_random_outputs(&request.payload),
+            METHOD_GET_OUTPUT_INFO => self.handle_get_output_info(&request.payload),
             _ => Err(HandlerError::InvalidRequest(format!(
                 "unknown method: {}", request.method
             ))),
@@ -119,13 +120,17 @@ impl RpcHandler {
 
     fn handle_get_chain_info(&self) -> Result<Vec<u8>, HandlerError> {
         let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let next_height = tip.height + 1;
+        let epoch_seed = self.chain.epoch_seed_for_height(next_height)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
         let resp = ChainInfoResponse {
             height: tip.height,
             tip_hash: tip.hash.to_vec(),
             difficulty: 0,
             cumulative_difficulty: tip.cumulative_difficulty.to_le_bytes().to_vec(),
             total_outputs: tip.total_outputs,
-            network: String::new(),
+            network: self.chain.cfg.network_name.clone(),
+            epoch_seed: epoch_seed.to_vec(),
         };
         Ok(resp.encode_to_vec())
     }
@@ -163,6 +168,54 @@ impl RpcHandler {
         let req = SubmitTransactionRequest::decode(payload)?;
         let tx: Transaction = bincode::deserialize(&req.tx_data)
             .map_err(|e| HandlerError::InvalidRequest(format!("bad tx data: {e}")))?;
+
+        // ── Pre-validation: check key images against blockchain nullifiers ──
+        for inp in &tx.inputs {
+            if self.chain.nullifiers.contains(&inp.key_image)
+                .unwrap_or(false)
+            {
+                let resp = SubmitTransactionResponse {
+                    accepted: false,
+                    tx_hash: vec![],
+                    error: "double-spend: key image already spent on chain".into(),
+                };
+                return Ok(resp.encode_to_vec());
+            }
+        }
+
+        // ── Full transaction validation (balance, CLSAG, TERA, MD-VRE) ──
+        let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let next_height = tip.height + 1;
+
+        let valid_epoch_contexts = self.chain.build_valid_epoch_contexts(next_height)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
+
+        let total_outputs = {
+            let ct = self.chain.commitment_tree.read();
+            ct.count()
+        };
+
+        let validator = hyphen_consensus::BlockValidator::new(&self.chain.cfg);
+        let store = self.chain.store();
+        if let Err(e) = validator.validate_transaction(
+            &tx,
+            |global_index| {
+                store.resolve_ring_member(global_index).map_err(|e| {
+                    hyphen_consensus::validator::ValidationError::Core(
+                        hyphen_core::error::CoreError::Storage(e.to_string()),
+                    )
+                })
+            },
+            &valid_epoch_contexts,
+            total_outputs,
+        ) {
+            let resp = SubmitTransactionResponse {
+                accepted: false,
+                tx_hash: vec![],
+                error: format!("validation failed: {e}"),
+            };
+            return Ok(resp.encode_to_vec());
+        }
 
         let mut pool = self.mempool.write();
         match pool.insert(tx) {
@@ -211,13 +264,49 @@ impl RpcHandler {
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
         let outputs = random_outs
             .into_iter()
-            .map(|(pk, cm, idx)| OutputInfo {
+            .map(|(pk, cm, idx, height)| OutputInfo {
                 one_time_pubkey: pk.to_vec(),
                 commitment: cm.to_vec(),
                 global_index: idx,
+                block_height: height,
             })
             .collect();
         let resp = RandomOutputsResponse { outputs };
+        Ok(resp.encode_to_vec())
+    }
+
+    fn handle_get_output_info(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        let req = GetOutputInfoRequest::decode(payload)?;
+        if req.global_indices.len() > 256 {
+            return Err(HandlerError::InvalidRequest("too many indices (max 256)".into()));
+        }
+        let store = self.chain.store();
+        let mut outputs = Vec::with_capacity(req.global_indices.len());
+        for &gi in &req.global_indices {
+            match store.get_output(gi) {
+                Ok((pk, cm)) => {
+                    let val = store
+                        .resolve_ring_member(gi)
+                        .map(|(_, _, h)| h)
+                        .unwrap_or(0);
+                    outputs.push(OutputInfo {
+                        one_time_pubkey: pk.to_vec(),
+                        commitment: cm.to_vec(),
+                        global_index: gi,
+                        block_height: val,
+                    });
+                }
+                Err(_) => {
+                    outputs.push(OutputInfo {
+                        one_time_pubkey: vec![],
+                        commitment: vec![],
+                        global_index: gi,
+                        block_height: 0,
+                    });
+                }
+            }
+        }
+        let resp = GetOutputInfoResponse { outputs };
         Ok(resp.encode_to_vec())
     }
 }

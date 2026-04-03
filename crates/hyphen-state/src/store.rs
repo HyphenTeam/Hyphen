@@ -125,16 +125,28 @@ impl BlockStore {
     }
 
     /// Store an output by its global index.
-    /// Value layout: `[one_time_pubkey: 32] [commitment: 32]`
+    /// Value layout: `[one_time_pubkey: 32] [commitment: 32] [block_height: 8]`
     pub fn insert_output(
         &self,
         global_index: u64,
         one_time_pubkey: &[u8; 32],
         commitment: &[u8; 32],
     ) -> Result<()> {
-        let mut val = [0u8; 64];
+        self.insert_output_with_height(global_index, one_time_pubkey, commitment, 0)
+    }
+
+    /// Store an output with its block height.
+    pub fn insert_output_with_height(
+        &self,
+        global_index: u64,
+        one_time_pubkey: &[u8; 32],
+        commitment: &[u8; 32],
+        block_height: u64,
+    ) -> Result<()> {
+        let mut val = [0u8; 72];
         val[..32].copy_from_slice(one_time_pubkey);
         val[32..64].copy_from_slice(commitment);
+        val[64..72].copy_from_slice(&block_height.to_le_bytes());
         self.output_index
             .insert(global_index.to_be_bytes(), &val[..])?;
         Ok(())
@@ -153,13 +165,48 @@ impl BlockStore {
         Ok((pk, cm))
     }
 
+    /// Resolve a ring member by global index.
+    /// Returns (RistrettoPoint pubkey, RistrettoPoint commitment, block_height).
+    pub fn resolve_ring_member(
+        &self,
+        global_index: u64,
+    ) -> Result<(
+        curve25519_dalek::ristretto::RistrettoPoint,
+        curve25519_dalek::ristretto::RistrettoPoint,
+        u64,
+    )> {
+        let val = self
+            .output_index
+            .get(global_index.to_be_bytes())?
+            .ok_or_else(|| StoreError::NotFound(format!("output index {global_index}")))?;
+        let mut pk_bytes = [0u8; 32];
+        let mut cm_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(&val[..32]);
+        cm_bytes.copy_from_slice(&val[32..64]);
+        // Height is stored in bytes 64..72 if available (backward compat: default 0)
+        let height = if val.len() >= 72 {
+            u64::from_le_bytes(val[64..72].try_into().unwrap())
+        } else {
+            0
+        };
+        let pk = curve25519_dalek::ristretto::CompressedRistretto::from_slice(&pk_bytes)
+            .map_err(|_| StoreError::NotFound("decompression failed".into()))?
+            .decompress()
+            .ok_or_else(|| StoreError::NotFound("point decompression failed".into()))?;
+        let cm = curve25519_dalek::ristretto::CompressedRistretto::from_slice(&cm_bytes)
+            .map_err(|_| StoreError::NotFound("decompression failed".into()))?
+            .decompress()
+            .ok_or_else(|| StoreError::NotFound("point decompression failed".into()))?;
+        Ok((pk, cm, height))
+    }
+
     /// Get `count` random outputs below `ceiling` global index.
-    /// Returns (one_time_pubkey, commitment, global_index) tuples.
+    /// Returns (one_time_pubkey, commitment, global_index, block_height) tuples.
     pub fn get_random_outputs(
         &self,
         count: usize,
         ceiling: u64,
-    ) -> Result<Vec<([u8; 32], [u8; 32], u64)>> {
+    ) -> Result<Vec<([u8; 32], [u8; 32], u64, u64)>> {
         use rand::Rng;
         if ceiling == 0 {
             return Ok(Vec::new());
@@ -171,8 +218,17 @@ impl BlockStore {
         while result.len() < count && attempts < max_attempts {
             attempts += 1;
             let idx: u64 = rng.gen_range(0..ceiling);
-            if let Ok((pk, cm)) = self.get_output(idx) {
-                result.push((pk, cm, idx));
+            if let Some(val) = self.output_index.get(idx.to_be_bytes())? {
+                let mut pk = [0u8; 32];
+                let mut cm = [0u8; 32];
+                pk.copy_from_slice(&val[..32]);
+                cm.copy_from_slice(&val[32..64]);
+                let height = if val.len() >= 72 {
+                    u64::from_le_bytes(val[64..72].try_into().unwrap())
+                } else {
+                    0
+                };
+                result.push((pk, cm, idx, height));
             }
         }
         Ok(result)

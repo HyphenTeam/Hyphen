@@ -4,7 +4,7 @@ use hyphen_crypto::Hash256;
 
 use crate::arena::EpochArena;
 use crate::difficulty::difficulty_to_target;
-use crate::kernels::execute_kernel;
+use crate::kernels::{execute_kernel, EpochKernelParams};
 use crate::scratchpad::Scratchpad;
 
 #[derive(Clone, Debug)]
@@ -19,6 +19,17 @@ pub fn evaluate_pow(
     arena: &EpochArena,
     cfg: &ChainConfig,
 ) -> Hash256 {
+    let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
+    evaluate_pow_with_epoch(header, arena, cfg, &epoch)
+}
+
+/// Evaluate PoW with pre-computed epoch params (avoids re-deriving per nonce).
+pub fn evaluate_pow_with_epoch(
+    header: &BlockHeader,
+    arena: &EpochArena,
+    cfg: &ChainConfig,
+    epoch: &EpochKernelParams,
+) -> Hash256 {
     let header_bytes = header.serialise_for_hash();
     let seed = hyphen_crypto::blake3_hash(&header_bytes);
 
@@ -32,7 +43,7 @@ pub fn evaluate_pow(
 
         let kernel_id = sp.select_kernel(page[32], cfg.kernel_count);
 
-        let kernel_out = execute_kernel(kernel_id, page, &sp.state);
+        let kernel_out = execute_kernel(kernel_id, page, &sp.state, epoch);
 
         sp.mix_state(&kernel_out);
 
@@ -61,7 +72,8 @@ pub fn try_nonce(
     nonce: u64,
 ) -> Option<PowResult> {
     header.nonce = nonce;
-    let hash = evaluate_pow(header, arena, cfg);
+    let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
+    let hash = evaluate_pow_with_epoch(header, arena, cfg, &epoch);
     let target = difficulty_to_target(header.difficulty);
     if hash_below_target(&hash, &target) {
         Some(PowResult {
@@ -79,10 +91,11 @@ pub fn mine_block(
     arena: &EpochArena,
     cfg: &ChainConfig,
 ) -> PowResult {
+    let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
     let mut nonce = header.nonce;
     loop {
         header.nonce = nonce;
-        let hash = evaluate_pow(header, arena, cfg);
+        let hash = evaluate_pow_with_epoch(header, arena, cfg, &epoch);
         let target = difficulty_to_target(header.difficulty);
         if hash_below_target(&hash, &target) {
             return PowResult {

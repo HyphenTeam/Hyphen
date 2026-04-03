@@ -5,10 +5,11 @@ edition.workspace = true
 description = "Persistent state management (sled) for the Hyphen blockchain"
 
 [dependencies]
-hyphen-crypto.workspace = true
-hyphen-core.workspace   = true
-hyphen-tx.workspace     = true
-blake3.workspace        = true
+hyphen-crypto.workspace    = true
+hyphen-core.workspace      = true
+hyphen-tx.workspace        = true
+blake3.workspace           = true
+curve25519-dalek.workspace = true
 sled.workspace          = true
 zstd.workspace          = true
 serde.workspace         = true

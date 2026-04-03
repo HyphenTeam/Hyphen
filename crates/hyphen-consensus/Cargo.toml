@@ -19,5 +19,6 @@ sled.workspace             = true
 hex.workspace              = true
 thiserror.workspace        = true
 log.workspace              = true
+tracing.workspace          = true
 parking_lot.workspace      = true
 chrono.workspace           = true

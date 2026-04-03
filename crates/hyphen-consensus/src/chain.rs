@@ -1,5 +1,6 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
+use tracing::info;
 
 use hyphen_core::block::Block;
 use hyphen_core::config::ChainConfig;
@@ -145,10 +146,11 @@ impl Blockchain {
                         let global_idx = ct
                             .append(nh)
                             .map_err(|e| CoreError::Storage(e.to_string()))?;
-                        let _ = self.blocks.insert_output(
+                        let _ = self.blocks.insert_output_with_height(
                             global_idx,
                             &out.one_time_pubkey,
                             out.commitment.as_bytes(),
+                            block.header.height,
                         );
                     }
                     for inp in &tx.inputs {
@@ -163,6 +165,13 @@ impl Blockchain {
             if block.header.reward > 0 && block.pq_signature.len() == 32 {
                 let mut view_public = [0u8; 32];
                 view_public.copy_from_slice(&block.pq_signature);
+                info!(
+                    "Coinbase: height={} view_public={} spend_public={} reward={}",
+                    block.header.height,
+                    hex::encode(view_public),
+                    hex::encode(block.header.miner_pubkey),
+                    block.header.reward,
+                );
                 let coinbase_tx = build_coinbase_tx(
                     view_public,
                     block.header.miner_pubkey,
@@ -176,10 +185,11 @@ impl Blockchain {
                     let global_idx = ct
                         .append(nh)
                         .map_err(|e| CoreError::Storage(e.to_string()))?;
-                    let _ = self.blocks.insert_output(
+                    let _ = self.blocks.insert_output_with_height(
                         global_idx,
                         &out.one_time_pubkey,
                         out.commitment.as_bytes(),
+                        block.header.height,
                     );
                 }
 
@@ -188,6 +198,13 @@ impl Blockchain {
                 self.blocks
                     .insert_coinbase(block.header.height, &coinbase_blob)
                     .map_err(|e| CoreError::Storage(e.to_string()))?;
+            } else if block.header.reward > 0 {
+                info!(
+                    "Coinbase SKIPPED: height={} pq_signature_len={} reward={}",
+                    block.header.height,
+                    block.pq_signature.len(),
+                    block.header.reward,
+                );
             }
         }
 
@@ -227,10 +244,20 @@ impl Blockchain {
         let tip = self.tip()?;
         let now_ms = ntp_adjusted_timestamp_ms();
 
+        // Get previous block timestamp for minimum-timestamp validation
+        let prev_timestamp = if tip.height > 0 {
+            self.blocks
+                .get_block_by_height(tip.height)
+                .map(|b| b.header.timestamp)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         let validator = BlockValidator::new(&self.cfg);
 
         validator
-            .validate_header(&block.header, tip.height, &tip.hash, now_ms)
+            .validate_header(&block.header, tip.height, &tip.hash, prev_timestamp, now_ms)
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
         validator
@@ -251,10 +278,31 @@ impl Blockchain {
             })
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
+        // C2 fix: Verify declared difficulty matches expected value
+        let expected_difficulty = self.next_difficulty()?;
+        if block.header.difficulty != expected_difficulty {
+            return Err(CoreError::Validation(format!(
+                "difficulty mismatch: expected {}, got {}",
+                expected_difficulty, block.header.difficulty
+            )));
+        }
+
         let epoch_seed = self.epoch_seed_for_height(block.header.height)?;
         let arena = self.arena_for_epoch(epoch_seed);
         if !verify_pow(&block.header, &arena, &self.cfg) {
             return Err(CoreError::PowFailed);
+        }
+
+        // C3 fix: Verify declared reward matches emission formula
+        let expected_reward = hyphen_economics::emission::lcd_base_reward(
+            block.header.height,
+            &self.cfg,
+        );
+        if block.header.reward != expected_reward {
+            return Err(CoreError::Validation(format!(
+                "reward mismatch: expected {}, got {}",
+                expected_reward, block.header.reward
+            )));
         }
 
         let block_bytes =
@@ -263,11 +311,25 @@ impl Blockchain {
             return Err(CoreError::BlockTooLarge);
         }
 
+        // ── TERA: build set of valid epoch contexts ──
+        // Accept epoch_context derived from the current epoch and up to
+        // tera_epoch_tolerance past epochs.
+        let valid_epoch_contexts = self.build_valid_epoch_contexts(block.header.height)?;
+        let total_outputs = {
+            let ct = self.commitment_tree.read();
+            ct.count()
+        };
+
+        // C5 fix: Track key images seen within this block to prevent
+        // intra-block double spends
+        let mut block_key_images = std::collections::HashSet::new();
+
         for tx_blob in &block.transactions {
             let tx: Transaction = bincode::deserialize(tx_blob)
                 .map_err(|e| CoreError::Serialisation(e.to_string()))?;
 
             for inp in &tx.inputs {
+                // Check against persistent nullifier set
                 if self
                     .nullifiers
                     .contains(&inp.key_image)
@@ -275,9 +337,60 @@ impl Blockchain {
                 {
                     return Err(CoreError::DuplicateNullifier(hex::encode(inp.key_image)));
                 }
+                // Check against other transactions in this block
+                if !block_key_images.insert(inp.key_image) {
+                    return Err(CoreError::DuplicateNullifier(hex::encode(inp.key_image)));
+                }
             }
+
+            // Full transaction validation including TERA + MD-VRE
+            let store = &self.blocks;
+            validator
+                .validate_transaction(
+                    &tx,
+                    |global_index| {
+                        store.resolve_ring_member(global_index).map_err(|e| {
+                            crate::validator::ValidationError::Core(
+                                CoreError::Storage(e.to_string()),
+                            )
+                        })
+                    },
+                    &valid_epoch_contexts,
+                    total_outputs,
+                )
+                .map_err(|e| CoreError::Validation(e.to_string()))?;
         }
 
         self.apply_block_unchecked(block)
+    }
+
+    /// Build the set of valid TERA epoch contexts for the given height.
+    /// Returns blake3("TERA_v1_context__Hyphen_2025_ctx" keyed, epoch_seed)
+    /// for the current epoch and the previous `tera_epoch_tolerance` epochs.
+    pub fn build_valid_epoch_contexts(&self, height: u64) -> Result<Vec<[u8; 32]>, CoreError> {
+        let current_epoch = height / self.cfg.epoch_length;
+        let tolerance = self.cfg.tera_epoch_tolerance;
+        let first_epoch = current_epoch.saturating_sub(tolerance);
+
+        let mut contexts = Vec::with_capacity((current_epoch - first_epoch + 1) as usize);
+        for e in first_epoch..=current_epoch {
+            let seed = if e == 0 {
+                hyphen_crypto::blake3_hash(b"Hyphen_genesis_epoch_seed")
+            } else {
+                let prev_end = e * self.cfg.epoch_length - 1;
+                let hash = self
+                    .blocks
+                    .get_block_hash_at_height(prev_end)
+                    .map_err(|err| CoreError::Storage(err.to_string()))?;
+                hyphen_crypto::blake3_hash(hash.as_bytes())
+            };
+            let ctx = *hyphen_crypto::hash::blake3_keyed(
+                b"TERA_v1_context__Hyphen_2025_ctx",
+                seed.as_bytes(),
+            )
+            .as_bytes();
+            contexts.push(ctx);
+        }
+        Ok(contexts)
     }
 }

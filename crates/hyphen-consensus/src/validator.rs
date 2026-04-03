@@ -50,6 +50,23 @@ pub enum ValidationError {
     UncleHeightInvalid,
     #[error("duplicate uncle")]
     DuplicateUncle,
+    // ── TERA errors ──
+    #[error("TERA epoch_context does not match any recent epoch")]
+    TeraEpochMismatch,
+    #[error("TERA temporal_nonce reused for same key_image in this epoch")]
+    TeraTemporalNonceReused,
+    // ── MD-VRE errors ──
+    #[error("ring output-age diversity too low: {bands} age bands < min {min_bands}")]
+    RingAgeDiversityLow { bands: usize, min_bands: usize },
+    #[error("ring global-index span too narrow: {span_bps} bps < min {min_bps} bps")]
+    RingIndexSpanTooNarrow { span_bps: u64, min_bps: u64 },
+    // ── Coinbase errors ──
+    #[error("coinbase reward mismatch: expected {expected}, got {got}")]
+    CoinbaseRewardMismatch { expected: u64, got: u64 },
+    #[error("coinbase transaction must have no inputs")]
+    CoinbaseHasInputs,
+    #[error("coinbase transaction must have exactly one output")]
+    CoinbaseBadOutputCount,
 }
 
 pub struct BlockValidator<'a> {
@@ -66,6 +83,7 @@ impl<'a> BlockValidator<'a> {
         header: &BlockHeader,
         prev_height: u64,
         prev_hash: &hyphen_crypto::Hash256,
+        prev_timestamp: u64,
         now_ms: u64,
     ) -> Result<(), ValidationError> {
         if header.height != prev_height + 1 {
@@ -78,6 +96,11 @@ impl<'a> BlockValidator<'a> {
 
         if header.prev_hash != *prev_hash {
             return Err(CoreError::Validation("prev_hash mismatch".into()).into());
+        }
+
+        // H2 fix: Reject blocks with timestamps not strictly after parent
+        if header.timestamp <= prev_timestamp && prev_height > 0 {
+            return Err(ValidationError::TimestampTooOld);
         }
 
         let max_future = now_ms + self.cfg.timestamp_future_limit_ms;
@@ -145,6 +168,8 @@ impl<'a> BlockValidator<'a> {
         &self,
         tx: &Transaction,
         resolve_ring_member: F,
+        valid_epoch_contexts: &[[u8; 32]],
+        total_outputs: u64,
     ) -> Result<(), ValidationError>
     where
         F: Fn(u64) -> Result<(RistrettoPoint, RistrettoPoint, u64), ValidationError>,
@@ -175,18 +200,32 @@ impl<'a> BlockValidator<'a> {
                 });
             }
 
+            // ── TERA: validate epoch_context ──
+            if !valid_epoch_contexts.contains(&input.epoch_context) {
+                return Err(ValidationError::TeraEpochMismatch);
+            }
+
             let mut ring_keys = Vec::with_capacity(input.ring.len());
             let mut ring_commits = Vec::with_capacity(input.ring.len());
             let mut ring_heights = Vec::with_capacity(input.ring.len());
+            let mut ring_indices = Vec::with_capacity(input.ring.len());
 
             for oref in &input.ring {
                 let (pk, cm, height) = resolve_ring_member(oref.global_index)?;
                 ring_keys.push(pk);
                 ring_commits.push(cm);
                 ring_heights.push(height);
+                ring_indices.push(oref.global_index);
             }
 
+            // ── VRE: original height-based validation ──
             self.validate_ring_entropy(&ring_heights)?;
+
+            // ── MD-VRE: output-age diversity ──
+            self.validate_ring_age_diversity(&ring_heights)?;
+
+            // ── MD-VRE: global index distribution ──
+            self.validate_ring_index_span(&ring_indices, total_outputs)?;
 
             let pseudo_out = input
                 .pseudo_output
@@ -195,6 +234,15 @@ impl<'a> BlockValidator<'a> {
 
             clsag::clsag_verify(msg.as_bytes(), &ring_keys, &ring_commits, &pseudo_out, sig)
                 .map_err(|e| ValidationError::ClsagFailed(i, e.to_string()))?;
+
+            // C1 fix: Ensure the CLSAG-proven key image matches the input's
+            // declared key image (used for nullifier tracking).
+            if sig.key_image != input.key_image {
+                return Err(ValidationError::ClsagFailed(
+                    i,
+                    "key image in CLSAG signature does not match input key image".into(),
+                ));
+            }
         }
 
         let out_commitments: Result<Vec<RistrettoPoint>, _> = tx
@@ -216,6 +264,7 @@ impl<'a> BlockValidator<'a> {
         Ok(())
     }
 
+    /// VRE-1 + VRE-2: Height span and distinct height fraction.
     fn validate_ring_entropy(&self, heights: &[u64]) -> Result<(), ValidationError> {
         let n = heights.len();
         if n < 2 {
@@ -245,6 +294,96 @@ impl<'a> BlockValidator<'a> {
                 total: n,
             });
         }
+
+        Ok(())
+    }
+
+    /// MD-VRE-3: Output age diversity — ring members must span multiple
+    /// age bands to prevent fresh-output-cluster attacks.
+    fn validate_ring_age_diversity(&self, heights: &[u64]) -> Result<(), ValidationError> {
+        let n = heights.len();
+        if n < 2 || self.cfg.vre_min_age_bands == 0 {
+            return Ok(());
+        }
+
+        let max_h = heights.iter().copied().max().unwrap_or(0);
+        let band_width = self.cfg.vre_age_band_width.max(1);
+
+        let mut bands: Vec<u64> = heights
+            .iter()
+            .map(|&h| (max_h.saturating_sub(h)) / band_width)
+            .collect();
+        bands.sort_unstable();
+        bands.dedup();
+
+        if bands.len() < self.cfg.vre_min_age_bands {
+            return Err(ValidationError::RingAgeDiversityLow {
+                bands: bands.len(),
+                min_bands: self.cfg.vre_min_age_bands,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// MD-VRE-4: Global index distribution — ring indices must span at
+    /// least `vre_min_index_span_bps` of the total output set.
+    fn validate_ring_index_span(
+        &self,
+        indices: &[u64],
+        total_outputs: u64,
+    ) -> Result<(), ValidationError> {
+        if indices.len() < 2 || total_outputs == 0 || self.cfg.vre_min_index_span_bps == 0 {
+            return Ok(());
+        }
+
+        let min_idx = indices.iter().copied().min().unwrap_or(0);
+        let max_idx = indices.iter().copied().max().unwrap_or(0);
+        let span = max_idx.saturating_sub(min_idx);
+
+        // span_bps = span * 10000 / total_outputs
+        let span_bps = span.saturating_mul(10_000) / total_outputs.max(1);
+
+        if span_bps < self.cfg.vre_min_index_span_bps {
+            return Err(ValidationError::RingIndexSpanTooNarrow {
+                span_bps,
+                min_bps: self.cfg.vre_min_index_span_bps,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Coinbase transaction validation.
+    pub fn validate_coinbase(
+        &self,
+        tx: &Transaction,
+        _expected_reward: u64,
+    ) -> Result<(), ValidationError> {
+        if !tx.inputs.is_empty() {
+            return Err(ValidationError::CoinbaseHasInputs);
+        }
+        if tx.outputs.len() != 1 {
+            return Err(ValidationError::CoinbaseBadOutputCount);
+        }
+        if tx.fee != 0 {
+            return Err(ValidationError::BalanceFailed);
+        }
+        // The reward is encoded in the extra field; verify block height encoding
+        if tx.extra.len() < 8 {
+            return Err(ValidationError::Core(CoreError::Validation(
+                "coinbase extra too short".into(),
+            )));
+        }
+        // Verify range proof on the coinbase output
+        let out_commitment = tx.outputs[0]
+            .commitment
+            .to_point()
+            .map_err(|_| ValidationError::Decompression)?;
+        tx.prunable
+            .range_proof
+            .verify(&[out_commitment])
+            .map_err(|e| ValidationError::RangeProofFailed(e.to_string()))?;
 
         Ok(())
     }

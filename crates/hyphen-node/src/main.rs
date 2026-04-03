@@ -638,12 +638,27 @@ fn build_template(
 
     let reward = hyphen_economics::emission::block_reward(next_height, cfg);
 
+    // Compute the total fee from all included transactions
+    let total_fee: u64 = tx_blobs.iter()
+        .filter_map(|blob| bincode::deserialize::<hyphen_tx::Transaction>(blob).ok())
+        .map(|tx| tx.fee)
+        .sum();
+
+    // Compute the tx_root from the transaction blobs (Merkle root of blake3 hashes)
+    let tx_root = {
+        let leaf_hashes: Vec<hyphen_crypto::Hash256> = tx_blobs
+            .iter()
+            .map(|blob| hyphen_crypto::blake3_hash(blob))
+            .collect();
+        hyphen_core::block::merkle_root(&leaf_hashes)
+    };
+
     let header = hyphen_core::BlockHeader {
         version: 1,
         height: next_height,
         timestamp: ntp_adjusted_timestamp_ms(),
         prev_hash: tip.hash,
-        tx_root: hyphen_crypto::Hash256::ZERO,
+        tx_root,
         commitment_root,
         nullifier_root,
         state_root: hyphen_crypto::Hash256::ZERO,
@@ -655,7 +670,7 @@ fn build_template(
         nonce: 0,
         extra_nonce: [0u8; 32],
         miner_pubkey: [0u8; 32],
-        total_fee: 0,
+        total_fee,
         reward,
         view_tag: 0,
         block_size: 0,
@@ -675,7 +690,7 @@ fn build_template(
         height: next_height,
         difficulty,
         reward,
-        total_fee: 0,
+        total_fee,
         epoch_seed: epoch_seed.as_bytes().to_vec(),
         prev_hash: tip.hash.as_bytes().to_vec(),
         arena_size: cfg.arena_size as u64,

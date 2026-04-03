@@ -1,28 +1,36 @@
 // Lorentzian Continuous Decay (LCD) Emission Model
+// with Marginal Security Emission (MSE) Multiplier
 //
-// R(h) = R_tail + (R_0 - R_tail) · c² / (h² + c²)
+// Base reward: R_lcd(h) = R_tail + (R_0 - R_tail) · c² / (h² + c²)
 //
-// where:
-//   R_0    = initial block reward (100 HPN = 100_000_000_000_000 atomic units)
-//   R_tail = perpetual tail emission (0.6 HPN = 600_000_000_000 atomic units)
-//   c      = emission_decay_constant (2²⁰ = 1_048_576 blocks ≈ 2 years at 60s/block)
+// MSE Multiplier: μ(h) = clamp(1 + γ · (D_actual / D_target − 1),  floor, ceil)
 //
-// Properties:
-//   - Smooth, continuous, infinitely differentiable — NO discrete halvings
-//   - R(0)  = R_0 (full initial reward at genesis)
-//   - R(c)  = (R_0 + R_tail) / 2 ≈ 50.3 HPN (midpoint at ~2 years)
-//   - R(∞) → R_tail (long-term convergence to tail emission)
-//   - Total finite emission ≈ (R_0 - R_tail) · c · π / 2 ≈ 164 million HPN
-//   - Tail emission provides perpetual miner incentive (≈ 315 k HPN / year)
+// Effective reward: R(h) = R_lcd(h) · μ(h)
 //
-// All arithmetic uses u128 to prevent overflow. Maximum product is
-// (R_0 - R_tail) · c² ≈ 10²⁶, well within u128 range (≈ 3.4 × 10³⁸).
+// Economic rationale (Marginal Security Emission):
+//  - When actual difficulty D_actual > D_target (hashrate above trend),
+//    miners are overprovisioning security → μ > 1 → reward increases,
+//    compensating the real cost of providing excess security.
+//  - When D_actual < D_target (hashrate lags), security is cheap to
+//    provide → μ < 1 → reward decreases, preventing overpayment for
+//    security that isn't being delivered.
+//  - This creates a negative-feedback equilibrium: the emission budget
+//    automatically allocates more reward when security is expensive,
+//    and less when it's cheap.
+//
+// The D_target "trend" line is a simple exponential moving average of
+// recent difficulties, anchored at genesis and smoothed over a large
+// window.  This avoids external oracles — everything is on-chain.
+//
+// Parameters (from ChainConfig):
+//   mse_gamma     = sensitivity factor × 1000 (e.g. 100 → γ=0.10)
+//   mse_floor_bps = minimum multiplier × 10000 (e.g. 8000 → 0.80×)
+//   mse_ceil_bps  = maximum multiplier × 10000 (e.g. 12000 → 1.20×)
 
 use hyphen_core::config::ChainConfig;
 
-/// Compute the block reward at a given height using the Lorentzian decay model.
-pub fn block_reward(height: u64, cfg: &ChainConfig) -> u64 {
-    // Emergency override: if tail_emission_height is set, force tail after that height
+/// Compute the **base** LCD block reward at a given height (no MSE multiplier).
+pub fn lcd_base_reward(height: u64, cfg: &ChainConfig) -> u64 {
     if cfg.tail_emission_height > 0 && height >= cfg.tail_emission_height {
         return cfg.tail_emission;
     }
@@ -32,34 +40,73 @@ pub fn block_reward(height: u64, cfg: &ChainConfig) -> u64 {
     let c = cfg.emission_decay_constant as u128;
     let h = height as u128;
 
-    // A = R_0 - R_tail (the decaying component)
     let a = r0.saturating_sub(r_tail);
-
-    // c² and h² in u128
     let c_sq = c.saturating_mul(c);
     let h_sq = h.saturating_mul(h);
-
-    // denominator = h² + c²  (always > 0 since c ≥ 1)
     let denom = h_sq.saturating_add(c_sq);
-
-    // decay = A · c² / (h² + c²)
     let decay = a.saturating_mul(c_sq) / denom;
 
-    // When the decay is negligible (< 1 atomic unit per HPN), snap to tail
     if decay == 0 {
         return cfg.tail_emission;
     }
 
-    // R(h) = R_tail + decay
-    let reward = r_tail + decay;
-
-    reward as u64
+    (r_tail + decay) as u64
 }
 
-/// Approximate cumulative supply emitted from genesis to `height` (inclusive).
+/// Compute the MSE multiplier from the actual/target difficulty ratio.
 ///
-/// Uses the trapezoidal rule over 1024-block segments for accuracy
-/// without requiring floating-point or transcendental functions.
+/// Returns the multiplier scaled by 10_000 (basis points):
+///   - 10_000 = 1.00×  (no adjustment)
+///   - 12_000 = 1.20×  (max upward)
+///   -  8_000 = 0.80×  (max downward)
+///
+/// `difficulty_ratio_bps` = (D_actual / D_target) × 10_000.
+/// If D_target = 0 or unknown (e.g. genesis), returns 10_000 (neutral).
+pub fn mse_multiplier_bps(difficulty_ratio_bps: u64, cfg: &ChainConfig) -> u64 {
+    // γ as fixed-point: mse_gamma=100 → γ=0.10 → γ_scaled = 100
+    // deviation = ratio - 10_000 (can be negative)
+    let ratio = difficulty_ratio_bps as i128;
+    let deviation = ratio - 10_000;
+
+    // raw_multiplier = 10_000 + γ/1000 * deviation
+    // = 10_000 + mse_gamma * deviation / 1000
+    let gamma = cfg.mse_gamma as i128;
+    let raw = 10_000i128 + gamma * deviation / 1000;
+
+    // Clamp between floor and ceil
+    let floor = cfg.mse_floor_bps as i128;
+    let ceil = cfg.mse_ceil_bps as i128;
+    raw.clamp(floor, ceil) as u64
+}
+
+/// Compute the full block reward with MSE adjustment.
+///
+/// `difficulty_ratio_bps` = (D_actual / D_target) × 10_000.
+/// Pass 10_000 for no MSE adjustment (neutral ratio).
+pub fn block_reward(height: u64, cfg: &ChainConfig) -> u64 {
+    block_reward_with_mse(height, 10_000, cfg)
+}
+
+/// Compute the block reward with an explicit MSE difficulty ratio.
+pub fn block_reward_with_mse(
+    height: u64,
+    difficulty_ratio_bps: u64,
+    cfg: &ChainConfig,
+) -> u64 {
+    let base = lcd_base_reward(height, cfg) as u128;
+    let multiplier = mse_multiplier_bps(difficulty_ratio_bps, cfg) as u128;
+
+    let adjusted = base * multiplier / 10_000;
+
+    // Never below tail emission
+    adjusted.max(cfg.tail_emission as u128) as u64
+}
+
+/// Approximate cumulative *base* supply emitted from genesis to `height` (inclusive).
+///
+/// Uses the trapezoidal rule over 1024-block segments. This computes
+/// the LCD base schedule (no MSE) because the MSE multiplier is
+/// difficulty-dependent and unknowable for future blocks.
 pub fn total_supply_at_height(height: u64, cfg: &ChainConfig) -> u128 {
     let mut total: u128 = 0;
     let step = 1024u64;
@@ -67,8 +114,8 @@ pub fn total_supply_at_height(height: u64, cfg: &ChainConfig) -> u128 {
 
     while h <= height {
         let end = (h + step - 1).min(height);
-        let r_start = block_reward(h, cfg) as u128;
-        let r_end = block_reward(end, cfg) as u128;
+        let r_start = lcd_base_reward(h, cfg) as u128;
+        let r_end = lcd_base_reward(end, cfg) as u128;
         let blocks = (end - h + 1) as u128;
 
         // Trapezoidal rule: (r_start + r_end) / 2 * blocks
@@ -210,5 +257,69 @@ mod tests {
         assert_eq!(integer_sqrt(4), 2);
         assert_eq!(integer_sqrt(100), 10);
         assert_eq!(integer_sqrt(1_000_000), 1000);
+    }
+
+    #[test]
+    fn mse_neutral_ratio() {
+        let cfg = ChainConfig::mainnet();
+        // ratio = 10_000 (1.0×) → multiplier should be 10_000 (neutral)
+        assert_eq!(mse_multiplier_bps(10_000, &cfg), 10_000);
+    }
+
+    #[test]
+    fn mse_high_hashrate() {
+        let cfg = ChainConfig::mainnet();
+        // ratio = 15_000 (1.5×) → deviation = +5000
+        // raw = 10_000 + 100 * 5000 / 1000 = 10_000 + 500 = 10_500
+        // clamped to ceil 12_000 → actually 10_500 < 12_000 so stays
+        let m = mse_multiplier_bps(15_000, &cfg);
+        assert_eq!(m, 10_500);
+    }
+
+    #[test]
+    fn mse_low_hashrate() {
+        let cfg = ChainConfig::mainnet();
+        // ratio = 5_000 (0.5×) → deviation = -5000
+        // raw = 10_000 + 100 * (-5000) / 1000 = 10_000 - 500 = 9_500
+        let m = mse_multiplier_bps(5_000, &cfg);
+        assert_eq!(m, 9_500);
+    }
+
+    #[test]
+    fn mse_clamp_ceil() {
+        let cfg = ChainConfig::mainnet();
+        // ratio = 40_000 (4.0×) → deviation = +30_000
+        // raw = 10_000 + 100 * 30_000 / 1000 = 10_000 + 3_000 = 13_000
+        // clamped to ceil 12_000
+        let m = mse_multiplier_bps(40_000, &cfg);
+        assert_eq!(m, cfg.mse_ceil_bps);
+    }
+
+    #[test]
+    fn mse_clamp_floor() {
+        let cfg = ChainConfig::mainnet();
+        // ratio = 0 → deviation = -10_000
+        // raw = 10_000 + 100 * (-10_000) / 1000 = 10_000 - 1_000 = 9_000
+        // above floor 8_000, so stays at 9_000
+        let m = mse_multiplier_bps(0, &cfg);
+        assert_eq!(m, 9_000);
+    }
+
+    #[test]
+    fn mse_adjusted_reward() {
+        let cfg = ChainConfig::mainnet();
+        let base = lcd_base_reward(0, &cfg);
+        // 1.05× multiplier
+        let adj = block_reward_with_mse(0, 15_000, &cfg);
+        let expected = (base as u128 * 10_500 / 10_000) as u64;
+        assert_eq!(adj, expected);
+    }
+
+    #[test]
+    fn mse_never_below_tail() {
+        let cfg = ChainConfig::mainnet();
+        // Even with minimum multiplier at very late height
+        let r = block_reward_with_mse(1_000_000_000, 0, &cfg);
+        assert!(r >= cfg.tail_emission);
     }
 }

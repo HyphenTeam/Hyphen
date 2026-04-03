@@ -1,5 +1,4 @@
-use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
-use curve25519_dalek::ristretto::RistrettoPoint;
+use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use rand::rngs::OsRng;
 use thiserror::Error;
@@ -32,6 +31,8 @@ pub enum BuilderError {
     Clsag(String),
     #[error("range proof error: {0}")]
     RangeProof(String),
+    #[error("point decompression failed on input {0}")]
+    Decompression(usize),
 }
 
 pub struct InputSpec {
@@ -49,6 +50,8 @@ pub struct TransactionBuilder {
     inputs: Vec<InputSpec>,
     outputs: Vec<OutputSpec>,
     fee: u64,
+    /// TERA epoch context: blake3("TERA_v1" || epoch_seed)
+    epoch_context: [u8; 32],
 }
 
 impl Default for TransactionBuilder {
@@ -61,6 +64,7 @@ impl TransactionBuilder {
             inputs: Vec::new(),
             outputs: Vec::new(),
             fee: 0,
+            epoch_context: [0u8; 32],
         }
     }
 
@@ -76,6 +80,17 @@ impl TransactionBuilder {
 
     pub fn set_fee(&mut self, fee: u64) -> &mut Self {
         self.fee = fee;
+        self
+    }
+
+    /// Set the TERA epoch context. Callers must supply the *current* epoch
+    /// seed so the builder can derive the binding.  The epoch_seed is
+    /// typically obtained from `Blockchain::epoch_seed_for_height`.
+    pub fn set_epoch_seed(&mut self, epoch_seed: &[u8; 32]) -> &mut Self {
+        self.epoch_context = *hyphen_crypto::blake3_keyed(
+            b"TERA_v1_context__Hyphen_2025_ctx",
+            epoch_seed,
+        ).as_bytes();
         self
     }
 
@@ -135,21 +150,32 @@ impl TransactionBuilder {
         let mut tx_inputs = Vec::with_capacity(self.inputs.len());
         let mut clsag_sigs = Vec::with_capacity(self.inputs.len());
 
-        let mut prefix_data = Vec::new();
-        prefix_data.push(1u8);
-        for out in &tx_outputs {
-            prefix_data.extend_from_slice(out.commitment.as_bytes());
+        // Phase 1: Build all TxInput structures and collect signing data
+        struct SigningData {
+            ring_keys: Vec<RistrettoPoint>,
+            ring_commits: Vec<RistrettoPoint>,
+            pseudo_commit: RistrettoPoint,
+            real_index: usize,
+            spend_sk: Scalar,
+            blinding_diff: Scalar,
         }
-        prefix_data.extend_from_slice(&self.fee.to_le_bytes());
-        let msg = hyphen_crypto::blake3_hash(&prefix_data);
+        let mut signing_data = Vec::with_capacity(self.inputs.len());
 
         for (i, ispec) in self.inputs.iter().enumerate() {
             let spend_sk = ispec.owned.spend_scalar();
             let real_blind = ispec.owned.blinding_scalar();
             let pseudo_blind = pseudo_blindings[i];
 
-            let real_pk = spend_sk * G;
-            let real_commit = gens.commit(Scalar::from(ispec.owned.value), real_blind);
+            let real_pk = CompressedRistretto::from_slice(&ispec.owned.note.one_time_pubkey)
+                .map_err(|_| BuilderError::Decompression(i))?
+                .decompress()
+                .ok_or(BuilderError::Decompression(i))?;
+            let real_commit = ispec
+                .owned
+                .note
+                .commitment
+                .to_point()
+                .map_err(|_| BuilderError::Decompression(i))?;
             let pseudo_commit = gens.commit(Scalar::from(ispec.owned.value), pseudo_blind);
 
             let ring_size = 1 + ispec.decoys.len();
@@ -177,40 +203,91 @@ impl TransactionBuilder {
 
             let ki = nullifier::compute_nullifier(&spend_sk, &real_pk);
 
-            let sig = clsag::clsag_sign(
-                msg.as_bytes(),
-                &ring_keys,
-                &ring_commits,
-                &pseudo_commit,
-                ispec.real_index,
-                &spend_sk,
-                &(real_blind - pseudo_blind),
-            )
-            .map_err(|e| BuilderError::Clsag(e.to_string()))?;
+            // ── TERA: compute temporal nonce and causal binding ──
+            let temporal_nonce = *hyphen_crypto::hash::hash_to_scalar(
+                b"TERA_nonce",
+                &[spend_sk.as_bytes().as_slice(), &self.epoch_context].concat(),
+            ).as_bytes();
+
+            let note_hash = ispec.owned.note.note_hash();
+            let causal_binding = *hyphen_crypto::blake3_hash_many(&[
+                b"TERA_causal",
+                spend_sk.as_bytes(),
+                note_hash.as_bytes(),
+                &self.epoch_context,
+            ]).as_bytes();
 
             tx_inputs.push(TxInput {
                 ring: ring_refs,
                 key_image: ki.compress().to_bytes(),
                 pseudo_output: Commitment::from_point(&pseudo_commit),
+                epoch_context: self.epoch_context,
+                temporal_nonce,
+                causal_binding,
             });
-            clsag_sigs.push(sig);
+            signing_data.push(SigningData {
+                ring_keys,
+                ring_commits,
+                pseudo_commit,
+                real_index: ispec.real_index,
+                spend_sk,
+                blinding_diff: real_blind - pseudo_blind,
+            });
         }
 
         let (agg_proof, _commitments) =
             AggregatedRangeProof::prove(&out_values, &out_blindings)
                 .map_err(|e| BuilderError::RangeProof(e.to_string()))?;
 
-        Ok(Transaction {
+        // Phase 2: Build the Transaction shell to compute prefix_hash
+        // using the authoritative Transaction::prefix_hash() method —
+        // avoids duplicating the hash logic.
+        let mut tx = Transaction {
             version: 1,
             inputs: tx_inputs,
             outputs: tx_outputs,
             fee: self.fee,
             extra: Vec::new(),
             prunable: TxPrunable {
-                clsag_signatures: clsag_sigs,
+                clsag_signatures: Vec::new(),
                 range_proof: agg_proof,
             },
-        })
+        };
+
+        let msg = tx.prefix_hash();
+
+        // Phase 3: Sign each input with CLSAG
+        for sd in &signing_data {
+            let sig = clsag::clsag_sign(
+                msg.as_bytes(),
+                &sd.ring_keys,
+                &sd.ring_commits,
+                &sd.pseudo_commit,
+                sd.real_index,
+                &sd.spend_sk,
+                &sd.blinding_diff,
+            )
+            .map_err(|e| BuilderError::Clsag(e.to_string()))?;
+
+            // Self-verify immediately — if this fails, the data is inconsistent
+            clsag::clsag_verify(
+                msg.as_bytes(),
+                &sd.ring_keys,
+                &sd.ring_commits,
+                &sd.pseudo_commit,
+                &sig,
+            )
+            .map_err(|e| {
+                BuilderError::Clsag(format!(
+                    "self-verification failed (builder data inconsistency): {e}"
+                ))
+            })?;
+
+            clsag_sigs.push(sig);
+        }
+
+        tx.prunable.clsag_signatures = clsag_sigs;
+        Ok(tx)
     }
 }
 
