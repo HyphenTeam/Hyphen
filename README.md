@@ -356,6 +356,30 @@ and decoys are guaranteed to span multiple age bands and a minimum fraction of t
 
 **No existing privacy coin provides consensus-level guarantees on ring anonymity quality.**
 
+#### Adaptive VRE — Early-Chain Scaling
+
+The full-strength VRE parameters (e.g., `vre_age_band_width = 2048`) would require thousands of blocks before transactions could be constructed. Hyphen solves this with **adaptive VRE**: the consensus layer and wallet jointly scale parameters proportionally to the current chain height so that all four VRE rules are always satisfiable once the **activation height** is reached.
+
+- **VRE activation height:** mainnet = 128, testnet = 32. Before the activation height, only coinbase (mining reward) transactions exist; no user transfers are accepted.
+- **Effective band width:** $w_{\text{eff}} = \min\bigl(w,\; \lfloor h / B_{\min} \rfloor\bigr)$ — shrinks the band width so that the required number of distinct age bands always fits within the available height range.
+- **Effective min ring span:** $S_{\text{eff}} = \min(S_{\min},\; h - 1)$ — caps the span requirement at what the chain can actually provide.
+- **Progressive index span (logistic ramp):** $\tau_{\text{eff}} = \min\!\Bigl(\tau \cdot \frac{n^2}{n^2 + k^2},\; \frac{(N-1) \cdot 10000}{N}\Bigr)$ where $k = \texttt{ring\_size} \times 64$. Unlike a simple cap, this logistic sigmoid provides smooth 0 → target growth: 50% at $n = k$ outputs, 80% at $n = 2k$, converging to full enforcement as the output set matures.
+
+As the chain grows, all effective parameters converge to their full paper-specified values. At mainnet height 6144 ($= 2048 \times 3$), $w_{\text{eff}}$ reaches 2048 and full-strength VRE is in effect.
+
+#### Security Hardening
+
+Hyphen implements defence-in-depth across all transaction acceptance paths:
+
+- **P2P gossip validation.** Every transaction received via gossipsub undergoes full consensus validation (CLSAG + TERA + MD-VRE + balance + range proof + nullifier check) before it enters the mempool. A malicious peer cannot inject invalid transactions into any honest node's pool.
+- **Validated mempool insert.** The mempool API requires a `Validated` proof token, ensuring that no code path can insert an unvalidated transaction. The token also carries a **VRE quality score** (0–10,000) — see below.
+- **Genesis config immutability.** On first startup the node's consensus-critical parameters are hashed (blake3) and persisted. On every subsequent startup the stored hash is compared to the current config; a mismatch aborts with a clear error, preventing accidental or malicious rule changes.
+- **VRE quality scoring.** Each validated transaction receives a composite quality score based on four equally-weighted factors: height span excess, height uniqueness, age-band diversity, and index spread. The mempool uses this score as a secondary priority after fee density (via `neg_vre_quality` in the `Priority` ordering), so transactions with superior ring construction are prioritised for block inclusion.
+- **Decoy distribution audit.** The wallet divides the output index space into 10 equal bands and verifies that no more than half the node-returned decoys fall in the same band. A node that returns clustered outputs to deanonymize the sender will be detected and the transaction refused.
+- **Adaptive VRE flag.** The wallet reports a `vre_used_adaptive: bool` field to the Flutter UI. When adaptive parameters were used, the user sees an informational banner explaining that ring entropy will improve as the chain matures.
+
+更多细节与逐文件变更说明，请参阅： [docs/HARDENING_CHANGES.md](docs/HARDENING_CHANGES.md)
+
 ### Encrypted Wallet Storage
 
 Wallet files containing master seed and key material are protected by password-based encryption:
@@ -410,6 +434,7 @@ $$R(h) = R_{\text{tail}} + (R_0 - R_{\text{tail}}) \cdot \frac{c^2}{h^2 + c^2}$$
 | Max uncles | 2 | 2 |
 | Max uncle depth | 7 | 7 |
 | Ring size | 16 | 4 |
+| VRE activation height | 128 | 32 |
 | Min ring span (VRE-1) | 100 blocks | 20 blocks |
 | Min distinct heights (VRE-2) | ⌈3n/4⌉ | ⌈3n/4⌉ |
 | Min age bands (VRE-3) | 3 | 2 |

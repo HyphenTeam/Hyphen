@@ -17,9 +17,26 @@ pub enum MempoolError {
 
 type Result<T> = std::result::Result<T, MempoolError>;
 
+/// Proof that full consensus validation has been performed.
+///
+/// Callers MUST execute CLSAG + TERA + MD-VRE + balance + range-proof
+/// validation before constructing this token. The mempool will refuse
+/// transactions without it.
+pub struct Validated {
+    vre_quality: i64,
+}
+
+impl Validated {
+    /// Create a validation proof carrying the VRE quality score (0–10 000).
+    pub fn new(vre_quality: i64) -> Self {
+        Self { vre_quality }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Priority {
     neg_fee_density: i64,
+    neg_vre_quality: i64,
     seq: u64,
 }
 
@@ -58,7 +75,7 @@ impl Mempool {
         self.entries.is_empty()
     }
 
-    pub fn insert(&mut self, tx: Transaction) -> Result<Hash256> {
+    pub fn insert(&mut self, tx: Transaction, proof: Validated) -> Result<Hash256> {
         let tx_hash = tx.hash();
 
         if self.entries.contains_key(&tx_hash) {
@@ -90,6 +107,7 @@ impl Mempool {
 
         let prio = Priority {
             neg_fee_density: -fee_density,
+            neg_vre_quality: -proof.vre_quality,
             seq: self.seq,
         };
         self.seq += 1;

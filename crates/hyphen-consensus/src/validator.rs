@@ -164,13 +164,20 @@ impl<'a> BlockValidator<'a> {
         Ok(())
     }
 
+    /// Validate a transaction and return a VRE quality score (0–10 000).
+    ///
+    /// The score reflects the ring-entropy quality across all inputs:
+    /// higher values indicate better decoy diversity, which strengthens
+    /// sender-privacy. The score is used by the mempool to prioritise
+    /// transactions with superior ring construction.
     pub fn validate_transaction<F>(
         &self,
         tx: &Transaction,
         resolve_ring_member: F,
         valid_epoch_contexts: &[[u8; 32]],
         total_outputs: u64,
-    ) -> Result<(), ValidationError>
+        block_height: u64,
+    ) -> Result<i64, ValidationError>
     where
         F: Fn(u64) -> Result<(RistrettoPoint, RistrettoPoint, u64), ValidationError>,
     {
@@ -181,6 +188,11 @@ impl<'a> BlockValidator<'a> {
         if !tx.check_balance() {
             return Err(ValidationError::BalanceFailed);
         }
+
+        let vre_active = block_height >= self.cfg.vre_activation_height;
+
+        let mut quality_acc: i64 = 0;
+        let mut input_count: i64 = 0;
 
         let msg = tx.prefix_hash();
         for (i, (input, sig)) in tx
@@ -218,14 +230,25 @@ impl<'a> BlockValidator<'a> {
                 ring_indices.push(oref.global_index);
             }
 
-            // ── VRE: original height-based validation ──
-            self.validate_ring_entropy(&ring_heights)?;
+            if vre_active {
+                // ── VRE-1 + VRE-2: height span and distinct fraction ──
+                self.validate_ring_entropy(&ring_heights, block_height)?;
 
-            // ── MD-VRE: output-age diversity ──
-            self.validate_ring_age_diversity(&ring_heights)?;
+                // ── MD-VRE-3: output-age band diversity ──
+                self.validate_ring_age_diversity(&ring_heights, block_height)?;
 
-            // ── MD-VRE: global index distribution ──
-            self.validate_ring_index_span(&ring_indices, total_outputs)?;
+                // ── MD-VRE-4: global-index span ──
+                self.validate_ring_index_span(&ring_indices, total_outputs)?;
+            }
+
+            // ── Compute per-input VRE quality score ──
+            quality_acc += self.ring_quality_score(
+                &ring_heights,
+                &ring_indices,
+                total_outputs,
+                block_height,
+            );
+            input_count += 1;
 
             let pseudo_out = input
                 .pseudo_output
@@ -261,11 +284,76 @@ impl<'a> BlockValidator<'a> {
             .verify(&out_commitments)
             .map_err(|e| ValidationError::RangeProofFailed(e.to_string()))?;
 
-        Ok(())
+        let quality = if input_count > 0 {
+            quality_acc / input_count
+        } else {
+            0
+        };
+        Ok(quality)
+    }
+
+    /// Compute a quality score (0–10 000) for one input's ring selection.
+    ///
+    /// Four equally-weighted factors, each contributing 0–2 500 points:
+    ///   1. **Height span excess** — how far the ring span exceeds the
+    ///      minimum requirement.
+    ///   2. **Height uniqueness** — fraction of ring members at distinct
+    ///      heights.
+    ///   3. **Age-band diversity** — number of occupied age bands relative
+    ///      to the minimum.
+    ///   4. **Index spread** — global-index span relative to the minimum.
+    fn ring_quality_score(
+        &self,
+        heights: &[u64],
+        indices: &[u64],
+        total_outputs: u64,
+        block_height: u64,
+    ) -> i64 {
+        let n = heights.len();
+        if n < 2 {
+            return 0;
+        }
+
+        let min_h = *heights.iter().min().unwrap();
+        let max_h = *heights.iter().max().unwrap();
+        let span = max_h - min_h;
+        let eff_span = self.cfg.effective_min_ring_span(block_height).max(1);
+        let factor_span = ((span as i64) * 2500 / (eff_span as i64)).min(2500);
+
+        let mut unique_h = heights.to_vec();
+        unique_h.sort_unstable();
+        unique_h.dedup();
+        let factor_unique = (unique_h.len() as i64) * 2500 / (n as i64);
+
+        let band_width = self.cfg.effective_vre_age_band_width(block_height).max(1);
+        let mut bands: Vec<u64> = heights
+            .iter()
+            .map(|&h| max_h.saturating_sub(h) / band_width)
+            .collect();
+        bands.sort_unstable();
+        bands.dedup();
+        let min_bands = self.cfg.vre_min_age_bands.max(1) as i64;
+        let factor_bands = ((bands.len() as i64) * 2500 / min_bands).min(2500);
+
+        let min_idx = *indices.iter().min().unwrap();
+        let max_idx = *indices.iter().max().unwrap();
+        let idx_span_bps =
+            max_idx.saturating_sub(min_idx).saturating_mul(10_000) / total_outputs.max(1);
+        let eff_bps = self.cfg.effective_vre_min_index_span_bps(total_outputs).max(1);
+        let factor_index = ((idx_span_bps as i64) * 2500 / (eff_bps as i64)).min(2500);
+
+        factor_span + factor_unique + factor_bands + factor_index
     }
 
     /// VRE-1 + VRE-2: Height span and distinct height fraction.
-    fn validate_ring_entropy(&self, heights: &[u64]) -> Result<(), ValidationError> {
+    ///
+    /// `block_height` is the block being validated so we can derive the
+    /// effective minimum span for young chains.
+    fn validate_ring_entropy(
+        &self,
+        heights: &[u64],
+        block_height: u64,
+    ) -> Result<(), ValidationError> {
         let n = heights.len();
         if n < 2 {
             return Ok(());
@@ -275,10 +363,11 @@ impl<'a> BlockValidator<'a> {
         let max_h = heights.iter().copied().max().unwrap_or(0);
         let span = max_h - min_h;
 
-        if span < self.cfg.min_ring_span {
+        let effective_span = self.cfg.effective_min_ring_span(block_height);
+        if span < effective_span {
             return Err(ValidationError::RingEntropyTooLow {
                 span,
-                min_span: self.cfg.min_ring_span,
+                min_span: effective_span,
             });
         }
 
@@ -298,16 +387,24 @@ impl<'a> BlockValidator<'a> {
         Ok(())
     }
 
-    /// MD-VRE-3: Output age diversity — ring members must span multiple
-    /// age bands to prevent fresh-output-cluster attacks.
-    fn validate_ring_age_diversity(&self, heights: &[u64]) -> Result<(), ValidationError> {
+    /// MD-VRE-3: Output-age band diversity.
+    ///
+    /// Ring members must span at least `vre_min_age_bands` distinct age
+    /// bands. The band width is adaptively reduced for young chains via
+    /// `effective_vre_age_band_width` so the rule is always satisfiable
+    /// once the chain reaches the activation height.
+    fn validate_ring_age_diversity(
+        &self,
+        heights: &[u64],
+        block_height: u64,
+    ) -> Result<(), ValidationError> {
         let n = heights.len();
         if n < 2 || self.cfg.vre_min_age_bands == 0 {
             return Ok(());
         }
 
         let max_h = heights.iter().copied().max().unwrap_or(0);
-        let band_width = self.cfg.vre_age_band_width.max(1);
+        let band_width = self.cfg.effective_vre_age_band_width(block_height);
 
         let mut bands: Vec<u64> = heights
             .iter()
@@ -326,8 +423,11 @@ impl<'a> BlockValidator<'a> {
         Ok(())
     }
 
-    /// MD-VRE-4: Global index distribution — ring indices must span at
-    /// least `vre_min_index_span_bps` of the total output set.
+    /// MD-VRE-4: Global-index span.
+    ///
+    /// Ring indices must span at least `effective_vre_min_index_span_bps`
+    /// of the total output set. The threshold is capped for small output
+    /// sets so the rule remains satisfiable on young chains.
     fn validate_ring_index_span(
         &self,
         indices: &[u64],
@@ -341,13 +441,13 @@ impl<'a> BlockValidator<'a> {
         let max_idx = indices.iter().copied().max().unwrap_or(0);
         let span = max_idx.saturating_sub(min_idx);
 
-        // span_bps = span * 10000 / total_outputs
         let span_bps = span.saturating_mul(10_000) / total_outputs.max(1);
+        let effective_min_bps = self.cfg.effective_vre_min_index_span_bps(total_outputs);
 
-        if span_bps < self.cfg.vre_min_index_span_bps {
+        if span_bps < effective_min_bps {
             return Err(ValidationError::RingIndexSpanTooNarrow {
                 span_bps,
-                min_bps: self.cfg.vre_min_index_span_bps,
+                min_bps: effective_min_bps,
             });
         }
 

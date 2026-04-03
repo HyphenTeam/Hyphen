@@ -49,6 +49,7 @@ pub struct ChainConfig {
     pub vre_min_age_bands: usize,
     pub vre_age_band_width: u64,
     pub vre_min_index_span_bps: u64,
+    pub vre_activation_height: u64,
     pub mse_gamma: u64,
     pub mse_floor_bps: u64,
     pub mse_ceil_bps: u64,
@@ -68,6 +69,75 @@ impl ChainConfig {
 
     pub fn default_p2p_addr(&self) -> String {
         format!("/dns4/{}/tcp/{}", DEFAULT_SEED_DOMAIN, self.p2p_port)
+    }
+
+    pub fn effective_vre_age_band_width(&self, height: u64) -> u64 {
+        if height == 0 || self.vre_min_age_bands == 0 {
+            return self.vre_age_band_width;
+        }
+        let max_feasible = height / (self.vre_min_age_bands as u64);
+        self.vre_age_band_width.min(max_feasible.max(1))
+    }
+
+    pub fn effective_min_ring_span(&self, height: u64) -> u64 {
+        let max_feasible = height.saturating_sub(1);
+        self.min_ring_span.min(max_feasible)
+    }
+
+    /// Progressive logistic ramp for index-span enforcement.
+    ///
+    /// Instead of a hard on/off threshold, enforcement follows a sigmoid
+    /// curve:  `target_bps × n² / (n² + k²)`  where `k = ring_size × 64`.
+    /// This gives smooth 0 → target growth as the output set expands:
+    ///   • n = 0   → 0 bps (no requirement)
+    ///   • n = k   → 50 % of target
+    ///   • n = 2k  → 80 % of target
+    ///   • n → ∞   → 100 % of target
+    ///
+    /// The result is additionally capped at the geometric maximum so the
+    /// rule always remains satisfiable.
+    pub fn effective_vre_min_index_span_bps(&self, total_outputs: u64) -> u64 {
+        if total_outputs <= 1 {
+            return 0;
+        }
+        let max_bps = (total_outputs - 1).saturating_mul(10_000) / total_outputs;
+
+        // Logistic sigmoid via u128 to avoid overflow on large output sets.
+        let k = (self.ring_size as u128).saturating_mul(64);
+        let n = total_outputs as u128;
+        let n2 = n.saturating_mul(n);
+        let k2 = k.saturating_mul(k);
+        let denom = n2.saturating_add(k2).max(1);
+        let progressive_bps =
+            ((self.vre_min_index_span_bps as u128).saturating_mul(n2) / denom) as u64;
+
+        progressive_bps.min(max_bps)
+    }
+
+    /// Blake3 hash of all consensus-critical parameters.
+    ///
+    /// Used to verify that an existing chain database was created with the
+    /// same consensus rules. Any mutation of these parameters after genesis
+    /// will be detected and rejected.
+    pub fn consensus_params_hash(&self) -> [u8; 32] {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(&self.network_magic);
+        buf.extend_from_slice(&(self.ring_size as u64).to_le_bytes());
+        buf.extend_from_slice(&self.min_ring_span.to_le_bytes());
+        buf.extend_from_slice(&(self.vre_min_age_bands as u64).to_le_bytes());
+        buf.extend_from_slice(&self.vre_age_band_width.to_le_bytes());
+        buf.extend_from_slice(&self.vre_min_index_span_bps.to_le_bytes());
+        buf.extend_from_slice(&self.vre_activation_height.to_le_bytes());
+        buf.extend_from_slice(&self.epoch_length.to_le_bytes());
+        buf.extend_from_slice(&self.initial_reward.to_le_bytes());
+        buf.extend_from_slice(&self.emission_decay_constant.to_le_bytes());
+        buf.extend_from_slice(&self.tail_emission.to_le_bytes());
+        buf.extend_from_slice(&self.fee_burn_bps.to_le_bytes());
+        buf.extend_from_slice(&(self.max_uncles as u64).to_le_bytes());
+        buf.extend_from_slice(&self.max_uncle_depth.to_le_bytes());
+        buf.extend_from_slice(&self.genesis_difficulty.to_le_bytes());
+        buf.extend_from_slice(&self.difficulty_window.to_le_bytes());
+        *hyphen_crypto::blake3_hash(&buf).as_bytes()
     }
 
     pub fn mainnet() -> Self {
@@ -101,11 +171,12 @@ impl ChainConfig {
             difficulty_clamp_up: 3,
             difficulty_clamp_down: 3,
             timestamp_future_limit_ms: 120_000,
-            min_ring_span: 50,
+            min_ring_span: 100,
             tera_epoch_tolerance: 2,
             vre_min_age_bands: 3,
-            vre_age_band_width: 32,
-            vre_min_index_span_bps: 300,
+            vre_age_band_width: 2048,
+            vre_min_index_span_bps: 500,
+            vre_activation_height: 128,
             mse_gamma: 100,
             mse_floor_bps: 8000,
             mse_ceil_bps: 12000,
@@ -146,11 +217,12 @@ impl ChainConfig {
             difficulty_clamp_up: 3,
             difficulty_clamp_down: 3,
             timestamp_future_limit_ms: 60_000,
-            min_ring_span: 10,
+            min_ring_span: 20,
             tera_epoch_tolerance: 4,
             vre_min_age_bands: 2,
-            vre_age_band_width: 16,
-            vre_min_index_span_bps: 200,
+            vre_age_band_width: 128,
+            vre_min_index_span_bps: 300,
+            vre_activation_height: 32,
             mse_gamma: 100,
             mse_floor_bps: 8000,
             mse_ceil_bps: 12000,

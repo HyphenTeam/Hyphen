@@ -253,15 +253,94 @@ fn handle_behaviour_event(
                         }
                     }
                     hyphen_network::NetworkMessage::NewTransaction(tx_bytes) => {
-                        if let Ok(tx) = bincode::deserialize::<hyphen_tx::Transaction>(&tx_bytes) {
-                            let mut pool = mempool.write();
-                            match pool.insert(tx) {
-                                Ok(hash) => {
-                                    info!("Added tx {hash} to mempool");
-                                }
-                                Err(e) => {
-                                    warn!("Rejected tx: {e}");
-                                }
+                        let tx = match bincode::deserialize::<hyphen_tx::Transaction>(&tx_bytes) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(
+                                    target: "hyphen::metrics",
+                                    "P2P tx decode failed from {}: {e}", propagation_source
+                                );
+                                return;
+                            }
+                        };
+
+                        // ── Full consensus validation (same as RPC path) ──
+                        let tip = match blockchain.tip() {
+                            Ok(t) => t,
+                            Err(_) => return,
+                        };
+                        let next_height = tip.height + 1;
+
+                        // Nullifier check
+                        for inp in &tx.inputs {
+                            if blockchain
+                                .nullifiers
+                                .contains(&inp.key_image)
+                                .unwrap_or(false)
+                            {
+                                warn!(
+                                    target: "hyphen::metrics",
+                                    "P2P tx rejected (double-spend) from {}", propagation_source
+                                );
+                                return;
+                            }
+                        }
+
+                        let valid_epoch_contexts =
+                            match blockchain.build_valid_epoch_contexts(next_height) {
+                                Ok(v) => v,
+                                Err(_) => return,
+                            };
+
+                        let total_outputs = {
+                            let ct = blockchain.commitment_tree.read();
+                            ct.count()
+                        };
+
+                        let validator =
+                            hyphen_consensus::BlockValidator::new(&blockchain.cfg);
+                        let store = blockchain.store();
+                        let vre_quality = match validator.validate_transaction(
+                            &tx,
+                            |global_index| {
+                                store.resolve_ring_member(global_index).map_err(|e| {
+                                    hyphen_consensus::validator::ValidationError::Core(
+                                        hyphen_core::error::CoreError::Storage(e.to_string()),
+                                    )
+                                })
+                            },
+                            &valid_epoch_contexts,
+                            total_outputs,
+                            next_height,
+                        ) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                warn!(
+                                    target: "hyphen::metrics",
+                                    "P2P tx rejected from {}: {e}", propagation_source
+                                );
+                                return;
+                            }
+                        };
+
+                        let tx_hash_hex = hex::encode(tx.hash().as_bytes());
+                        let mut pool = mempool.write();
+                        match pool
+                            .insert(tx, hyphen_mempool::Validated::new(vre_quality))
+                        {
+                            Ok(hash) => {
+                                info!(
+                                    target: "hyphen::metrics",
+                                    "P2P tx {} accepted (vre_quality={}) from {}",
+                                    hash, vre_quality, propagation_source
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    target: "hyphen::metrics",
+                                    "P2P tx {} mempool-rejected from {}: {e}",
+                                    tx_hash_hex, propagation_source
+                                );
                             }
                         }
                     }

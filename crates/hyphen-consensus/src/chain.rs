@@ -39,6 +39,29 @@ impl Blockchain {
         let commitment_tree =
             PersistentCommitmentTree::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
 
+        // ── Genesis config immutability check ──────────────────────
+        let meta_tree = db
+            .open_tree("consensus_meta")
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+        let current_hash = cfg.consensus_params_hash();
+        if let Some(stored) = meta_tree
+            .get(b"params_hash")
+            .map_err(|e| CoreError::Storage(e.to_string()))?
+        {
+            if stored.as_ref() != current_hash.as_slice() {
+                return Err(CoreError::Validation(
+                    "consensus parameters differ from genesis — \
+                     the chain database was created with different rules; \
+                     refusing to open to prevent fork"
+                        .into(),
+                ));
+            }
+        } else {
+            meta_tree
+                .insert(b"params_hash", current_hash.as_slice())
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+        }
+
         let bc = Self {
             cfg,
             db,
@@ -357,6 +380,7 @@ impl Blockchain {
                     },
                     &valid_epoch_contexts,
                     total_outputs,
+                    block.header.height,
                 )
                 .map_err(|e| CoreError::Validation(e.to_string()))?;
         }

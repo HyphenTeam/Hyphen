@@ -197,7 +197,7 @@ impl RpcHandler {
 
         let validator = hyphen_consensus::BlockValidator::new(&self.chain.cfg);
         let store = self.chain.store();
-        if let Err(e) = validator.validate_transaction(
+        let vre_quality = match validator.validate_transaction(
             &tx,
             |global_index| {
                 store.resolve_ring_member(global_index).map_err(|e| {
@@ -208,17 +208,21 @@ impl RpcHandler {
             },
             &valid_epoch_contexts,
             total_outputs,
+            next_height,
         ) {
-            let resp = SubmitTransactionResponse {
-                accepted: false,
-                tx_hash: vec![],
-                error: format!("validation failed: {e}"),
-            };
-            return Ok(resp.encode_to_vec());
-        }
+            Ok(q) => q,
+            Err(e) => {
+                let resp = SubmitTransactionResponse {
+                    accepted: false,
+                    tx_hash: vec![],
+                    error: format!("validation failed: {e}"),
+                };
+                return Ok(resp.encode_to_vec());
+            }
+        };
 
         let mut pool = self.mempool.write();
-        match pool.insert(tx) {
+        match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
             Ok(tx_hash) => {
                 let resp = SubmitTransactionResponse {
                     accepted: true,
