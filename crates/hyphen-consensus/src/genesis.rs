@@ -1,15 +1,20 @@
 use hyphen_core::block::{Block, BlockHeader};
-use hyphen_core::config::ChainConfig;
-use hyphen_core::timestamp;
+use hyphen_core::config::{ChainConfig, GENESIS_TIMESTAMP_MS};
+use hyphen_core::FROZEN_BLOCK_VERSION;
 use hyphen_crypto::Hash256;
 
+pub fn genesis_epoch_seed(cfg: &ChainConfig) -> Hash256 {
+    let params_hash = cfg.consensus_params_hash();
+    hyphen_crypto::blake3_hash_many(&[b"HyphenGenesisEpoch/v2", &cfg.network_magic, &params_hash])
+}
+
 pub fn build_genesis_block(cfg: &ChainConfig) -> Block {
-    let epoch_seed = hyphen_crypto::blake3_hash(b"Hyphen_genesis_epoch_seed");
+    let epoch_seed = genesis_epoch_seed(cfg);
 
     let header = BlockHeader {
-        version: 1,
+        version: FROZEN_BLOCK_VERSION,
         height: 0,
-        timestamp: timestamp::ntp_adjusted_timestamp_ms(),
+        timestamp: GENESIS_TIMESTAMP_MS,
         prev_hash: Hash256::ZERO,
         tx_root: Hash256::ZERO,
         commitment_root: Hash256::ZERO,
@@ -33,6 +38,24 @@ pub fn build_genesis_block(cfg: &ChainConfig) -> Block {
         header,
         transactions: Vec::new(),
         uncle_headers: Vec::new(),
-        pq_signature: Vec::new(),
+        block_authorization: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn genesis_is_deterministic_and_network_scoped() {
+        let mainnet = ChainConfig::mainnet();
+        let testnet = ChainConfig::testnet();
+        let first = build_genesis_block(&mainnet);
+        let second = build_genesis_block(&mainnet);
+
+        assert_eq!(first.hash(), second.hash());
+        assert_eq!(first.header.timestamp, GENESIS_TIMESTAMP_MS);
+        assert_ne!(first.hash(), build_genesis_block(&testnet).hash());
+        assert_ne!(genesis_epoch_seed(&mainnet), genesis_epoch_seed(&testnet));
     }
 }

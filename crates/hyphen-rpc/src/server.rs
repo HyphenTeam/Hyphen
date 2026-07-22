@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 use crate::handler::RpcHandler;
 use crate::messages::{RpcRequest, RpcResponse};
 
-const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
+pub const MAX_FRAME_SIZE: u32 = 4 * 1024 * 1024;
 
 pub struct RpcServer {
     handler: Arc<RpcHandler>,

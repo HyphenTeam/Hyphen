@@ -1,0 +1,29 @@
+name: Nightly fuzz smoke
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - transaction_decode
+          - rpc_decode
+          - p2p_decode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run bounded fuzz target
+        working-directory: crates/hyphen-fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=4096
+

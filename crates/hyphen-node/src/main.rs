@@ -3,12 +3,17 @@ use libp2p::{gossipsub, identify, request_response};
 use clap::Parser;
 use parking_lot::RwLock;
 use prost::Message;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{error, info, warn};
 
-use hyphen_consensus::Blockchain;
+use hyphen_consensus::{
+    build_genesis_block, export_archive, replay_archive, verify_archive_envelopes, Blockchain,
+    ChainArchive,
+};
 use hyphen_core::config::ChainConfig;
 use hyphen_core::timestamp::{ntp_adjusted_timestamp_ms, start_ntp_sync_task};
 use hyphen_mempool::Mempool;
@@ -24,8 +29,11 @@ struct Cli {
     #[arg(long, default_value = "hyphen_data")]
     data_dir: String,
 
-    #[arg(long, default_value = "testnet")]
+    #[arg(long, value_parser = ["mainnet", "testnet", "devnet"], default_value = "devnet")]
     network: String,
+
+    #[arg(long)]
+    identity_file: Option<PathBuf>,
 
     #[arg(long)]
     listen: Option<String>,
@@ -33,10 +41,30 @@ struct Cli {
     #[arg(long, default_value = "")]
     boot_nodes: String,
 
-    #[arg(long, default_value = "0.0.0.0:3350")]
+    /// Allow a mainnet seed node to start without boot peers.
+    #[arg(long)]
+    allow_isolated_mainnet: bool,
+
+    /// Print the selected network's consensus and genesis identifiers, then exit.
+    #[arg(long)]
+    print_chain_identity: bool,
+
+    /// Export post-genesis blocks to a chain-identity-bound replay archive.
+    #[arg(long)]
+    export_history: Option<PathBuf>,
+
+    /// Replay a chain archive into a fresh data directory, then exit.
+    #[arg(long)]
+    replay_history: Option<PathBuf>,
+
+    /// Verify archive identity, linkage, roots and miner authorization without applying state.
+    #[arg(long)]
+    verify_history: Option<PathBuf>,
+
+    #[arg(long, default_value = "127.0.0.1:3350")]
     template_bind: String,
 
-    #[arg(long, default_value = "0.0.0.0:8080")]
+    #[arg(long, default_value = "127.0.0.1:8080")]
     explorer_bind: String,
 
     #[arg(long)]
@@ -55,10 +83,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = match cli.network.as_str() {
         "mainnet" => ChainConfig::mainnet(),
-        _ => ChainConfig::testnet(),
+        "testnet" => ChainConfig::testnet(),
+        "devnet" => ChainConfig::devnet(),
+        _ => unreachable!("clap validates network"),
     };
+    if cli.print_chain_identity {
+        println!("network={}", cfg.network_name);
+        println!("network_magic={}", hex::encode(cfg.network_magic));
+        println!(
+            "consensus_params_hash={}",
+            hex::encode(cfg.consensus_params_hash())
+        );
+        println!("genesis_hash={}", build_genesis_block(&cfg).hash());
+        return Ok(());
+    }
+    if cli.network == "mainnet"
+        && cli.boot_nodes.trim().is_empty()
+        && !cli.allow_isolated_mainnet
+        && cli.export_history.is_none()
+        && cli.replay_history.is_none()
+        && cli.verify_history.is_none()
+    {
+        return Err(
+            "mainnet requires --boot-nodes; use --allow-isolated-mainnet only for the first seed node"
+                .into(),
+        );
+    }
 
-    start_ntp_sync_task();
+    if let Some(path) = &cli.verify_history {
+        let archive = read_chain_archive(path)?;
+        let report = verify_archive_envelopes(
+            &cfg,
+            &archive,
+            hyphen_core::timestamp::ntp_adjusted_timestamp_ms(),
+        )?;
+        println!(
+            "verified_blocks={} final_height={} final_hash={}",
+            report.blocks_applied, report.final_height, report.final_hash
+        );
+        return Ok(());
+    }
 
     info!(
         "Starting Hyphen node on {} (block_time={}ms, arena={}MiB)",
@@ -72,6 +136,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to open blockchain: {e}"))?,
     );
 
+    if let Some(path) = &cli.export_history {
+        let archive = export_archive(&blockchain)?;
+        let encoded = bincode::serialize(&archive)?;
+        std::fs::write(path, encoded)?;
+        println!(
+            "exported_blocks={} final_height={} path={}",
+            archive.blocks.len(),
+            blockchain.height()?,
+            path.display()
+        );
+        return Ok(());
+    }
+
+    if let Some(path) = &cli.replay_history {
+        let archive = read_chain_archive(path)?;
+        let envelope_report = verify_archive_envelopes(
+            &cfg,
+            &archive,
+            hyphen_core::timestamp::ntp_adjusted_timestamp_ms(),
+        )?;
+        let replay_report = replay_archive(&blockchain, &archive)?;
+        println!(
+            "verified_blocks={} replayed_blocks={} final_height={} final_hash={}",
+            envelope_report.blocks_applied,
+            replay_report.blocks_applied,
+            replay_report.final_height,
+            replay_report.final_hash
+        );
+        return Ok(());
+    }
+
+    start_ntp_sync_task();
+
     let tip = blockchain.tip()?;
     info!(
         "Chain tip: height={}, hash={}, cum_diff={}",
@@ -84,9 +181,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .listen
         .unwrap_or_else(|| format!("/ip4/0.0.0.0/tcp/{}", cfg.p2p_port));
     let listen_addr: libp2p::Multiaddr = listen_addr_str.parse()?;
-    let boot_nodes = parse_boot_nodes(&cli.boot_nodes);
+    let boot_nodes = parse_boot_nodes(&cli.boot_nodes)?;
+    let identity_path = cli
+        .identity_file
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(&cli.data_dir).join("p2p_identity.key"));
+    let p2p_identity = load_or_create_p2p_identity(&identity_path)?;
 
-    let mut network = hyphen_network::HyphenNetwork::new(listen_addr, boot_nodes)?;
+    let mut network = hyphen_network::HyphenNetwork::new(
+        listen_addr,
+        boot_nodes,
+        p2p_identity,
+        cfg.network_magic,
+    )?;
     info!(
         "P2P network started, local peer ID: {}",
         network.swarm.local_peer_id()
@@ -117,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── RPC Server ───────────────────────────────────────────
     let rpc_bind_addr = cli
         .rpc_bind
-        .unwrap_or_else(|| format!("0.0.0.0:{}", cfg.rpc_port));
+        .unwrap_or_else(|| format!("127.0.0.1:{}", cfg.rpc_port));
     let rpc_handler =
         hyphen_rpc::handler::RpcHandler::new(Arc::clone(&blockchain), Arc::clone(&mempool));
     let rpc_server = hyphen_rpc::RpcServer::bind(&rpc_bind_addr, rpc_handler)
@@ -163,23 +270,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_boot_nodes(s: &str) -> Vec<(libp2p::PeerId, libp2p::Multiaddr)> {
-    if s.is_empty() {
-        return Vec::new();
+fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::Error>> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > 512 * 1024 * 1024 {
+        return Err("chain archive exceeds the 512 MiB CLI limit".into());
     }
-    s.split(',')
-        .filter_map(|addr_str| {
-            let addr: libp2p::Multiaddr = addr_str.trim().parse().ok()?;
-            let peer_id = addr.iter().find_map(|proto| {
-                if let libp2p::multiaddr::Protocol::P2p(peer_id) = proto {
-                    Some(peer_id)
-                } else {
-                    None
-                }
-            })?;
-            Some((peer_id, addr))
+    let encoded = std::fs::read(path)?;
+    Ok(bincode::deserialize(&encoded)?)
+}
+
+fn parse_boot_nodes(
+    s: &str,
+) -> Result<Vec<(libp2p::PeerId, libp2p::Multiaddr)>, Box<dyn std::error::Error>> {
+    if s.is_empty() {
+        return Ok(Vec::new());
+    }
+    let nodes = s
+        .split(',')
+        .map(|addr_str| {
+            let trimmed = addr_str.trim();
+            let addr: libp2p::Multiaddr = trimmed
+                .parse()
+                .map_err(|e| format!("invalid boot node '{trimmed}': {e}"))?;
+            let peer_id = addr
+                .iter()
+                .find_map(|proto| {
+                    if let libp2p::multiaddr::Protocol::P2p(peer_id) = proto {
+                        Some(peer_id)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| format!("boot node '{trimmed}' is missing /p2p/<peer-id>"))?;
+            Ok((peer_id, addr))
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(nodes)
+}
+
+fn load_or_create_p2p_identity(
+    path: &Path,
+) -> Result<libp2p::identity::Keypair, Box<dyn std::error::Error>> {
+    if path.exists() {
+        let encoded = std::fs::read(path)?;
+        return libp2p::identity::Keypair::from_protobuf_encoding(&encoded)
+            .map_err(|e| format!("invalid p2p identity {}: {e}", path.display()).into());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let identity = libp2p::identity::Keypair::generate_ed25519();
+    let encoded = identity.to_protobuf_encoding()?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("cannot create p2p identity {}: {e}", path.display()))?;
+    file.write_all(&encoded)?;
+    file.sync_all()?;
+    info!("Created persistent P2P identity at {}", path.display());
+    Ok(identity)
 }
 
 fn handle_swarm_event(
@@ -241,7 +392,10 @@ fn handle_behaviour_event(
             if let Ok(msg) = hyphen_network::NetworkMessage::decode_proto(&message.data) {
                 match msg {
                     hyphen_network::NetworkMessage::NewBlock(block_bytes) => {
-                        if let Ok(block) = bincode::deserialize::<hyphen_core::Block>(&block_bytes)
+                        if let Ok(block) = hyphen_core::Block::deserialise_limited(
+                            &block_bytes,
+                            blockchain.cfg.max_block_size,
+                        )
                         {
                             info!(
                                 "Received block {} from {}",
@@ -253,7 +407,7 @@ fn handle_behaviour_event(
                         }
                     }
                     hyphen_network::NetworkMessage::NewTransaction(tx_bytes) => {
-                        let tx = match bincode::deserialize::<hyphen_tx::Transaction>(&tx_bytes) {
+                        let tx = match hyphen_tx::Transaction::deserialise_limited(&tx_bytes) {
                             Ok(t) => t,
                             Err(e) => {
                                 warn!(
@@ -297,8 +451,7 @@ fn handle_behaviour_event(
                             ct.count()
                         };
 
-                        let validator =
-                            hyphen_consensus::BlockValidator::new(&blockchain.cfg);
+                        let validator = hyphen_consensus::BlockValidator::new(&blockchain.cfg);
                         let store = blockchain.store();
                         let vre_quality = match validator.validate_transaction(
                             &tx,
@@ -325,9 +478,7 @@ fn handle_behaviour_event(
 
                         let tx_hash_hex = hex::encode(tx.hash().as_bytes());
                         let mut pool = mempool.write();
-                        match pool
-                            .insert(tx, hyphen_mempool::Validated::new(vre_quality))
-                        {
+                        match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
                             Ok(hash) => {
                                 info!(
                                     target: "hyphen::metrics",
@@ -435,7 +586,10 @@ fn handle_sync_response(
             let count = blocks.len();
             let mut accepted = 0u64;
             for block_data in blocks {
-                if let Ok(block) = bincode::deserialize::<hyphen_core::Block>(&block_data) {
+                if let Ok(block) = hyphen_core::Block::deserialise_limited(
+                    &block_data,
+                    blockchain.cfg.max_block_size,
+                ) {
                     match blockchain.accept_block(&block) {
                         Ok(()) => accepted += 1,
                         Err(e) => {
@@ -448,7 +602,10 @@ fn handle_sync_response(
             info!("Sync from {peer}: accepted {accepted}/{count} blocks");
         }
         SyncResponse::Block(data) => {
-            if let Ok(block) = bincode::deserialize::<hyphen_core::Block>(&data) {
+            if let Ok(block) = hyphen_core::Block::deserialise_limited(
+                &data,
+                blockchain.cfg.max_block_size,
+            ) {
                 if let Err(e) = blockchain.accept_block(&block) {
                     warn!("Synced block rejected: {e}");
                 }
@@ -526,9 +683,14 @@ async fn handle_tp_client(
 
     loop {
         let env = read_envelope(&mut reader).await?;
+        if !env.verify() {
+            return Err("invalid or stale TP envelope signature".into());
+        }
 
         match env.msg_type {
             TP_GET_TEMPLATE => {
+                let req = hyphen_transport::TemplateRequest::decode(&env.payload[..])?;
+                validate_template_request(&req, &cfg)?;
                 let tpl = build_template(&blockchain, &mempool, &cfg)?;
                 let resp = SignedEnvelope::sign(TP_TEMPLATE, tpl.encode_to_vec(), &node_sk);
                 write_envelope(&mut writer, &resp).await?;
@@ -543,6 +705,8 @@ async fn handle_tp_client(
             }
 
             TP_SUBSCRIBE => {
+                let req = hyphen_transport::TemplateRequest::decode(&env.payload[..])?;
+                validate_template_request(&req, &cfg)?;
                 let tpl = build_template(&blockchain, &mempool, &cfg)?;
                 let resp = SignedEnvelope::sign(TP_TEMPLATE, tpl.encode_to_vec(), &node_sk);
                 write_envelope(&mut writer, &resp).await?;
@@ -592,7 +756,11 @@ async fn handle_tp_client(
 
                         msg = msg_rx.recv() => {
                             match msg {
-                                Some(incoming) => match incoming.msg_type {
+                                Some(incoming) => {
+                                    if !incoming.verify() {
+                                        return Err("invalid or stale subscribed TP envelope".into());
+                                    }
+                                    match incoming.msg_type {
                                     TP_SUBMIT_BLOCK => {
                                         let req = SubmitBlockRequest::decode(
                                             &incoming.payload[..],
@@ -671,6 +839,7 @@ async fn handle_tp_client(
                                              {other}"
                                         );
                                     }
+                                    }
                                 },
                                 None => return Ok(()),
                             }
@@ -692,6 +861,28 @@ async fn handle_tp_client(
             }
         }
     }
+}
+
+fn validate_template_request(
+    request: &hyphen_transport::TemplateRequest,
+    cfg: &ChainConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if request.protocol_version != 2 {
+        return Err(format!(
+            "unsupported TP protocol version {}",
+            request.protocol_version
+        )
+        .into());
+    }
+    if request.network_magic.as_slice() != cfg.network_magic {
+        return Err("TP network mismatch".into());
+    }
+    if request.consensus_params_hash.as_slice() != cfg.consensus_params_hash()
+        || request.genesis_hash.as_slice() != build_genesis_block(cfg).hash().as_bytes()
+    {
+        return Err("TP chain identity mismatch".into());
+    }
+    Ok(())
 }
 
 fn build_template(
@@ -718,8 +909,9 @@ fn build_template(
     let reward = hyphen_economics::emission::block_reward(next_height, cfg);
 
     // Compute the total fee from all included transactions
-    let total_fee: u64 = tx_blobs.iter()
-        .filter_map(|blob| bincode::deserialize::<hyphen_tx::Transaction>(blob).ok())
+    let total_fee: u64 = tx_blobs
+        .iter()
+        .filter_map(|blob| hyphen_tx::Transaction::deserialise_limited(blob).ok())
         .map(|tx| tx.fee)
         .sum();
 
@@ -733,7 +925,7 @@ fn build_template(
     };
 
     let header = hyphen_core::BlockHeader {
-        version: 1,
+        version: hyphen_core::FROZEN_BLOCK_VERSION,
         height: next_height,
         timestamp: ntp_adjusted_timestamp_ms(),
         prev_hash: tip.hash,
@@ -775,6 +967,10 @@ fn build_template(
         arena_size: cfg.arena_size as u64,
         page_size: cfg.page_size as u64,
         clean: true,
+        network_magic: cfg.network_magic.to_vec(),
+        protocol_version: 2,
+        consensus_params_hash: cfg.consensus_params_hash().to_vec(),
+        genesis_hash: build_genesis_block(cfg).hash().as_bytes().to_vec(),
     })
 }
 
@@ -783,7 +979,10 @@ fn handle_block_submission(
     blockchain: &Arc<Blockchain>,
     mempool: &Arc<RwLock<Mempool>>,
 ) -> SubmitBlockResult {
-    let block: hyphen_core::Block = match bincode::deserialize(block_data) {
+    let block = match hyphen_core::Block::deserialise_limited(
+        block_data,
+        blockchain.cfg.max_block_size,
+    ) {
         Ok(b) => b,
         Err(e) => {
             return SubmitBlockResult {
@@ -807,7 +1006,7 @@ fn handle_block_submission(
             let key_images: Vec<[u8; 32]> = block
                 .transactions
                 .iter()
-                .filter_map(|blob| bincode::deserialize::<hyphen_tx::Transaction>(blob).ok())
+                .filter_map(|blob| hyphen_tx::Transaction::deserialise_limited(blob).ok())
                 .flat_map(|tx| tx.inputs.iter().map(|i| i.key_image).collect::<Vec<_>>())
                 .collect();
             mempool.write().purge_confirmed(&key_images);
@@ -836,7 +1035,7 @@ fn handle_job_declaration(
     cfg: &ChainConfig,
 ) -> DeclareJobResult {
     for (i, tx_blob) in req.custom_transactions.iter().enumerate() {
-        if let Err(e) = bincode::deserialize::<hyphen_tx::Transaction>(tx_blob) {
+        if let Err(e) = hyphen_tx::Transaction::deserialise_limited(tx_blob) {
             return DeclareJobResult {
                 accepted: false,
                 job_id: Vec::new(),
@@ -870,7 +1069,7 @@ fn handle_job_declaration(
     let nullifier_root = blockchain.nullifiers.root_hash().unwrap_or_default();
 
     let mut header = hyphen_core::BlockHeader {
-        version: 1,
+        version: hyphen_core::FROZEN_BLOCK_VERSION,
         height: next_height,
         timestamp: ntp_adjusted_timestamp_ms(),
         prev_hash: tip.hash,
@@ -896,7 +1095,7 @@ fn handle_job_declaration(
         header: header.clone(),
         transactions: req.custom_transactions.clone(),
         uncle_headers: Vec::new(),
-        pq_signature: Vec::new(),
+        block_authorization: Vec::new(),
     };
     header.tx_root = custom_block.compute_tx_root();
 

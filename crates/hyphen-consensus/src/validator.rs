@@ -2,6 +2,7 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use hyphen_core::block::{Block, BlockHeader};
 use hyphen_core::config::ChainConfig;
 use hyphen_core::error::CoreError;
+use hyphen_core::{FEATURE_TERA, FEATURE_UNCLES, FEATURE_VRE, FROZEN_BLOCK_VERSION};
 use hyphen_crypto::clsag;
 use hyphen_tx::transaction::Transaction;
 use thiserror::Error;
@@ -16,6 +17,10 @@ pub enum ValidationError {
     TimestampFuture,
     #[error("invalid PoW")]
     InvalidPow,
+    #[error("unsupported block version: expected {expected}, got {got}")]
+    UnsupportedBlockVersion { expected: u32, got: u32 },
+    #[error("missing or malformed miner block authorization: {0}")]
+    InvalidBlockAuthorization(String),
     #[error("tx root mismatch")]
     TxRootMismatch,
     #[error("balance check failed")]
@@ -86,6 +91,12 @@ impl<'a> BlockValidator<'a> {
         prev_timestamp: u64,
         now_ms: u64,
     ) -> Result<(), ValidationError> {
+        if header.version != FROZEN_BLOCK_VERSION {
+            return Err(ValidationError::UnsupportedBlockVersion {
+                expected: FROZEN_BLOCK_VERSION,
+                got: header.version,
+            });
+        }
         if header.height != prev_height + 1 {
             return Err(CoreError::HeightMismatch {
                 expected: prev_height + 1,
@@ -103,7 +114,7 @@ impl<'a> BlockValidator<'a> {
             return Err(ValidationError::TimestampTooOld);
         }
 
-        let max_future = now_ms + self.cfg.timestamp_future_limit_ms;
+        let max_future = now_ms.saturating_add(self.cfg.timestamp_future_limit_ms);
         if header.timestamp > max_future {
             return Err(ValidationError::TimestampFuture);
         }
@@ -111,11 +122,37 @@ impl<'a> BlockValidator<'a> {
         Ok(())
     }
 
+    pub fn validate_block_authorization(
+        &self,
+        block: &Block,
+        genesis_hash: hyphen_crypto::Hash256,
+    ) -> Result<(), ValidationError> {
+        let authorization = block
+            .decode_authorization()
+            .map_err(ValidationError::InvalidBlockAuthorization)?;
+        authorization
+            .verify(
+                &block.header,
+                self.cfg.network_magic,
+                self.cfg.consensus_params_hash(),
+                genesis_hash,
+            )
+            .map_err(|error| ValidationError::InvalidBlockAuthorization(error.to_string()))
+    }
+
     pub fn validate_uncles(
         &self,
         block: &Block,
         get_header_at_height: &dyn Fn(u64) -> Option<BlockHeader>,
     ) -> Result<(), ValidationError> {
+        if !self.cfg.feature_enabled(FEATURE_UNCLES) {
+            return if block.uncle_headers.is_empty() {
+                Ok(())
+            } else {
+                Err(ValidationError::TooManyUncles)
+            };
+        }
+
         if block.uncle_headers.len() > self.cfg.max_uncles {
             return Err(ValidationError::TooManyUncles);
         }
@@ -189,7 +226,8 @@ impl<'a> BlockValidator<'a> {
             return Err(ValidationError::BalanceFailed);
         }
 
-        let vre_active = block_height >= self.cfg.vre_activation_height;
+        let vre_active =
+            self.cfg.feature_enabled(FEATURE_VRE) && block_height >= self.cfg.vre_activation_height;
 
         let mut quality_acc: i64 = 0;
         let mut input_count: i64 = 0;
@@ -213,7 +251,9 @@ impl<'a> BlockValidator<'a> {
             }
 
             // ── TERA: validate epoch_context ──
-            if !valid_epoch_contexts.contains(&input.epoch_context) {
+            if self.cfg.feature_enabled(FEATURE_TERA)
+                && !valid_epoch_contexts.contains(&input.epoch_context)
+            {
                 return Err(ValidationError::TeraEpochMismatch);
             }
 
@@ -242,12 +282,14 @@ impl<'a> BlockValidator<'a> {
             }
 
             // ── Compute per-input VRE quality score ──
-            quality_acc += self.ring_quality_score(
-                &ring_heights,
-                &ring_indices,
-                total_outputs,
-                block_height,
-            );
+            if self.cfg.feature_enabled(FEATURE_VRE) {
+                quality_acc += self.ring_quality_score(
+                    &ring_heights,
+                    &ring_indices,
+                    total_outputs,
+                    block_height,
+                );
+            }
             input_count += 1;
 
             let pseudo_out = input
@@ -339,7 +381,10 @@ impl<'a> BlockValidator<'a> {
         let max_idx = *indices.iter().max().unwrap();
         let idx_span_bps =
             max_idx.saturating_sub(min_idx).saturating_mul(10_000) / total_outputs.max(1);
-        let eff_bps = self.cfg.effective_vre_min_index_span_bps(total_outputs).max(1);
+        let eff_bps = self
+            .cfg
+            .effective_vre_min_index_span_bps(total_outputs)
+            .max(1);
         let factor_index = ((idx_span_bps as i64) * 2500 / (eff_bps as i64)).min(2500);
 
         factor_span + factor_unique + factor_bands + factor_index
@@ -378,10 +423,7 @@ impl<'a> BlockValidator<'a> {
         let min_distinct = (n * 3).div_ceil(4);
 
         if distinct < min_distinct {
-            return Err(ValidationError::RingDiversityTooLow {
-                distinct,
-                total: n,
-            });
+            return Err(ValidationError::RingDiversityTooLow { distinct, total: n });
         }
 
         Ok(())
@@ -502,5 +544,41 @@ impl<'a> BlockValidator<'a> {
     pub fn nephew_reward(&self, base_reward: u64, uncle_count: usize) -> u64 {
         base_reward * self.cfg.nephew_reward_numerator * uncle_count as u64
             / self.cfg.nephew_reward_denominator
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anonymity_set_bias_experiment_penalizes_clustered_decoys() {
+        let cfg = ChainConfig::testnet();
+        let validator = BlockValidator::new(&cfg);
+        let total_outputs = 10_000;
+        let spend_height = 10_000;
+
+        let clustered_heights = [9_999, 9_998, 9_997, 9_996];
+        let clustered_indices = [9_996, 9_997, 9_998, 9_999];
+        let stratified_heights = [9_999, 7_000, 3_000, 1];
+        let stratified_indices = [9_999, 7_500, 2_500, 1];
+
+        let clustered = validator.ring_quality_score(
+            &clustered_heights,
+            &clustered_indices,
+            total_outputs,
+            spend_height,
+        );
+        let stratified = validator.ring_quality_score(
+            &stratified_heights,
+            &stratified_indices,
+            total_outputs,
+            spend_height,
+        );
+
+        assert!(
+            stratified > clustered,
+            "stratified decoys should outscore a recent/index-clustered anonymity set: {stratified} <= {clustered}"
+        );
     }
 }

@@ -166,7 +166,7 @@ impl RpcHandler {
 
     fn handle_submit_tx(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = SubmitTransactionRequest::decode(payload)?;
-        let tx: Transaction = bincode::deserialize(&req.tx_data)
+        let tx = Transaction::deserialise_limited(&req.tx_data)
             .map_err(|e| HandlerError::InvalidRequest(format!("bad tx data: {e}")))?;
 
         // ── Pre-validation: check key images against blockchain nullifiers ──

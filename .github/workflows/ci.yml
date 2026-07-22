@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test node workspace
+        run: cargo test --workspace --all-targets --locked
+      - name: Test pool workspace
+        run: cargo test --manifest-path HyphenPool/Cargo.toml --locked
+      - name: Test miner workspace
+        run: cargo test --manifest-path HyphenMiner/Cargo.toml --locked
+      - name: Test Flutter wallet Rust backend
+        run: cargo test --manifest-path HyphenWallet/rust/Cargo.toml --locked
+      - name: Compile transaction, RPC, and P2P fuzz targets
+        run: cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
+      - name: Verify published chain identity vectors
+        run: cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
+
+  windows-devnet-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run node-pool-miner smoke test
+        shell: pwsh
+        run: ./scripts/devnet-smoke.ps1 -TimeoutSeconds 180

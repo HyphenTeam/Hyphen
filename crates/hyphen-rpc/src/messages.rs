@@ -158,3 +158,41 @@ pub struct RandomOutputsResponse {
     #[prost(message, repeated, tag = "1")]
     pub outputs: Vec<OutputInfo>,
 }
+
+#[cfg(test)]
+mod adversarial_decode_tests {
+    use super::*;
+    use prost::Message;
+
+    #[test]
+    fn deterministic_malformed_rpc_corpus_never_panics() {
+        let mut state = 0x3c6e_f372_fe94_f82bu64;
+        for len in 0..=4096usize {
+            let mut bytes = vec![0u8; len];
+            for byte in &mut bytes {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+            let result = std::panic::catch_unwind(|| RpcRequest::decode(bytes.as_slice()));
+            assert!(
+                result.is_ok(),
+                "RPC decoder panicked for corpus length {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn rpc_request_roundtrip_preserves_untrusted_payload() {
+        let request = RpcRequest {
+            id: 7,
+            method: METHOD_SUBMIT_TX,
+            payload: vec![0xff; 1024],
+        };
+        let decoded = RpcRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.id, 7);
+        assert_eq!(decoded.method, METHOD_SUBMIT_TX);
+        assert_eq!(decoded.payload, vec![0xff; 1024]);
+    }
+}

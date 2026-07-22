@@ -4,6 +4,8 @@ use hyphen_crypto::Hash256;
 use hyphen_proof::range_proof::AggregatedRangeProof;
 use serde::{Deserialize, Serialize};
 
+pub const MAX_TRANSACTION_SIZE: usize = 2 * 1024 * 1024;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct OutputRef {
     pub global_index: u64,
@@ -93,6 +95,17 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    pub fn deserialise_limited(data: &[u8]) -> Result<Self, bincode::Error> {
+        if data.len() > MAX_TRANSACTION_SIZE {
+            return Err(Box::new(bincode::ErrorKind::SizeLimit));
+        }
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(MAX_TRANSACTION_SIZE as u64)
+            .reject_trailing_bytes()
+            .deserialize(data)
+    }
+
     pub fn is_coinbase(&self) -> bool {
         self.version == 0 && self.inputs.is_empty()
     }
@@ -148,3 +161,33 @@ impl Transaction {
         }
     }
 }
+
+#[cfg(test)]
+mod adversarial_decode_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_oversized_and_trailing_transaction_data() {
+        assert!(Transaction::deserialise_limited(&vec![0u8; MAX_TRANSACTION_SIZE + 1]).is_err());
+
+        let malformed = vec![0xff; 256];
+        assert!(Transaction::deserialise_limited(&malformed).is_err());
+    }
+
+    #[test]
+    fn deterministic_malformed_corpus_never_panics() {
+        let mut state = 0x6a09_e667_f3bc_c909u64;
+        for len in 0..=4096usize {
+            let mut bytes = vec![0u8; len];
+            for byte in &mut bytes {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+            let result = std::panic::catch_unwind(|| Transaction::deserialise_limited(&bytes));
+            assert!(result.is_ok(), "decoder panicked for corpus length {len}");
+        }
+    }
+}
+use bincode::Options;

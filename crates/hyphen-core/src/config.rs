@@ -1,22 +1,51 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::authorization::FROZEN_BLOCK_VERSION;
+
 pub const MAINNET_P2P_PORT: u16 = 18334;
 pub const MAINNET_RPC_PORT: u16 = 18333;
 pub const MAINNET_DISCOVERY_PORT: u16 = 20333;
 pub const TESTNET_RPC_PORT: u16 = 38333;
 pub const TESTNET_P2P_PORT: u16 = 38334;
 pub const TESTNET_DISCOVERY_PORT: u16 = 20334;
+pub const DEVNET_RPC_PORT: u16 = 48333;
+pub const DEVNET_P2P_PORT: u16 = 48334;
+pub const DEVNET_DISCOVERY_PORT: u16 = 20335;
 pub const DEFAULT_TEMPLATE_PORT: u16 = 3350;
 pub const DEFAULT_POOL_PORT: u16 = 3340;
 pub const DEFAULT_STRATUM_PORT: u16 = 3333;
 pub const DEFAULT_EXPLORER_PORT: u16 = 8080;
 pub const DEFAULT_SEED_DOMAIN: &str = "bytesnap.tech";
 
+/// Consensus launch timestamp shared by every node, in Unix milliseconds.
+///
+/// A genesis timestamp must never depend on the local clock: doing so creates
+/// a different chain for every fresh database.
+pub const GENESIS_TIMESTAMP_MS: u64 = 1_767_225_600_000; // 2026-01-01T00:00:00Z
+
+pub const FEATURE_UNCLES: u32 = 1 << 0;
+pub const FEATURE_TERA: u32 = 1 << 1;
+pub const FEATURE_VRE: u32 = 1 << 2;
+pub const FEATURE_MSE: u32 = 1 << 3;
+pub const RESEARCH_CONSENSUS_FEATURES: u32 =
+    FEATURE_UNCLES | FEATURE_TERA | FEATURE_VRE | FEATURE_MSE;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DifficultyAlgorithm {
+    /// Frozen, integer-only linear weighted moving average.
+    LwmaV1 = 1,
+    /// Experimental momentum/SPRT controller retained for research networks.
+    MdadSprResearchV1 = 2,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChainConfig {
     pub network_name: String,
     pub network_magic: [u8; 4],
+    pub consensus_features: u32,
+    pub difficulty_algorithm: DifficultyAlgorithm,
     pub block_time: Duration,
     pub epoch_length: u64,
     pub arena_size: usize,
@@ -59,6 +88,10 @@ pub struct ChainConfig {
 }
 
 impl ChainConfig {
+    pub fn feature_enabled(&self, feature: u32) -> bool {
+        self.consensus_features & feature != 0
+    }
+
     pub fn block_time_ms(&self) -> u64 {
         self.block_time.as_millis() as u64
     }
@@ -121,22 +154,48 @@ impl ChainConfig {
     /// will be detected and rejected.
     pub fn consensus_params_hash(&self) -> [u8; 32] {
         let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(b"HyphenConsensusParams/v4-profiled-devnet");
+        buf.extend_from_slice(&FROZEN_BLOCK_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.network_magic);
+        buf.extend_from_slice(&self.consensus_features.to_le_bytes());
+        buf.push(self.difficulty_algorithm as u8);
+        buf.extend_from_slice(&self.block_time_ms().to_le_bytes());
+        buf.extend_from_slice(&self.epoch_length.to_le_bytes());
+        buf.extend_from_slice(&(self.arena_size as u64).to_le_bytes());
+        buf.extend_from_slice(&(self.scratchpad_size as u64).to_le_bytes());
+        buf.extend_from_slice(&(self.page_size as u64).to_le_bytes());
+        buf.extend_from_slice(&self.pow_rounds.to_le_bytes());
+        buf.extend_from_slice(&self.writeback_interval.to_le_bytes());
+        buf.push(self.kernel_count);
+        buf.extend_from_slice(&(self.merkle_depth as u64).to_le_bytes());
         buf.extend_from_slice(&(self.ring_size as u64).to_le_bytes());
+        buf.extend_from_slice(&self.difficulty_window.to_le_bytes());
+        buf.extend_from_slice(&self.genesis_difficulty.to_le_bytes());
+        buf.extend_from_slice(&(self.max_block_size as u64).to_le_bytes());
+        buf.extend_from_slice(&self.initial_reward.to_le_bytes());
+        buf.extend_from_slice(&self.tail_emission.to_le_bytes());
+        buf.extend_from_slice(&self.fee_burn_bps.to_le_bytes());
+        buf.extend_from_slice(&self.tail_emission_height.to_le_bytes());
+        buf.extend_from_slice(&self.emission_decay_constant.to_le_bytes());
+        buf.extend_from_slice(&(self.max_uncles as u64).to_le_bytes());
+        buf.extend_from_slice(&self.max_uncle_depth.to_le_bytes());
+        buf.extend_from_slice(&self.uncle_reward_numerator.to_le_bytes());
+        buf.extend_from_slice(&self.uncle_reward_denominator.to_le_bytes());
+        buf.extend_from_slice(&self.nephew_reward_numerator.to_le_bytes());
+        buf.extend_from_slice(&self.nephew_reward_denominator.to_le_bytes());
+        buf.extend_from_slice(&self.difficulty_clamp_up.to_le_bytes());
+        buf.extend_from_slice(&self.difficulty_clamp_down.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_future_limit_ms.to_le_bytes());
         buf.extend_from_slice(&self.min_ring_span.to_le_bytes());
+        buf.extend_from_slice(&self.tera_epoch_tolerance.to_le_bytes());
         buf.extend_from_slice(&(self.vre_min_age_bands as u64).to_le_bytes());
         buf.extend_from_slice(&self.vre_age_band_width.to_le_bytes());
         buf.extend_from_slice(&self.vre_min_index_span_bps.to_le_bytes());
         buf.extend_from_slice(&self.vre_activation_height.to_le_bytes());
-        buf.extend_from_slice(&self.epoch_length.to_le_bytes());
-        buf.extend_from_slice(&self.initial_reward.to_le_bytes());
-        buf.extend_from_slice(&self.emission_decay_constant.to_le_bytes());
-        buf.extend_from_slice(&self.tail_emission.to_le_bytes());
-        buf.extend_from_slice(&self.fee_burn_bps.to_le_bytes());
-        buf.extend_from_slice(&(self.max_uncles as u64).to_le_bytes());
-        buf.extend_from_slice(&self.max_uncle_depth.to_le_bytes());
-        buf.extend_from_slice(&self.genesis_difficulty.to_le_bytes());
-        buf.extend_from_slice(&self.difficulty_window.to_le_bytes());
+        buf.extend_from_slice(&self.mse_gamma.to_le_bytes());
+        buf.extend_from_slice(&self.mse_floor_bps.to_le_bytes());
+        buf.extend_from_slice(&self.mse_ceil_bps.to_le_bytes());
+        buf.extend_from_slice(&GENESIS_TIMESTAMP_MS.to_le_bytes());
         *hyphen_crypto::blake3_hash(&buf).as_bytes()
     }
 
@@ -144,6 +203,8 @@ impl ChainConfig {
         Self {
             network_name: "hyphen-mainnet".into(),
             network_magic: [0x48, 0x59, 0x50, 0x4E],
+            consensus_features: RESEARCH_CONSENSUS_FEATURES,
+            difficulty_algorithm: DifficultyAlgorithm::MdadSprResearchV1,
             block_time: Duration::from_secs(60),
             epoch_length: 2048,
             arena_size: 2 * 1024 * 1024 * 1024,
@@ -190,6 +251,8 @@ impl ChainConfig {
         Self {
             network_name: "hyphen-testnet".into(),
             network_magic: [0x48, 0x59, 0x54, 0x53],
+            consensus_features: RESEARCH_CONSENSUS_FEATURES,
+            difficulty_algorithm: DifficultyAlgorithm::MdadSprResearchV1,
             block_time: Duration::from_secs(30),
             epoch_length: 128,
             arena_size: 64 * 1024 * 1024,
@@ -230,5 +293,81 @@ impl ChainConfig {
             rpc_port: TESTNET_RPC_PORT,
             discovery_port: TESTNET_DISCOVERY_PORT,
         }
+    }
+
+    /// Frozen development network used for reproducible consensus testing.
+    ///
+    /// Unreviewed research mechanisms are disabled. Any future activation
+    /// requires a new profile, test vectors and therefore a new chain ID.
+    pub fn devnet() -> Self {
+        Self {
+            network_name: "hyphen-devnet-v1".into(),
+            network_magic: [0x48, 0x59, 0x44, 0x56],
+            consensus_features: 0,
+            difficulty_algorithm: DifficultyAlgorithm::LwmaV1,
+            block_time: Duration::from_secs(30),
+            epoch_length: 128,
+            arena_size: 64 * 1024 * 1024,
+            scratchpad_size: 256 * 1024,
+            page_size: 4096,
+            pow_rounds: 64,
+            writeback_interval: 8,
+            kernel_count: 12,
+            merkle_depth: 32,
+            ring_size: 4,
+            difficulty_window: 30,
+            genesis_difficulty: 1_000,
+            max_block_size: 2 * 1024 * 1024,
+            initial_reward: 100_000_000_000_000,
+            tail_emission: 600_000_000_000,
+            fee_burn_bps: 5_000,
+            tail_emission_height: 0,
+            emission_decay_constant: 4_096,
+            max_uncles: 0,
+            max_uncle_depth: 0,
+            uncle_reward_numerator: 0,
+            uncle_reward_denominator: 1,
+            nephew_reward_numerator: 0,
+            nephew_reward_denominator: 1,
+            difficulty_clamp_up: 3,
+            difficulty_clamp_down: 3,
+            timestamp_future_limit_ms: 60_000,
+            min_ring_span: 0,
+            tera_epoch_tolerance: 0,
+            vre_min_age_bands: 0,
+            vre_age_band_width: 0,
+            vre_min_index_span_bps: 0,
+            vre_activation_height: u64::MAX,
+            mse_gamma: 0,
+            mse_floor_bps: 10_000,
+            mse_ceil_bps: 10_000,
+            p2p_port: DEVNET_P2P_PORT,
+            rpc_port: DEVNET_RPC_PORT,
+            discovery_port: DEVNET_DISCOVERY_PORT,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_devnet_disables_research_consensus_features() {
+        let cfg = ChainConfig::devnet();
+        assert_eq!(cfg.consensus_features, 0);
+        assert_eq!(cfg.difficulty_algorithm, DifficultyAlgorithm::LwmaV1);
+        assert_eq!(cfg.max_uncles, 0);
+        assert_eq!(cfg.vre_activation_height, u64::MAX);
+        assert_eq!(cfg.mse_floor_bps, 10_000);
+        assert_eq!(cfg.mse_ceil_bps, 10_000);
+    }
+
+    #[test]
+    fn consensus_profile_changes_chain_identity() {
+        let frozen = ChainConfig::devnet();
+        let mut research = frozen.clone();
+        research.consensus_features = FEATURE_VRE;
+        assert_ne!(frozen.consensus_params_hash(), research.consensus_params_hash());
     }
 }

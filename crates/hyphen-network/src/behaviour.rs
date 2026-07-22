@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, noise, ping, request_response,
+    gossipsub, identify, identity, kad, noise, ping, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm,
 };
@@ -8,7 +8,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-use crate::protocol::{NetworkMessage, SyncRequest, SyncResponse};
+use crate::protocol::{
+    NetworkMessage, SyncRequest, SyncResponse, MAX_GOSSIP_BLOCK_SIZE,
+    MAX_GOSSIP_ENVELOPE_SIZE, MAX_GOSSIP_TRANSACTION_SIZE,
+};
 
 #[derive(Debug, Clone)]
 pub struct BincodeCodec;
@@ -32,15 +35,24 @@ impl HyphenNetwork {
     pub fn new(
         listen_addr: Multiaddr,
         boot_nodes: Vec<(PeerId, Multiaddr)>,
+        identity: identity::Keypair,
+        network_magic: [u8; 4],
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        let network_tag = hex::encode(network_magic);
+        let sync_protocol =
+            StreamProtocol::try_from_owned(format!("/hyphen/{network_tag}/sync/2"))?;
+        let identify_protocol = format!("/hyphen/{network_tag}/id/2");
+        let behaviour_sync_protocol = sync_protocol.clone();
+        let behaviour_identify_protocol = identify_protocol.clone();
+
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(identity)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default(),
                 noise::Config::new,
                 yamux::Config::default,
             )?
-            .with_behaviour(|key| {
+            .with_behaviour(move |key| {
                 let message_id_fn = |message: &gossipsub::Message| {
                     let mut s = DefaultHasher::new();
                     message.data.hash(&mut s);
@@ -49,6 +61,7 @@ impl HyphenNetwork {
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(1))
                     .validation_mode(gossipsub::ValidationMode::Strict)
+                    .max_transmit_size(MAX_GOSSIP_ENVELOPE_SIZE)
                     .message_id_fn(message_id_fn)
                     .build()
                     .expect("gossipsub config");
@@ -65,14 +78,14 @@ impl HyphenNetwork {
 
                 let rr = request_response::cbor::Behaviour::new(
                     [(
-                        StreamProtocol::new("/hyphen/sync/1"),
+                        behaviour_sync_protocol.clone(),
                         request_response::ProtocolSupport::Full,
                     )],
                     request_response::Config::default(),
                 );
 
                 let identify = identify::Behaviour::new(identify::Config::new(
-                    "/hyphen/id/1".into(),
+                    behaviour_identify_protocol.clone(),
                     key.public(),
                 ));
 
@@ -86,22 +99,14 @@ impl HyphenNetwork {
                     ping,
                 }
             })?
-            .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(Duration::from_secs(600))
-            })
+            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(600)))
             .build();
 
-        let block_topic = gossipsub::IdentTopic::new("hyphen-blocks");
-        let tx_topic = gossipsub::IdentTopic::new("hyphen-txs");
+        let block_topic = gossipsub::IdentTopic::new(format!("hyphen-{network_tag}-blocks-v2"));
+        let tx_topic = gossipsub::IdentTopic::new(format!("hyphen-{network_tag}-txs-v2"));
 
-        swarm
-            .behaviour_mut()
-            .gossipsub
-            .subscribe(&block_topic)?;
-        swarm
-            .behaviour_mut()
-            .gossipsub
-            .subscribe(&tx_topic)?;
+        swarm.behaviour_mut().gossipsub.subscribe(&block_topic)?;
+        swarm.behaviour_mut().gossipsub.subscribe(&tx_topic)?;
 
         swarm.listen_on(listen_addr)?;
 
@@ -125,7 +130,13 @@ impl HyphenNetwork {
         })
     }
 
-    pub fn broadcast_transaction(&mut self, tx_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn broadcast_transaction(
+        &mut self,
+        tx_bytes: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if tx_bytes.len() > MAX_GOSSIP_TRANSACTION_SIZE {
+            return Err("transaction exceeds gossip limit".into());
+        }
         let msg = NetworkMessage::NewTransaction(tx_bytes).encode_proto();
         self.swarm
             .behaviour_mut()
@@ -134,7 +145,13 @@ impl HyphenNetwork {
         Ok(())
     }
 
-    pub fn broadcast_block(&mut self, block_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn broadcast_block(
+        &mut self,
+        block_bytes: Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if block_bytes.len() > MAX_GOSSIP_BLOCK_SIZE {
+            return Err("block exceeds gossip limit".into());
+        }
         let msg = NetworkMessage::NewBlock(block_bytes).encode_proto();
         self.swarm
             .behaviour_mut()

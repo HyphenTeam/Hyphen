@@ -17,7 +17,7 @@ use hyphen_state::store::BlockStore;
 use hyphen_tx::builder::build_coinbase_tx;
 use hyphen_tx::transaction::Transaction;
 
-use crate::genesis::build_genesis_block;
+use crate::genesis::{build_genesis_block, genesis_epoch_seed};
 use crate::validator::BlockValidator;
 
 pub struct Blockchain {
@@ -72,14 +72,44 @@ impl Blockchain {
             arena: RwLock::new(None),
         };
 
+        let expected_genesis = build_genesis_block(&bc.cfg);
+        let expected_genesis_hash = expected_genesis.hash();
         if bc
             .chain_state
             .get_tip()
             .map_err(|e| CoreError::Storage(e.to_string()))?
             .is_none()
         {
-            let genesis = build_genesis_block(&bc.cfg);
-            bc.apply_block_unchecked(&genesis)?;
+            bc.apply_block_unchecked(&expected_genesis)?;
+            meta_tree
+                .insert(b"genesis_hash", expected_genesis_hash.as_bytes().as_slice())
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+        } else {
+            let stored_genesis = bc
+                .blocks
+                .get_block_by_height(0)
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+            if stored_genesis.hash() != expected_genesis_hash {
+                return Err(CoreError::Validation(format!(
+                    "genesis hash mismatch: database={}, expected={}; refusing to join a different chain",
+                    stored_genesis.hash(), expected_genesis_hash
+                )));
+            }
+
+            if let Some(stored_hash) = meta_tree
+                .get(b"genesis_hash")
+                .map_err(|e| CoreError::Storage(e.to_string()))?
+            {
+                if stored_hash.as_ref() != expected_genesis_hash.as_bytes() {
+                    return Err(CoreError::Validation(
+                        "stored genesis metadata does not match block zero".into(),
+                    ));
+                }
+            } else {
+                meta_tree
+                    .insert(b"genesis_hash", expected_genesis_hash.as_bytes().as_slice())
+                    .map_err(|e| CoreError::Storage(e.to_string()))?;
+            }
         }
 
         Ok(bc)
@@ -121,7 +151,7 @@ impl Blockchain {
     pub fn epoch_seed_for_height(&self, height: u64) -> Result<Hash256, CoreError> {
         let epoch = height / self.cfg.epoch_length;
         if epoch == 0 {
-            return Ok(hyphen_crypto::blake3_hash(b"Hyphen_genesis_epoch_seed"));
+            return Ok(genesis_epoch_seed(&self.cfg));
         }
         let prev_epoch_end = epoch * self.cfg.epoch_length - 1;
         let hash = self
@@ -163,7 +193,7 @@ impl Blockchain {
         {
             let mut ct = self.commitment_tree.write();
             for tx_blob in &block.transactions {
-                if let Ok(tx) = bincode::deserialize::<Transaction>(tx_blob) {
+                if let Ok(tx) = Transaction::deserialise_limited(tx_blob) {
                     for out in &tx.outputs {
                         let nh = out.note_hash();
                         let global_idx = ct
@@ -184,20 +214,21 @@ impl Blockchain {
                 }
             }
 
-            // Create coinbase transaction if miner address is available
-            if block.header.reward > 0 && block.pq_signature.len() == 32 {
-                let mut view_public = [0u8; 32];
-                view_public.copy_from_slice(&block.pq_signature);
+            // Create coinbase from the miner-authorized reward keys.
+            if block.header.reward > 0 && block.header.height > 0 {
+                let authorization = block.decode_authorization().map_err(|error| {
+                    CoreError::Validation(format!("cannot apply unauthorized block: {error}"))
+                })?;
                 info!(
                     "Coinbase: height={} view_public={} spend_public={} reward={}",
                     block.header.height,
-                    hex::encode(view_public),
-                    hex::encode(block.header.miner_pubkey),
+                    hex::encode(authorization.reward_view_public),
+                    hex::encode(authorization.reward_spend_public),
                     block.header.reward,
                 );
                 let coinbase_tx = build_coinbase_tx(
-                    view_public,
-                    block.header.miner_pubkey,
+                    authorization.reward_view_public,
+                    authorization.reward_spend_public,
                     block.header.reward,
                     block.header.height,
                 )
@@ -221,13 +252,6 @@ impl Blockchain {
                 self.blocks
                     .insert_coinbase(block.header.height, &coinbase_blob)
                     .map_err(|e| CoreError::Storage(e.to_string()))?;
-            } else if block.header.reward > 0 {
-                info!(
-                    "Coinbase SKIPPED: height={} pq_signature_len={} reward={}",
-                    block.header.height,
-                    block.pq_signature.len(),
-                    block.header.reward,
-                );
             }
         }
 
@@ -284,6 +308,10 @@ impl Blockchain {
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
         validator
+            .validate_block_authorization(block, build_genesis_block(&self.cfg).hash())
+            .map_err(|e| CoreError::Validation(e.to_string()))?;
+
+        validator
             .validate_tx_root(block)
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
@@ -317,10 +345,8 @@ impl Blockchain {
         }
 
         // C3 fix: Verify declared reward matches emission formula
-        let expected_reward = hyphen_economics::emission::lcd_base_reward(
-            block.header.height,
-            &self.cfg,
-        );
+        let expected_reward =
+            hyphen_economics::emission::lcd_base_reward(block.header.height, &self.cfg);
         if block.header.reward != expected_reward {
             return Err(CoreError::Validation(format!(
                 "reward mismatch: expected {}, got {}",
@@ -348,7 +374,7 @@ impl Blockchain {
         let mut block_key_images = std::collections::HashSet::new();
 
         for tx_blob in &block.transactions {
-            let tx: Transaction = bincode::deserialize(tx_blob)
+            let tx = Transaction::deserialise_limited(tx_blob)
                 .map_err(|e| CoreError::Serialisation(e.to_string()))?;
 
             for inp in &tx.inputs {
@@ -373,9 +399,9 @@ impl Blockchain {
                     &tx,
                     |global_index| {
                         store.resolve_ring_member(global_index).map_err(|e| {
-                            crate::validator::ValidationError::Core(
-                                CoreError::Storage(e.to_string()),
-                            )
+                            crate::validator::ValidationError::Core(CoreError::Storage(
+                                e.to_string(),
+                            ))
                         })
                     },
                     &valid_epoch_contexts,
@@ -399,7 +425,7 @@ impl Blockchain {
         let mut contexts = Vec::with_capacity((current_epoch - first_epoch + 1) as usize);
         for e in first_epoch..=current_epoch {
             let seed = if e == 0 {
-                hyphen_crypto::blake3_hash(b"Hyphen_genesis_epoch_seed")
+                genesis_epoch_seed(&self.cfg)
             } else {
                 let prev_end = e * self.cfg.epoch_length - 1;
                 let hash = self

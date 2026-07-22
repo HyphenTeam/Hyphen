@@ -1,0 +1,20 @@
+[
+  {
+    "profile": "devnet-v1",
+    "network_magic": "48594456",
+    "consensus_params_hash": "e9591468e6b53e922b67f6dbecd0dccec4217e95f0f09a21bce7244fbe8e8322",
+    "genesis_hash": "4ee146f63ec54ded2ed743e88ee4ff0981598afc0412d4261e17e43a731a1b92"
+  },
+  {
+    "profile": "testnet-research",
+    "network_magic": "48595453",
+    "consensus_params_hash": "9b5a781f5ee647bcef6b1481b684bbd3df277118d7887e9ae49db18d507c2bda",
+    "genesis_hash": "d51438cdc8364e9d0a139f731296d3a33845c1bb5f4b0a7cd1fa13ebce2ae78f"
+  },
+  {
+    "profile": "mainnet-research",
+    "network_magic": "4859504e",
+    "consensus_params_hash": "eb77360a33bd560945196590b9fe4d9aef8889724d9a6a9475e0bc4db520f957",
+    "genesis_hash": "fcc91f7a7537b84f8ef1757d56bac75d1fc0d18aa1540726c61db49ac8991c9e"
+  }
+]

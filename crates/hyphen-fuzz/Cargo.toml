@@ -1,0 +1,36 @@
+[package]
+name = "hyphen-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prost = "0.14.4"
+hyphen-network = { path = "../hyphen-network" }
+hyphen-rpc = { path = "../hyphen-rpc" }
+hyphen-tx = { path = "../hyphen-tx" }
+
+[[bin]]
+name = "transaction_decode"
+path = "fuzz_targets/transaction_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rpc_decode"
+path = "fuzz_targets/rpc_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "p2p_decode"
+path = "fuzz_targets/p2p_decode.rs"
+test = false
+doc = false
+bench = false

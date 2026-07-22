@@ -6,7 +6,6 @@ description = "Wallet, address generation and key derivation for the Hyphen bloc
 
 [dependencies]
 hyphen-crypto.workspace    = true
-hyphen-core.workspace      = true
 hyphen-tx.workspace        = true
 hyphen-proof.workspace     = true
 curve25519-dalek.workspace = true
@@ -16,6 +15,7 @@ serde.workspace            = true
 bincode.workspace          = true
 rand.workspace             = true
 rand_core.workspace        = true
+getrandom.workspace         = true
 thiserror.workspace        = true
 zeroize.workspace          = true
 hex.workspace              = true

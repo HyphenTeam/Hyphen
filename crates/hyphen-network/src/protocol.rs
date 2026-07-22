@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+pub const MAX_GOSSIP_TRANSACTION_SIZE: usize = 2 * 1024 * 1024;
+pub const MAX_GOSSIP_BLOCK_SIZE: usize = 2 * 1024 * 1024;
+pub const MAX_GOSSIP_ENVELOPE_SIZE: usize = 4 * 1024 * 1024;
+
 #[derive(Clone, prost::Message)]
 pub struct ProtoTransaction {
     #[prost(bytes = "vec", tag = "1")]
@@ -80,13 +84,22 @@ impl NetworkMessage {
         if data.is_empty() {
             return Err(prost::DecodeError::new("empty message"));
         }
+        if data.len() > MAX_GOSSIP_ENVELOPE_SIZE {
+            return Err(prost::DecodeError::new("gossip envelope too large"));
+        }
         match data[0] {
             0 => {
                 let proto = ProtoTransaction::decode(&data[1..])?;
+                if proto.data.len() > MAX_GOSSIP_TRANSACTION_SIZE {
+                    return Err(prost::DecodeError::new("gossip transaction too large"));
+                }
                 Ok(NetworkMessage::NewTransaction(proto.data))
             }
             1 => {
                 let proto = ProtoBlock::decode(&data[1..])?;
+                if proto.data.len() > MAX_GOSSIP_BLOCK_SIZE {
+                    return Err(prost::DecodeError::new("gossip block too large"));
+                }
                 Ok(NetworkMessage::NewBlock(proto.data))
             }
             _ => Err(prost::DecodeError::new("unknown message type")),
@@ -96,14 +109,9 @@ impl NetworkMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SyncRequest {
-    GetBlocks {
-        start_height: u64,
-        count: u32,
-    },
+    GetBlocks { start_height: u64, count: u32 },
     GetTip,
-    GetBlock {
-        hash: [u8; 32],
-    },
+    GetBlock { hash: [u8; 32] },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,6 +129,7 @@ pub enum SyncResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
 
     #[test]
     fn proto_network_message_roundtrip_tx() {
@@ -141,6 +150,36 @@ mod tests {
         match decoded {
             NetworkMessage::NewBlock(data) => assert_eq!(data, vec![10, 20, 30]),
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_gossip_payloads() {
+        let message = ProtoTransaction {
+            data: vec![0u8; MAX_GOSSIP_TRANSACTION_SIZE + 1],
+        };
+        let mut encoded = vec![0u8];
+        encoded.extend_from_slice(&message.encode_to_vec());
+        assert!(NetworkMessage::decode_proto(&encoded).is_err());
+        assert!(NetworkMessage::decode_proto(&vec![0u8; MAX_GOSSIP_ENVELOPE_SIZE + 1]).is_err());
+    }
+
+    #[test]
+    fn deterministic_malformed_gossip_corpus_never_panics() {
+        let mut state = 0xbb67_ae85_84ca_a73bu64;
+        for len in 0..=4096usize {
+            let mut bytes = vec![0u8; len];
+            for byte in &mut bytes {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = state as u8;
+            }
+            let result = std::panic::catch_unwind(|| NetworkMessage::decode_proto(&bytes));
+            assert!(
+                result.is_ok(),
+                "gossip decoder panicked for corpus length {len}"
+            );
         }
     }
 }

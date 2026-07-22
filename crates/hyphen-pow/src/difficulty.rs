@@ -1,4 +1,4 @@
-use hyphen_core::config::ChainConfig;
+use hyphen_core::config::{ChainConfig, DifficultyAlgorithm};
 
 // MDAD-SPR: Momentum-Dampened Adaptive Difficulty with Sequential Probability Ratio.
 //
@@ -16,6 +16,10 @@ use hyphen_core::config::ChainConfig;
 /// Uses the MDAD-SPR algorithm when sufficient history is available,
 /// falling back to clamped LWMA for bootstrap (< 4 blocks).
 pub fn next_difficulty(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
+    if cfg.difficulty_algorithm == DifficultyAlgorithm::LwmaV1 {
+        return next_difficulty_lwma(timestamps, difficulties, cfg);
+    }
+
     let n = timestamps.len();
     assert!(n >= 2, "need at least 2 blocks for difficulty adjustment");
 
@@ -684,6 +688,25 @@ mod tests {
         let difficulties: Vec<u64> = vec![1000; n as usize];
         let next = next_difficulty(&timestamps, &difficulties, &cfg);
         assert!(next > 1000, "expected increase, got {next}");
+    }
+
+    #[test]
+    fn frozen_lwma_clamps_timestamp_reversal_attack() {
+        let cfg = ChainConfig::devnet();
+        let previous = 9_000u64;
+        let timestamps = vec![0, 30_000, 60_000, 1_000, 2_000, 3_000];
+        let difficulties = vec![previous; timestamps.len()];
+
+        let next = next_difficulty(&timestamps, &difficulties, &cfg);
+        assert_eq!(cfg.difficulty_algorithm, DifficultyAlgorithm::LwmaV1);
+        assert!(
+            next >= previous / cfg.difficulty_clamp_down,
+            "timestamp reversal forced difficulty below the frozen lower clamp: {next}"
+        );
+        assert!(
+            next <= previous.saturating_mul(cfg.difficulty_clamp_up),
+            "timestamp reversal forced difficulty above the frozen upper clamp: {next}"
+        );
     }
 
     #[test]

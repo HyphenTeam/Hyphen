@@ -73,7 +73,15 @@ impl SignedEnvelope {
             Err(_) => return false,
         };
         let sig = hyphen_crypto::Signature(sig_bytes);
-        pk.verify(&to_sign, &sig).is_ok()
+        if pk.verify(&to_sign, &sig).is_err() {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        self.timestamp <= now.saturating_add(30_000)
+            && now <= self.timestamp.saturating_add(120_000)
     }
 
     fn sign_payload(msg_type: u32, payload: &[u8], timestamp: u64, nonce: u64) -> Vec<u8> {
@@ -90,6 +98,14 @@ impl SignedEnvelope {
 pub struct TemplateRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub requester_pubkey: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub network_magic: Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub protocol_version: u32,
+    #[prost(bytes = "vec", tag = "4")]
+    pub consensus_params_hash: Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub genesis_hash: Vec<u8>,
 }
 
 #[derive(Clone, prost::Message)]
@@ -118,6 +134,14 @@ pub struct BlockTemplate {
     pub page_size: u64,
     #[prost(bool, tag = "12")]
     pub clean: bool,
+    #[prost(bytes = "vec", tag = "13")]
+    pub network_magic: Vec<u8>,
+    #[prost(uint32, tag = "14")]
+    pub protocol_version: u32,
+    #[prost(bytes = "vec", tag = "15")]
+    pub consensus_params_hash: Vec<u8>,
+    #[prost(bytes = "vec", tag = "16")]
+    pub genesis_hash: Vec<u8>,
 }
 
 #[derive(Clone, prost::Message)]
@@ -170,11 +194,13 @@ pub const INVALIDATION_NEW_BLOCK: u32 = 1;
 pub const INVALIDATION_MEMPOOL_CHANGE: u32 = 2;
 pub const INVALIDATION_DIFFICULTY_CHANGE: u32 = 3;
 
-/// Maximum envelope size: 64 MiB.  This covers the largest legitimate
-/// message (a batch of serialised blocks during initial sync).
-pub const MAX_ENVELOPE_SIZE: u32 = 64 * 1024 * 1024;
+/// Maximum TP envelope size. Blocks are consensus-limited to 2 MiB; 8 MiB
+/// leaves protocol overhead while bounding unauthenticated allocation.
+pub const MAX_ENVELOPE_SIZE: u32 = 8 * 1024 * 1024;
 
-pub async fn read_envelope<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<SignedEnvelope, TPError> {
+pub async fn read_envelope<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+) -> Result<SignedEnvelope, TPError> {
     let len = reader.read_u32().await?;
     if len > MAX_ENVELOPE_SIZE {
         return Err(TPError::Protocol(format!("envelope too large: {len}")));

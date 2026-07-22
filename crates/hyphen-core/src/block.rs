@@ -1,6 +1,8 @@
 use hyphen_crypto::Hash256;
 use serde::{Deserialize, Serialize};
 
+use crate::authorization::BlockAuthorization;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockHeader {
     pub version: u32,
@@ -43,7 +45,8 @@ pub struct Block {
     pub header: BlockHeader,
     pub transactions: Vec<Vec<u8>>,
     pub uncle_headers: Vec<BlockHeader>,
-    pub pq_signature: Vec<u8>,
+    /// Versioned miner authorization envelope required for post-genesis blocks.
+    pub block_authorization: Vec<u8>,
 }
 
 impl Block {
@@ -64,6 +67,29 @@ impl Block {
     pub fn compute_uncle_root(&self) -> Hash256 {
         let uncle_hashes: Vec<Hash256> = self.uncle_headers.iter().map(|h| h.hash()).collect();
         merkle_root(&uncle_hashes)
+    }
+
+    pub fn decode_authorization(&self) -> Result<BlockAuthorization, String> {
+        if self.block_authorization.len() > 256 {
+            return Err("block authorization exceeds 256 bytes".into());
+        }
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(256)
+            .reject_trailing_bytes()
+            .deserialize(&self.block_authorization)
+            .map_err(|error| format!("block authorization decode failed: {error}"))
+    }
+
+    pub fn deserialise_limited(data: &[u8], max_size: usize) -> Result<Self, bincode::Error> {
+        if data.len() > max_size {
+            return Err(Box::new(bincode::ErrorKind::SizeLimit));
+        }
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(max_size as u64)
+            .reject_trailing_bytes()
+            .deserialize(data)
     }
 }
 
@@ -117,3 +143,4 @@ pub fn compute_receipt_root(receipts: &[TransactionReceipt]) -> Hash256 {
     let hashes: Vec<Hash256> = receipts.iter().map(|r| r.hash()).collect();
     merkle_root(&hashes)
 }
+use bincode::Options;

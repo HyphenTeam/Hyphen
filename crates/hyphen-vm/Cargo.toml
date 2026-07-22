@@ -15,5 +15,7 @@ thiserror.workspace     = true
 tracing.workspace       = true
 blake3.workspace        = true
 wasmer.workspace            = true
+wasmer-middlewares.workspace = true
+wasmparser.workspace         = true
 hex.workspace           = true
 sled.workspace          = true
