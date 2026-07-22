@@ -1,4 +1,5 @@
 use clap::Parser;
+use hyphen_core::config::ChainConfig;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{info, warn};
@@ -281,5 +282,3 @@ async fn read_raw_message(
     reader.read_exact(&mut buf).await?;
     Ok((msg_type, buf))
 }
-
-use hyphen_core::config::ChainConfig;
