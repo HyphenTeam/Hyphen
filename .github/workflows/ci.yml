@@ -38,6 +38,10 @@ jobs:
           done
       - name: Test base-chain workspace
         run: cargo test --workspace --all-targets --locked
+      - name: Check API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
       - name: Compile transaction, RPC, and P2P fuzz targets
         run: cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
       - name: Verify published chain identity vectors

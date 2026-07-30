@@ -23,6 +23,44 @@ const D_CONTEXT: &[u8] = b"HYPHEN_SAC_DISCLOSURE_CONTEXT_V0";
 const D_CHALLENGE: &[u8] = b"HYPHEN_SAC_OWNERSHIP_CHALLENGE_V0";
 const D_CAPABILITY: &[u8] = b"HYPHEN_SAC_CAPABILITY_ID_V0";
 
+/// Fields exposed in plaintext by the current disclosure package.
+///
+/// This list is part of the API so callers cannot mistake audience binding in
+/// the proof for encryption of the package. Transport confidentiality remains
+/// the caller's responsibility.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DisclosedField {
+    ChainId,
+    TransactionId,
+    OutputIndex,
+    GlobalIndex,
+    AuditorPublicKey,
+    ScopeHash,
+    ValidityInterval,
+    DisclosureNonce,
+    Commitment,
+    OneTimePublicKey,
+    Amount,
+    CommitmentBlinding,
+    OwnershipProof,
+}
+
+pub const DISCLOSED_FIELDS_V0: &[DisclosedField] = &[
+    DisclosedField::ChainId,
+    DisclosedField::TransactionId,
+    DisclosedField::OutputIndex,
+    DisclosedField::GlobalIndex,
+    DisclosedField::AuditorPublicKey,
+    DisclosedField::ScopeHash,
+    DisclosedField::ValidityInterval,
+    DisclosedField::DisclosureNonce,
+    DisclosedField::Commitment,
+    DisclosedField::OneTimePublicKey,
+    DisclosedField::Amount,
+    DisclosedField::CommitmentBlinding,
+    DisclosedField::OwnershipProof,
+];
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OwnershipProof {
     pub nonce_point: [u8; 32],
@@ -49,6 +87,10 @@ pub struct SelectiveDisclosure {
 }
 
 impl SelectiveDisclosure {
+    pub fn disclosed_fields(&self) -> &'static [DisclosedField] {
+        DISCLOSED_FIELDS_V0
+    }
+
     /// Fixed-width, big-endian context authenticated by the ownership proof.
     pub fn canonical_context(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(293);
@@ -365,6 +407,12 @@ mod tests {
             generate_disclosure(&owned, &transaction, 0, hash(1), auditor, hash(2), 100, 200)
                 .unwrap();
         assert_eq!(disclosure.canonical_context().len(), 293);
+        assert!(disclosure
+            .disclosed_fields()
+            .contains(&DisclosedField::Amount));
+        assert!(disclosure
+            .disclosed_fields()
+            .contains(&DisclosedField::CommitmentBlinding));
         verify_disclosure(&disclosure, &transaction, context(auditor)).unwrap();
     }
 

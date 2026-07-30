@@ -35,6 +35,8 @@ const D_NULLIFIER_PRESENT: &[u8] = b"HYPHEN_WES_NULLIFIER_PRESENT_V0";
 const D_MMR_LEAF: &[u8] = b"HYPHEN_WES_MMR_LEAF_V0";
 const D_MMR_NODE: &[u8] = b"HYPHEN_WES_MMR_NODE_V0";
 const D_MMR_ROOT: &[u8] = b"HYPHEN_WES_MMR_ROOT_V0";
+const D_LIFECYCLE_EVENT: &[u8] = b"HYPHEN_WES_LIFECYCLE_EVENT_V1";
+const D_AUTHORIZATION: &[u8] = b"HYPHEN_WES_AUTHORIZATION_V1";
 const D_STATE_ROOT: &[u8] = b"HYPHEN_STATE_V1";
 
 /// State classes admitted by the first H-WES reference profile.
@@ -54,7 +56,8 @@ pub enum StateClass {
 pub enum StateStatus {
     Live = 1,
     Expired = 2,
-    Revoked = 3,
+    Recovered = 3,
+    Consumed = 4,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +103,9 @@ pub struct LatestEntry {
     pub status: StateStatus,
     pub archive_index: Option<u64>,
     pub value_hash: Hash256,
-    pub record_hash: Hash256,
+    /// Hash of the object that the current status names. This is a record hash
+    /// for `Live`/`Expired` and a terminal event hash for `Consumed`.
+    pub head_hash: Hash256,
 }
 
 impl LatestEntry {
@@ -110,7 +115,7 @@ impl LatestEntry {
         bytes.push(self.status as u8);
         bytes.extend_from_slice(&self.archive_index.unwrap_or(NO_ARCHIVE_INDEX).to_be_bytes());
         bytes.extend_from_slice(self.value_hash.as_bytes());
-        bytes.extend_from_slice(self.record_hash.as_bytes());
+        bytes.extend_from_slice(self.head_hash.as_bytes());
         hash_parts(D_LATEST, &[&bytes])
     }
 }
@@ -136,8 +141,58 @@ pub struct RestoreWitness {
     pub archive_proof: MmrProof,
     pub latest_entry: LatestEntry,
     pub latest_proof: MembershipProof,
-    pub owner_proof: Vec<u8>,
+    pub authorization_proof: Vec<u8>,
     pub availability_proof: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsumeWitness {
+    pub archived_record: StateRecord,
+    pub archive_proof: MmrProof,
+    pub latest_entry: LatestEntry,
+    pub latest_proof: MembershipProof,
+    pub authorization_proof: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AuthorizationAction {
+    Recover = 1,
+    Consume = 2,
+}
+
+/// Public statement that an owner-policy proof must authorize.
+///
+/// Binding the action, linearization height, lease and pre-state roots prevents
+/// a proof collected for one recovery attempt from authorizing a different
+/// transition. A concrete policy may be a signature, multisignature or ZK
+/// authorization relation, but it must verify this digest rather than only the
+/// archived record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuthorizationRequest {
+    pub action: AuthorizationAction,
+    pub chain_id: Hash256,
+    pub key: Hash256,
+    pub version: u64,
+    pub archived_record_hash: Hash256,
+    pub at_height: u64,
+    pub new_lease_end: Option<u64>,
+    pub pre_state_root: Hash256,
+}
+
+impl AuthorizationRequest {
+    pub fn digest(&self) -> Hash256 {
+        let mut bytes = Vec::with_capacity(154);
+        bytes.push(self.action as u8);
+        bytes.extend_from_slice(self.chain_id.as_bytes());
+        bytes.extend_from_slice(self.key.as_bytes());
+        bytes.extend_from_slice(&self.version.to_be_bytes());
+        bytes.extend_from_slice(self.archived_record_hash.as_bytes());
+        bytes.extend_from_slice(&self.at_height.to_be_bytes());
+        bytes.extend_from_slice(&self.new_lease_end.unwrap_or(u64::MAX).to_be_bytes());
+        bytes.extend_from_slice(self.pre_state_root.as_bytes());
+        hash_parts(D_AUTHORIZATION, &[&bytes])
+    }
 }
 
 /// External cryptographic checks that the state model cannot honestly invent.
@@ -145,7 +200,12 @@ pub struct RestoreWitness {
 /// A concrete research profile must bind these methods to a specified signature
 /// or ZK system and to a specified data-availability certificate format.
 pub trait RestorePolicy {
-    fn verify_owner(&self, archived: &StateRecord, proof: &[u8]) -> bool;
+    fn verify_authorization(
+        &self,
+        archived: &StateRecord,
+        request: &AuthorizationRequest,
+        proof: &[u8],
+    ) -> bool;
 
     fn verify_availability(
         &self,
@@ -185,6 +245,69 @@ pub struct ArchivedRecord {
     pub record: StateRecord,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LifecycleTransition {
+    Recover = 1,
+    Consume = 2,
+}
+
+/// Terminal event for one object incarnation `(key, version)`.
+///
+/// Expiration itself is represented by the archived `StateRecord` with status
+/// `Expired`. A terminal event then closes that incarnation exactly once. A
+/// recovery event commits the hash of the successor `Live` incarnation;
+/// consumption has no successor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LifecycleEvent {
+    pub chain_id: Hash256,
+    pub class: StateClass,
+    pub key: Hash256,
+    pub version: u64,
+    pub transition: LifecycleTransition,
+    pub at_height: u64,
+    pub expired_record_hash: Hash256,
+    pub successor_record_hash: Option<Hash256>,
+}
+
+impl LifecycleEvent {
+    /// Fixed-width, language-neutral event encoding.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(151);
+        bytes.extend_from_slice(b"HWSE");
+        bytes.push(1);
+        bytes.extend_from_slice(self.chain_id.as_bytes());
+        bytes.push(self.class as u8);
+        bytes.extend_from_slice(self.key.as_bytes());
+        bytes.extend_from_slice(&self.version.to_be_bytes());
+        bytes.push(self.transition as u8);
+        bytes.extend_from_slice(&self.at_height.to_be_bytes());
+        bytes.extend_from_slice(self.expired_record_hash.as_bytes());
+        bytes.extend_from_slice(
+            self.successor_record_hash
+                .unwrap_or(Hash256::from_bytes([0; 32]))
+                .as_bytes(),
+        );
+        bytes
+    }
+
+    pub fn hash(&self) -> Hash256 {
+        hash_parts(D_LIFECYCLE_EVENT, &[&self.canonical_bytes()])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoreOutcome {
+    pub restored: StateRecord,
+    pub receipt: LifecycleReceipt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LifecycleReceipt {
+    pub archive_index: u64,
+    pub event: LifecycleEvent,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum WesError {
     #[error("record belongs to a different chain")]
@@ -193,6 +316,8 @@ pub enum WesError {
     NotLive,
     #[error("lease must end after the transition height")]
     InvalidLease,
+    #[error("transition precedes the archived object's expiry height")]
+    TransitionBeforeExpiry,
     #[error("state key already exists")]
     AlreadyExists,
     #[error("initial state version must be zero")]
@@ -211,6 +336,8 @@ pub enum WesError {
     InvalidOwnerProof,
     #[error("data-availability proof rejected")]
     InvalidAvailabilityProof,
+    #[error("lifecycle event is malformed")]
+    InvalidLifecycleEvent,
     #[error("policy proof exceeds the protocol bound")]
     OversizedPolicyProof,
     #[error("duplicate nullifier")]
@@ -265,7 +392,7 @@ impl ReferenceExpiringState {
             status: StateStatus::Live,
             archive_index: None,
             value_hash: record.value_hash,
-            record_hash: record.hash(),
+            head_hash: record.hash(),
         };
         self.expiry_queue
             .entry(record.lease_end)
@@ -303,7 +430,7 @@ impl ReferenceExpiringState {
                     status: StateStatus::Expired,
                     archive_index: Some(index),
                     value_hash: record.value_hash,
-                    record_hash,
+                    head_hash: record_hash,
                 },
             );
             self.remove_from_expiry_queue(lease, key);
@@ -316,7 +443,7 @@ impl ReferenceExpiringState {
         &self,
         archived_record: StateRecord,
         archive_index: u64,
-        owner_proof: Vec<u8>,
+        authorization_proof: Vec<u8>,
         availability_proof: Vec<u8>,
     ) -> Result<RestoreWitness, WesError> {
         let latest_entry = self
@@ -335,8 +462,34 @@ impl ReferenceExpiringState {
             archive_proof,
             latest_entry,
             latest_proof,
-            owner_proof,
+            authorization_proof,
             availability_proof,
+        })
+    }
+
+    pub fn build_consume_witness(
+        &self,
+        archived_record: StateRecord,
+        archive_index: u64,
+        authorization_proof: Vec<u8>,
+    ) -> Result<ConsumeWitness, WesError> {
+        let latest_entry = self
+            .latest
+            .get(&archived_record.key)
+            .cloned()
+            .ok_or(WesError::NotFound)?;
+        let archive_proof = self
+            .archive
+            .prove(archive_index)
+            .ok_or(WesError::NotFound)?;
+        let latest_proof = map_membership_proof(&self.latest_entries(), &archived_record.key)
+            .ok_or(WesError::NotFound)?;
+        Ok(ConsumeWitness {
+            archived_record,
+            archive_proof,
+            latest_entry,
+            latest_proof,
+            authorization_proof,
         })
     }
 
@@ -363,8 +516,19 @@ impl ReferenceExpiringState {
         new_lease_end: u64,
         witness: &RestoreWitness,
         policy: &P,
-    ) -> Result<StateRecord, WesError> {
+    ) -> Result<RestoreOutcome, WesError> {
         let restored = self.verify_restore(at_height, new_lease_end, witness, policy)?;
+        let event = LifecycleEvent {
+            chain_id: restored.chain_id,
+            class: restored.class,
+            key: restored.key,
+            version: witness.archived_record.version,
+            transition: LifecycleTransition::Recover,
+            at_height,
+            expired_record_hash: witness.archived_record.hash(),
+            successor_record_hash: Some(restored.hash()),
+        };
+        let archive_index = self.archive.append(event.hash());
         self.expiry_queue
             .entry(restored.lease_end)
             .or_default()
@@ -376,11 +540,52 @@ impl ReferenceExpiringState {
                 status: StateStatus::Live,
                 archive_index: None,
                 value_hash: restored.value_hash,
-                record_hash: restored.hash(),
+                head_hash: restored.hash(),
             },
         );
         self.live.insert(restored.key, restored.clone());
-        Ok(restored)
+        Ok(RestoreOutcome {
+            restored,
+            receipt: LifecycleReceipt {
+                archive_index,
+                event,
+            },
+        })
+    }
+
+    pub fn verify_consume<P: RestorePolicy>(
+        &self,
+        at_height: u64,
+        witness: &ConsumeWitness,
+        policy: &P,
+    ) -> Result<LifecycleEvent, WesError> {
+        verify_consume_witness(self.chain_id, self.roots(), at_height, witness, policy)
+    }
+
+    pub fn apply_consume<P: RestorePolicy>(
+        &mut self,
+        at_height: u64,
+        witness: &ConsumeWitness,
+        policy: &P,
+    ) -> Result<LifecycleReceipt, WesError> {
+        let event = self.verify_consume(at_height, witness, policy)?;
+        let archive_index = self.archive.append(event.hash());
+        let mut consumed = witness.archived_record.clone();
+        consumed.status = StateStatus::Consumed;
+        self.latest.insert(
+            consumed.key,
+            LatestEntry {
+                version: consumed.version,
+                status: StateStatus::Consumed,
+                archive_index: Some(archive_index),
+                value_hash: consumed.value_hash,
+                head_hash: event.hash(),
+            },
+        );
+        Ok(LifecycleReceipt {
+            archive_index,
+            event,
+        })
     }
 
     pub fn insert_nullifier(&mut self, nullifier: Hash256) -> Result<(), WesError> {
@@ -432,6 +637,14 @@ impl ReferenceExpiringState {
         self.live.get(key)
     }
 
+    pub fn history_len(&self) -> u64 {
+        self.archive.leaves.len() as u64
+    }
+
+    pub fn prove_history_hash(&self, archive_index: u64) -> Option<MmrProof> {
+        self.archive.prove(archive_index)
+    }
+
     fn latest_entries(&self) -> Vec<(Hash256, Hash256)> {
         self.latest
             .iter()
@@ -461,46 +674,37 @@ pub fn verify_restore_witness<P: RestorePolicy>(
     policy: &P,
 ) -> Result<StateRecord, WesError> {
     let archived = &witness.archived_record;
-    if archived.chain_id != chain_id {
-        return Err(WesError::WrongChain);
-    }
-    if archived.status != StateStatus::Expired {
-        return Err(WesError::StaleVersion);
-    }
     if new_lease_end <= at_height {
         return Err(WesError::InvalidLease);
     }
-    if witness.owner_proof.len() > MAX_POLICY_PROOF_BYTES
+    if at_height < archived.lease_end {
+        return Err(WesError::TransitionBeforeExpiry);
+    }
+    if witness.authorization_proof.len() > MAX_POLICY_PROOF_BYTES
         || witness.availability_proof.len() > MAX_POLICY_PROOF_BYTES
     {
         return Err(WesError::OversizedPolicyProof);
     }
 
-    let archived_hash = archived.hash();
-    if !verify_mmr_proof(archived_hash, &witness.archive_proof, roots.archive) {
-        return Err(WesError::InvalidArchiveProof);
-    }
-    let latest = &witness.latest_entry;
-    if latest.version != archived.version
-        || latest.status != StateStatus::Expired
-        || latest.archive_index != Some(witness.archive_proof.leaf_index)
-        || latest.value_hash != archived.value_hash
-        || latest.record_hash != archived_hash
-    {
-        return Err(WesError::StaleVersion);
-    }
-    if !verify_map_membership(
-        archived.key,
-        latest.hash(),
+    verify_expired_head(
+        chain_id,
+        roots,
+        archived,
+        &witness.archive_proof,
+        &witness.latest_entry,
         &witness.latest_proof,
-        roots.latest,
-        D_LATEST_LEAF,
-        D_LATEST_NODE,
-        D_LATEST_ROOT,
-    ) {
-        return Err(WesError::InvalidLatestProof);
-    }
-    if !policy.verify_owner(archived, &witness.owner_proof) {
+    )?;
+    let request = AuthorizationRequest {
+        action: AuthorizationAction::Recover,
+        chain_id,
+        key: archived.key,
+        version: archived.version,
+        archived_record_hash: archived.hash(),
+        at_height,
+        new_lease_end: Some(new_lease_end),
+        pre_state_root: roots.combined(),
+    };
+    if !policy.verify_authorization(archived, &request, &witness.authorization_proof) {
         return Err(WesError::InvalidOwnerProof);
     }
 
@@ -523,6 +727,105 @@ pub fn verify_restore_witness<P: RestorePolicy>(
         return Err(WesError::InvalidAvailabilityProof);
     }
     Ok(restored)
+}
+
+pub fn verify_consume_witness<P: RestorePolicy>(
+    chain_id: Hash256,
+    roots: StateRoots,
+    at_height: u64,
+    witness: &ConsumeWitness,
+    policy: &P,
+) -> Result<LifecycleEvent, WesError> {
+    let archived = &witness.archived_record;
+    if at_height < archived.lease_end {
+        return Err(WesError::TransitionBeforeExpiry);
+    }
+    if witness.authorization_proof.len() > MAX_POLICY_PROOF_BYTES {
+        return Err(WesError::OversizedPolicyProof);
+    }
+    verify_expired_head(
+        chain_id,
+        roots,
+        archived,
+        &witness.archive_proof,
+        &witness.latest_entry,
+        &witness.latest_proof,
+    )?;
+    let request = AuthorizationRequest {
+        action: AuthorizationAction::Consume,
+        chain_id,
+        key: archived.key,
+        version: archived.version,
+        archived_record_hash: archived.hash(),
+        at_height,
+        new_lease_end: None,
+        pre_state_root: roots.combined(),
+    };
+    if !policy.verify_authorization(archived, &request, &witness.authorization_proof) {
+        return Err(WesError::InvalidOwnerProof);
+    }
+    Ok(LifecycleEvent {
+        chain_id,
+        class: archived.class,
+        key: archived.key,
+        version: archived.version,
+        transition: LifecycleTransition::Consume,
+        at_height,
+        expired_record_hash: archived.hash(),
+        successor_record_hash: None,
+    })
+}
+
+fn verify_expired_head(
+    chain_id: Hash256,
+    roots: StateRoots,
+    archived: &StateRecord,
+    archive_proof: &MmrProof,
+    latest: &LatestEntry,
+    latest_proof: &MembershipProof,
+) -> Result<(), WesError> {
+    if archived.chain_id != chain_id {
+        return Err(WesError::WrongChain);
+    }
+    if archived.status != StateStatus::Expired {
+        return Err(WesError::StaleVersion);
+    }
+    let archived_hash = archived.hash();
+    if !verify_mmr_proof(archived_hash, archive_proof, roots.archive) {
+        return Err(WesError::InvalidArchiveProof);
+    }
+    if latest.version != archived.version
+        || latest.status != StateStatus::Expired
+        || latest.archive_index != Some(archive_proof.leaf_index)
+        || latest.value_hash != archived.value_hash
+        || latest.head_hash != archived_hash
+    {
+        return Err(WesError::StaleVersion);
+    }
+    if !verify_map_membership(
+        archived.key,
+        latest.hash(),
+        latest_proof,
+        roots.latest,
+        D_LATEST_LEAF,
+        D_LATEST_NODE,
+        D_LATEST_ROOT,
+    ) {
+        return Err(WesError::InvalidLatestProof);
+    }
+    Ok(())
+}
+
+pub fn verify_lifecycle_receipt(
+    event: &LifecycleEvent,
+    proof: &MmrProof,
+    archive_root: Hash256,
+) -> bool {
+    let shape_is_valid = match event.transition {
+        LifecycleTransition::Recover => event.successor_record_hash.is_some(),
+        LifecycleTransition::Consume => event.successor_record_hash.is_none(),
+    };
+    shape_is_valid && verify_mmr_proof(event.hash(), proof, archive_root)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -799,8 +1102,21 @@ mod tests {
     struct ExactPolicy;
 
     impl RestorePolicy for ExactPolicy {
-        fn verify_owner(&self, archived: &StateRecord, proof: &[u8]) -> bool {
-            proof == archived.owner_policy.as_bytes()
+        fn verify_authorization(
+            &self,
+            archived: &StateRecord,
+            request: &AuthorizationRequest,
+            proof: &[u8],
+        ) -> bool {
+            proof
+                == hash_parts(
+                    b"HYPHEN_WES_TEST_AUTH_V1",
+                    &[
+                        archived.owner_policy.as_bytes(),
+                        request.digest().as_bytes(),
+                    ],
+                )
+                .as_bytes()
         }
 
         fn verify_availability(
@@ -846,10 +1162,28 @@ mod tests {
             .build_restore_witness(
                 archived.record.clone(),
                 archived.index,
-                archived.record.owner_policy.as_bytes().to_vec(),
+                Vec::new(),
                 Vec::new(),
             )
             .expect("witness must exist");
+        let request = AuthorizationRequest {
+            action: AuthorizationAction::Recover,
+            chain_id: archived.record.chain_id,
+            key: archived.record.key,
+            version: archived.record.version,
+            archived_record_hash: archived.record.hash(),
+            at_height,
+            new_lease_end: Some(new_lease_end),
+            pre_state_root: state.roots().combined(),
+        };
+        witness.authorization_proof = hash_parts(
+            b"HYPHEN_WES_TEST_AUTH_V1",
+            &[
+                archived.record.owner_policy.as_bytes(),
+                request.digest().as_bytes(),
+            ],
+        )
+        .to_vec();
         let restored = StateRecord {
             chain_id: archived.record.chain_id,
             class: archived.record.class,
@@ -866,6 +1200,35 @@ mod tests {
             &[
                 restored.hash().as_bytes(),
                 state.roots().availability.as_bytes(),
+            ],
+        )
+        .to_vec();
+        witness
+    }
+
+    fn consume_witness(
+        state: &ReferenceExpiringState,
+        archived: &ArchivedRecord,
+        at_height: u64,
+    ) -> ConsumeWitness {
+        let mut witness = state
+            .build_consume_witness(archived.record.clone(), archived.index, Vec::new())
+            .expect("witness must exist");
+        let request = AuthorizationRequest {
+            action: AuthorizationAction::Consume,
+            chain_id: archived.record.chain_id,
+            key: archived.record.key,
+            version: archived.record.version,
+            archived_record_hash: archived.record.hash(),
+            at_height,
+            new_lease_end: None,
+            pre_state_root: state.roots().combined(),
+        };
+        witness.authorization_proof = hash_parts(
+            b"HYPHEN_WES_TEST_AUTH_V1",
+            &[
+                archived.record.owner_policy.as_bytes(),
+                request.digest().as_bytes(),
             ],
         )
         .to_vec();
@@ -919,12 +1282,22 @@ mod tests {
         let archived = state.expire_due(20, 1).remove(0);
         let witness = restore_witness(&state, &archived, 21, 40);
 
-        let restored = state
+        let outcome = state
             .apply_restore(21, 40, &witness, &ExactPolicy)
             .expect("valid witness must restore");
+        let restored = outcome.restored;
         assert_eq!(restored.version, 1);
         assert_eq!(restored.status, StateStatus::Live);
         assert_eq!(state.live_record(&hash(7)), Some(&restored));
+        assert_eq!(state.history_len(), 2);
+        let proof = state
+            .prove_history_hash(outcome.receipt.archive_index)
+            .unwrap();
+        assert!(verify_lifecycle_receipt(
+            &outcome.receipt.event,
+            &proof,
+            state.roots().archive
+        ));
     }
 
     #[test]
@@ -938,9 +1311,15 @@ mod tests {
             .unwrap();
         let _new = state.expire_due(30, 1).remove(0);
 
+        let mut current_archive_witness = state
+            .build_restore_witness(old.record.clone(), old.index, Vec::new(), Vec::new())
+            .unwrap();
+        current_archive_witness.authorization_proof = first_witness.authorization_proof;
+        current_archive_witness.availability_proof = first_witness.availability_proof;
+
         assert_eq!(
-            state.verify_restore(31, 50, &first_witness, &ExactPolicy),
-            Err(WesError::InvalidArchiveProof)
+            state.verify_restore(31, 50, &current_archive_witness, &ExactPolicy),
+            Err(WesError::StaleVersion)
         );
     }
 
@@ -959,7 +1338,7 @@ mod tests {
         );
 
         let mut bad_owner = witness.clone();
-        bad_owner.owner_proof[0] ^= 1;
+        bad_owner.authorization_proof[0] ^= 1;
         assert_eq!(
             state.verify_restore(21, 40, &bad_owner, &ExactPolicy),
             Err(WesError::InvalidOwnerProof)
@@ -970,6 +1349,72 @@ mod tests {
         assert_eq!(
             state.verify_restore(21, 40, &bad_da, &ExactPolicy),
             Err(WesError::InvalidAvailabilityProof)
+        );
+    }
+
+    #[test]
+    fn authorization_is_bound_to_action_height_lease_and_pre_state() {
+        let mut state = ReferenceExpiringState::new(hash(0x11), hash(0xaa));
+        state.insert_initial(live_record(7, 20), 10).unwrap();
+        let archived = state.expire_due(20, 1).remove(0);
+        let witness = restore_witness(&state, &archived, 21, 40);
+
+        assert_eq!(
+            state.verify_restore(22, 40, &witness, &ExactPolicy),
+            Err(WesError::InvalidOwnerProof)
+        );
+        assert_eq!(
+            state.verify_restore(21, 41, &witness, &ExactPolicy),
+            Err(WesError::InvalidOwnerProof)
+        );
+        let consume = ConsumeWitness {
+            archived_record: witness.archived_record,
+            archive_proof: witness.archive_proof,
+            latest_entry: witness.latest_entry,
+            latest_proof: witness.latest_proof,
+            authorization_proof: witness.authorization_proof,
+        };
+        assert_eq!(
+            state.verify_consume(21, &consume, &ExactPolicy),
+            Err(WesError::InvalidOwnerProof)
+        );
+    }
+
+    #[test]
+    fn consumed_incarnation_has_no_recovery_path() {
+        let mut state = ReferenceExpiringState::new(hash(0x11), hash(0xaa));
+        state.insert_initial(live_record(7, 20), 10).unwrap();
+        let archived = state.expire_due(20, 1).remove(0);
+        let stale_restore = restore_witness(&state, &archived, 21, 40);
+        let consume = consume_witness(&state, &archived, 21);
+        let receipt = state
+            .apply_consume(21, &consume, &ExactPolicy)
+            .expect("authorized consumption must succeed");
+
+        assert!(state.live_record(&archived.record.key).is_none());
+        assert_eq!(state.history_len(), 2);
+        let proof = state.prove_history_hash(receipt.archive_index).unwrap();
+        assert!(verify_lifecycle_receipt(
+            &receipt.event,
+            &proof,
+            state.roots().archive
+        ));
+        assert_eq!(
+            state.verify_restore(21, 40, &stale_restore, &ExactPolicy),
+            Err(WesError::InvalidArchiveProof)
+        );
+
+        let current = state
+            .build_restore_witness(
+                archived.record.clone(),
+                archived.index,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            state.verify_restore(22, 40, &current, &ExactPolicy),
+            Err(WesError::StaleVersion)
         );
     }
 
@@ -1017,6 +1462,87 @@ mod tests {
         assert_eq!(
             expired.combined().to_string(),
             vector["expired_combined_state_root"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn lifecycle_vector_is_stable() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../test-vectors/h-wes-lifecycle-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(vector["schema"], "hyphen-h-wes-lifecycle-vector-v1");
+        let mut recovery_state = ReferenceExpiringState::new(hash(0x11), hash(0xaa));
+        recovery_state
+            .insert_initial(live_record(7, 20), 10)
+            .unwrap();
+        let recovery_archived = recovery_state.expire_due(20, 1).remove(0);
+        let recovery_witness = restore_witness(&recovery_state, &recovery_archived, 21, 40);
+        let recovery_request = AuthorizationRequest {
+            action: AuthorizationAction::Recover,
+            chain_id: recovery_archived.record.chain_id,
+            key: recovery_archived.record.key,
+            version: recovery_archived.record.version,
+            archived_record_hash: recovery_archived.record.hash(),
+            at_height: 21,
+            new_lease_end: Some(40),
+            pre_state_root: recovery_state.roots().combined(),
+        };
+        let recovery = recovery_state
+            .apply_restore(21, 40, &recovery_witness, &ExactPolicy)
+            .unwrap();
+
+        let mut consume_state = ReferenceExpiringState::new(hash(0x11), hash(0xaa));
+        consume_state
+            .insert_initial(live_record(7, 20), 10)
+            .unwrap();
+        let consume_archived = consume_state.expire_due(20, 1).remove(0);
+        let consume_witness = consume_witness(&consume_state, &consume_archived, 21);
+        let consume_request = AuthorizationRequest {
+            action: AuthorizationAction::Consume,
+            chain_id: consume_archived.record.chain_id,
+            key: consume_archived.record.key,
+            version: consume_archived.record.version,
+            archived_record_hash: consume_archived.record.hash(),
+            at_height: 21,
+            new_lease_end: None,
+            pre_state_root: consume_state.roots().combined(),
+        };
+        let consumption = consume_state
+            .apply_consume(21, &consume_witness, &ExactPolicy)
+            .unwrap();
+
+        assert_eq!(
+            recovery_request.digest().to_string(),
+            vector["recover"]["authorization_digest"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(recovery.receipt.event.canonical_bytes()),
+            vector["recover"]["event_encoding"].as_str().unwrap()
+        );
+        assert_eq!(
+            recovery.receipt.event.hash().to_string(),
+            vector["recover"]["event_hash"].as_str().unwrap()
+        );
+        assert_eq!(
+            recovery_state.roots().combined().to_string(),
+            vector["recover"]["post_state_root"].as_str().unwrap()
+        );
+        assert_eq!(
+            consume_request.digest().to_string(),
+            vector["consume"]["authorization_digest"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(consumption.event.canonical_bytes()),
+            vector["consume"]["event_encoding"].as_str().unwrap()
+        );
+        assert_eq!(
+            consumption.event.hash().to_string(),
+            vector["consume"]["event_hash"].as_str().unwrap()
+        );
+        assert_eq!(
+            consume_state.roots().combined().to_string(),
+            vector["consume"]["post_state_root"].as_str().unwrap()
         );
     }
 }

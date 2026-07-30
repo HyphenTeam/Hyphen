@@ -6,8 +6,8 @@ pub mod wallet;
 
 pub use address::HyphenAddress;
 pub use audit::{
-    generate_disclosure, verify_disclosure, AuditError, AuditVerificationContext, OwnershipProof,
-    SelectiveDisclosure, SELECTIVE_DISCLOSURE_VERSION,
+    generate_disclosure, verify_disclosure, AuditError, AuditVerificationContext, DisclosedField,
+    OwnershipProof, SelectiveDisclosure, DISCLOSED_FIELDS_V0, SELECTIVE_DISCLOSURE_VERSION,
 };
 pub use derivation::{DerivedKeys, MasterKey};
 pub use signer::{

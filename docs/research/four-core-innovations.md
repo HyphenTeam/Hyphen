@@ -1,6 +1,6 @@
-# Hyphen 四项核心创新：研究、证明与实现章程
+# Hyphen 研究机制：证明、先验工作与实现章程
 
-状态：预规范（pre-specification），2026-07-30。
+状态：预规范（pre-specification），2026-07-31。
 
 本文不是已部署功能声明。四项机制均未进入当前
 `hyphen-devnet-v2` 共识。任何激活都必须使用新的研究 profile、链身份、
@@ -82,7 +82,7 @@ nullifier 和分叉 ring 状态。端到端后端测试覆盖较重三块分支�
 所有共识对象必须使用规范化、语言无关、长度有界的编码。Rust `bincode`
 只能作为当前实现工件，不能作为四项机制的最终跨实现共识编码。
 
-## 3. 创新一：H-WES 可恢复过期状态与见证携带执行
+## 3. 候选贡献一：H-WES 可恢复过期状态与见证携带执行
 
 暂定名称：Hyphen Witness-Carried Expiring State（H-WES）。名称不构成
 学术新颖性声明。
@@ -107,11 +107,11 @@ MMR 只能高效证明“某记录曾被追加”，不能独自证明“它是�
 ```text
 R = (chain_id, class, x, version, value_hash, owner_policy,
      created_at, lease_end, status)
-status in {Live, Expired, Revoked}
+status in {Live, Expired, Recovered, Consumed}
 ```
 
 `V_t[x]` 始终承诺最新
-`(version, status, archive_index, value_hash, record_hash)`；验证节点
+`(version, status, archive_index, value_hash, head_hash)`；验证节点
 只需保存 `V_t` 的根，证明和 blob 可由交易发送者/存储提供者携带。过期时：
 
 ```text
@@ -150,8 +150,9 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 
 证明草图：假设旧版本恢复成功。验证通过意味着旧版本与 `V_t[x]` 承诺的
 最新版本相等，或攻击者构造了另一条对同一根有效的路径。前者与“旧于最新”
-矛盾，后者给出 `H` 碰撞。因此在假设下成功概率可忽略。状态：仅定理草图，
-等待规范化树编码和完整归约。
+矛盾，后者给出 `H` 碰撞。因此在假设下成功概率可忽略。状态：规范树编码、
+纯 verifier 和旧版本负向测试已完成；持久认证字典、共识原子接线和独立密码学
+评审尚未完成。
 
 **H-WES-S2（nullifier 单调安全）**：如果 `N_t subseteq N_{t+1}` 且每次花费
 在状态提交前检查并插入 nullifier，则状态过期不会使已花费 Note 再次有效。
@@ -176,12 +177,20 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 
 首个未激活参考实现位于 `crates/hyphen-state/src/expiring_state.rs`，跨语言
 向量位于 `test-vectors/h-wes-v0.json`。它已经固定 159 字节记录编码、确定性
-到期顺序、MMR 包含证明、最新版证明和恢复转换，并覆盖旧版本、篡改证明、
-越权与重复 nullifier 的负向测试。它尚未实现持久化、rollback、数据可用性
+到期顺序、MMR 包含证明、最新版证明、恢复/消费终态和原子恢复转换，并覆盖
+旧版本、终态复活、篡改证明、授权上下文替换与重复 nullifier 的负向测试。
+它尚未实现持久化、rollback、数据可用性
 协议或 shielded Note 的零知识恢复，因此当前状态仍是“可执行参考模型”，
 不是已激活共识。
 
-## 4. 创新二：H-BFM 并行编织与确定性融合
+原始“四条件不可能性”缺少 succinctness，完整 archive 单轮扫描是反例。补强
+后的 membership-only 黑盒后缀查询下界、EAOM 生命周期、线性化点、授权关系、
+安全游戏和复杂度表见
+[`h-wes-theorem-and-object-model.md`](h-wes-theorem-and-object-model.md)。当前代码
+已加入 action/height/lease/pre-state 绑定、恢复终态回执、消费终态和
+no-resurrection 测试；持久 SMT、DA 和共识接线仍未完成。
+
+## 4. H-BFM 规范融合机制与隐私可见域公平候选
 
 暂定名称：Hyphen Braided Fusion Mesh（H-BFM）。它不能使用 PHANTOM/
 GHOSTDAG 的 blue-set 排序或把“block DAG”本身作为创新声明。
@@ -245,7 +254,14 @@ rank(B) = (logical_round(B), lane(B), H(canonical_block(B)))
 set agreement、permissionless lane 分配、奖励或网络协议，所以不能据此
 声称整个 mesh 共识已经完成。
 
-## 5. 创新三：H-FOC 100ms 时隙的快速排序证书
+规范拓扑排序本身不再列为新颖性贡献。继续研究的候选性质是：只对
+`(txid,fee_class,encoded_len,public_conflict_tag)` 可见投影聚合签名接收序列，
+以 `2f+1` 强证据生成 pairwise edge，把 cycle 收缩成 fair batch，并明确放弃对
+隐藏金额、地址和语义的 fairness 声明。定义、证明、局部 MEV 边界和代码状态见
+[`private-visible-fair-ordering.md`](private-visible-fair-ordering.md)。参考实现位于
+`crates/hyphen-consensus/src/private_fair_ordering.rs`，尚未接入 fusion 或区块。
+
+## 5. 候选贡献二：H-FOC' 动态委员会公平排序证书
 
 暂定名称：Hyphen Fast Ordering Certificates（H-FOC）。
 
@@ -321,7 +337,13 @@ seat 签名、`2f+1` 门限、重复 seat 拒绝和同一
 并拒绝没有可表示后继值的 `source_epoch`。它没有证明或实现 100ms WAN 最终性；
 100ms 仍是必须通过公开部署条件和原始延迟样本验收的 `T_preorder_p50` 指标。
 
-## 6. 创新四：H-SAC 用户控制的选择性审计能力
+固定委员会交集不证明跨 epoch 安全。候选 H-FOC' 需要 old/new committee 对同一
+finalized PoW checkpoint 的双 QC handoff，并把 fairness evidence root 纳入
+prepare/commit lock。完整动态抽样、grinding 上界、handoff 归纳证明和性能式见
+[`private-visible-fair-ordering.md`](private-visible-fair-ordering.md)。当前代码没有
+view-change/handoff，因此不能称为 BFT finality layer。
+
+## 6. 候选贡献三：H-SAC 任务条件选择性透明
 
 暂定名称：Hyphen Selective Audit Capabilities（H-SAC）。它不是监管后门，
 不得存在链级 master decryption key。
@@ -411,19 +433,30 @@ nonce 和非规范响应标量，避免把公开的零标量误写成排他所�
 完整 H-SAC 仍需经审计的通用证明系统、policy credential 语义、正式电路和
 独立审查。
 
+对私有状态 `X`、事前公开链信息 `P`、任务输出 `Y=F(X,P)` 和 adversary view
+`V`，零错误正确性要求 `I(X;V|P)>=H(Y|P)`；允许错误时由 Fano inequality 减去
+`h_2(epsilon)+epsilon log_2(M-1)`。达到该下界需要 transcript 可仅由 `(P,Y)`
+模拟。完整推导、组合查询泄漏和当前 v0 偏离程度见
+[`h-sac-leakage-lower-bound.md`](h-sac-leakage-lower-bound.md)。
+
 ## 7. 证明账本
 
 | ID | 性质 | 当前状态 | 关闭条件 |
 | --- | --- | --- | --- |
 | BASE-R1 | 静态 reorg 计划可崩溃续跑或恢复旧链 | 真实后端、分叉状态重验、恢复与数据库重开测试完成 | P2P 自动接入/选择、mempool/钱包/浏览器/矿池对账、操作系统级 kill/reopen、形式化状态机检查和多节点故障演练 |
-| H-WES-S1 | 旧版本不可复活 | 草图 | 规范树、编码、完整归约、负向向量 |
+| H-WES-N0 | 安全恢复语义蕴含 latest 认证能力 | 定理与黑盒构造完成 | 独立形式化评审 |
+| H-WES-N1 | membership-only archive 后缀查询下界 | 黑盒 cell-probe 证明完成 | 随机化/批证明模型扩展与同行评审 |
+| H-WES-S1 | 旧版本不可复活 | reference verifier 与负向测试完成 | 持久认证字典、共识原子接线、外审 |
 | H-WES-S2 | nullifier 单调防双花 | 论证完成/参考模型 | 持久 accumulator、reorg 测试、外审 |
 | H-WES-L1 | 有条件恢复 | 明确假设 | DA 协议、扣留演练、恢复基准 |
-| H-BFM-S1 | 同集合确定性融合 | 证明及参考模型完成 | set agreement、状态机模型检查 |
+| H-BFM-S1 | 同集合确定性融合（非新颖性声明） | 证明及参考模型完成 | set agreement、状态机模型检查 |
 | H-BFM-S2 | 有证书区块可融合 | 候选性质 | cutoff/DA/奖励规则与攻击仿真 |
+| VF-S1 | visible strong edge 不冲突、cycle 形成 batch | 证明及签名 evidence 模型完成 | P2P receipt 强制纳入/遗漏追责、seed、benchmark、外审 |
 | H-FOC-S1 | QC 交集安全 | 引理及预排序证书模型完成 | 完整锁定/view-change 安全证明 |
+| H-FOC-S2 | old/new committee handoff 安全 | 条件归纳证明 | 双 QC 实现、自适应腐化模型、PoW finality |
 | H-FOC-L1 | 部分同步活性 | 未完成 | leader/timeout 协议和活性证明 |
 | H-SAC-D1 | 单输出定向披露 | 实现及证明草图完成 | 规范交易编码、链包含证明、外审 |
+| H-SAC-N1 | 合规任务最小条件互信息泄漏 | 零错误及 Fano 版本推导完成 | 分布/任务实例、simulation proof、同行评审 |
 | H-SAC-C1 | provenance 审计完备性 | 未完成 | 电路、证明系统、正向向量 |
 | H-SAC-S1 | provenance 审计健全性 | 未完成 | 正式关系、归约、外审 |
 | H-SAC-Z1 | 范围外零知识 | 未完成 | simulator、参数仪式与泄漏分析 |
@@ -434,8 +467,9 @@ nonce 和非规范响应标量，避免把公开的零标量误写成排他所�
 reference verifier、属性测试/fuzz、故障注入、基准原始数据、形式化模型或模型
 检查结果、独立审查报告。没有原始数据时只能写“未测量”。
 
-四个 v0 JSON 向量现在由各自 Rust 参考测试直接读取并核对，不再只做 JSON
-语法检查。该门禁曾发现并修正 H-BFM 向量中的 30 字节伪区块 ID；所有协议哈希
+五个 v0 JSON 向量和 H-WES lifecycle v1 向量现在由各自 Rust 参考测试直接
+读取并核对，不再只做 JSON 语法检查。该门禁曾发现并修正 H-BFM 向量中的
+30 字节伪区块 ID；所有协议哈希
 字段必须是完整 32 字节。向量联动通过仍不等于第二个独立实现或外部审查。
 
 建议最先实现 H-WES 的纯函数状态模型和 H-BFM 的确定性融合模型；两者都能在
@@ -467,8 +501,16 @@ reference verifier、属性测试/fuzz、故障注入、基准原始数据、形
   Faulty Process*, JACM 1985: <https://doi.org/10.1145/3149.214121>
 - Dwork, Lynch, Stockmeyer, *Consensus in the Presence of Partial Synchrony*,
   JACM 1988: <https://doi.org/10.1145/42282.42283>
+- Kelkar et al., *Order-Fairness for Byzantine Consensus*, CRYPTO 2020:
+  <https://doi.org/10.1007/978-3-030-56877-1_16>
+- *Order-Fair Consensus in the Permissionless Setting*, AFT 2022:
+  <https://doi.org/10.1145/3494105.3526239>
+- Zhang et al., *Themis: Fast, Strong Order-Fairness in Byzantine Consensus*,
+  CCS 2023: <https://doi.org/10.1145/3576915.3616658>
+- *Separation is Good: A Faster Order-Fairness Byzantine Consensus*, NDSS 2024:
+  <https://doi.org/10.14722/ndss.2024.24693>
 - Zcash Protocol Specification and ZIP-310 payment disclosure:
   <https://zips.z.cash/protocol/protocol.pdf> and <https://zips.z.cash/zip-0310>
 
-检索日期为 2026-07-30。正式新颖性结论还需要系统文献检索、专利检索和独立
+检索日期为 2026-07-31。正式新颖性结论还需要系统文献检索、专利检索和独立
 评审；不得用本清单替代。

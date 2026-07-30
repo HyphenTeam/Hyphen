@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: hyphen-node-linux-x86_64
+            executable: hyphen-node
+          - os: windows-2022
+            artifact: hyphen-node-windows-x86_64
+            executable: hyphen-node.exe
+          - os: macos-14
+            artifact: hyphen-node-macos-aarch64
+            executable: hyphen-node
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - name: Build release executable with line-table debug information
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CARGO_PROFILE_RELEASE_DEBUG = '1'
+          cargo build --release --locked -p hyphen-node
+          $stage = Join-Path 'target/package' '${{ matrix.artifact }}'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item (Join-Path 'target/release' '${{ matrix.executable }}') $stage
+          Copy-Item README.md, README_CN.md, SECURITY.md, LICENSE $stage
+          Get-ChildItem target/release -Filter '*.pdb' -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stage
+          @(
+            'project=Hyphen'
+            'binary=hyphen-node'
+            'commit=${{ github.event.workflow_run.head_sha }}'
+            'source_ci_run=${{ github.event.workflow_run.html_url }}'
+            "runner=$([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
+            "rustc=$(rustc --version)"
+            "cargo=$(cargo --version)"
+            'profile=release'
+            'debug=line-tables'
+          ) | Set-Content (Join-Path $stage 'BUILD-INFO.txt') -Encoding utf8
+          New-Item -ItemType Directory -Force dist | Out-Null
+          if ($IsWindows) {
+            $archive = Join-Path dist '${{ matrix.artifact }}.zip'
+            Compress-Archive -Path "$stage/*" -DestinationPath $archive
+          } else {
+            $archive = Join-Path dist '${{ matrix.artifact }}.tar.gz'
+            tar -czf $archive -C target/package '${{ matrix.artifact }}'
+          }
+          $name = Split-Path $archive -Leaf
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content "$archive.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create commit-bound prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_RUN: ${{ github.event.workflow_run.run_number }}
+          RELEASE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $short = $env:RELEASE_SHA.Substring(0, 12)
+          $tag = "build-$env:RELEASE_RUN.$env:RELEASE_ATTEMPT-$short"
+          $notes = @"
+          Automated development build for commit `$env:RELEASE_SHA`.
+
+          Source CI: $env:SOURCE_RUN_URL
+
+          Every archive has a matching `.sha256` file and contains `BUILD-INFO.txt`.
+          This prerelease is not a mainnet-readiness claim.
+          "@
+          $assets = (Get-ChildItem dist -File).FullName
+          gh release create $tag @assets --target $env:RELEASE_SHA --title "Hyphen $tag" --prerelease --generate-notes --notes $notes

@@ -20,8 +20,10 @@ pub use chain_state::ChainState;
 pub use commitment_tree::PersistentCommitmentTree;
 pub use compress::CompressedTree;
 pub use expiring_state::{
-    ReferenceExpiringState, RestorePolicy, RestoreWitness, StateClass, StateRecord, StateRoots,
-    StateStatus, WesError,
+    verify_consume_witness, verify_lifecycle_receipt, verify_restore_witness, AuthorizationAction,
+    AuthorizationRequest, ConsumeWitness, LifecycleEvent, LifecycleReceipt, LifecycleTransition,
+    ReferenceExpiringState, RestoreOutcome, RestorePolicy, RestoreWitness, StateClass, StateRecord,
+    StateRoots, StateStatus, WesError,
 };
 pub use nullifier_set::NullifierSet;
 pub use reorg_journal::{
