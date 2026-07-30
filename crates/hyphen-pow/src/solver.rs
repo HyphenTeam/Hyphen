@@ -14,11 +14,7 @@ pub struct PowResult {
     pub extra_nonce: [u8; 32],
 }
 
-pub fn evaluate_pow(
-    header: &BlockHeader,
-    arena: &EpochArena,
-    cfg: &ChainConfig,
-) -> Hash256 {
+pub fn evaluate_pow(header: &BlockHeader, arena: &EpochArena, cfg: &ChainConfig) -> Hash256 {
     let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
     evaluate_pow_with_epoch(header, arena, cfg, &epoch)
 }
@@ -86,11 +82,7 @@ pub fn try_nonce(
     }
 }
 
-pub fn mine_block(
-    header: &mut BlockHeader,
-    arena: &EpochArena,
-    cfg: &ChainConfig,
-) -> PowResult {
+pub fn mine_block(header: &mut BlockHeader, arena: &EpochArena, cfg: &ChainConfig) -> PowResult {
     let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
     let mut nonce = header.nonce;
     loop {
@@ -108,11 +100,7 @@ pub fn mine_block(
     }
 }
 
-pub fn verify_pow(
-    header: &BlockHeader,
-    arena: &EpochArena,
-    cfg: &ChainConfig,
-) -> bool {
+pub fn verify_pow(header: &BlockHeader, arena: &EpochArena, cfg: &ChainConfig) -> bool {
     let hash = evaluate_pow(header, arena, cfg);
     let target = difficulty_to_target(header.difficulty);
     hash_below_target(&hash, &target)

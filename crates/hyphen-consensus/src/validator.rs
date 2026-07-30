@@ -2,7 +2,9 @@ use curve25519_dalek::ristretto::RistrettoPoint;
 use hyphen_core::block::{Block, BlockHeader};
 use hyphen_core::config::ChainConfig;
 use hyphen_core::error::CoreError;
-use hyphen_core::{FEATURE_TERA, FEATURE_UNCLES, FEATURE_VRE, FROZEN_BLOCK_VERSION};
+use hyphen_core::{
+    FEATURE_CANONICAL_TX_ORDER, FEATURE_TERA, FEATURE_UNCLES, FEATURE_VRE, FROZEN_BLOCK_VERSION,
+};
 use hyphen_crypto::clsag;
 use hyphen_tx::transaction::Transaction;
 use thiserror::Error;
@@ -23,6 +25,8 @@ pub enum ValidationError {
     InvalidBlockAuthorization(String),
     #[error("tx root mismatch")]
     TxRootMismatch,
+    #[error("transactions are not in strict canonical hash order")]
+    NonCanonicalTransactionOrder,
     #[error("balance check failed")]
     BalanceFailed,
     #[error("CLSAG verification failed for input {0}: {1}")]
@@ -189,6 +193,21 @@ impl<'a> BlockValidator<'a> {
         let computed = block.compute_tx_root();
         if computed != block.header.tx_root {
             return Err(ValidationError::TxRootMismatch);
+        }
+        Ok(())
+    }
+
+    pub fn validate_transaction_order(&self, block: &Block) -> Result<(), ValidationError> {
+        if !self.cfg.feature_enabled(FEATURE_CANONICAL_TX_ORDER) {
+            return Ok(());
+        }
+        let mut previous = None;
+        for transaction in &block.transactions {
+            let hash = hyphen_crypto::blake3_hash(transaction);
+            if previous.is_some_and(|prior| prior >= hash) {
+                return Err(ValidationError::NonCanonicalTransactionOrder);
+            }
+            previous = Some(hash);
         }
         Ok(())
     }

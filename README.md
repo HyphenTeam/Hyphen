@@ -3,16 +3,27 @@
 English | [中文](README_CN.md)
 
 Hyphen is an experimental privacy-oriented, CPU-first Proof-of-Work blockchain
-written in Rust. This repository contains a full node, consensus and
-cryptography libraries, a CPU miner, a pool, a Flutter wallet, an isolated WASM
-engine, and signed node-to-pool and pool-to-miner protocols.
+written in Rust. The formal scope of this repository is the Hyphen base chain:
+the full node, consensus, state, cryptography, transactions, P2P/RPC, protocol
+support libraries, and test vectors.
 
-> **Security status, 2026-07-23:** the frozen devnet node, Template Provider,
-> Pool v3 server, and CPU miner run end to end locally. The project has not had
-> an independent cryptographic/consensus audit, does not implement complete
-> reorg handling or automatic shared-pool payouts, has no long-running public
-> testnet, and has no funded bug bounty. Do not send real assets or represent
-> the wallet or pool as suitable for material value.
+`HyphenMiner/`, `HyphenPool/`, and `HyphenWallet/` are independent projects.
+They may be checked out at the repository root for compatibility testing, but
+they are ignored by Git, are not root Cargo workspace members, and are not
+dependencies of the base-chain CI. A base-chain protocol change must first
+update versioned specifications and test vectors; each independent project then
+upgrades and runs its own compatibility suite. See
+[Repository and compatibility boundaries](docs/architecture/repository-boundaries.md).
+
+> **Security status, 2026-07-30:** the base-chain devnet v2 profile, unit tests,
+> decoder fuzz-target compilation, and chain-identity checks can be verified
+> independently. End-to-end compatibility with the three external projects is
+> a separate integration test. The project has not had an independent
+> cryptographic/consensus audit, does not implement automatic end-to-end reorg
+> handling across the network and dependent subsystems,
+> has no long-running public testnet, and has no funded bug bounty. Do not send
+> real assets or treat an external client's availability as evidence of
+> base-chain production safety.
 
 ## How to use this document
 
@@ -23,29 +34,37 @@ non-custodial pool and Useful-Work sections are research boundaries, not
 production promises. `mainnet` currently means the `mainnet-research` profile,
 not a launched value-bearing network.
 
+The four new base-chain research directions are recoverable state expiry with
+witness-carrying execution, deterministic fusion of parallel block braids,
+fast ordering certificates under explicit network assumptions, and
+user-controlled selective audit proofs. Their notation, impossibility
+boundaries, theorem ledger, and implementation order are defined in the
+[four-core-innovation research charter](docs/research/four-core-innovations.md).
+None is active in devnet v2.
+
 Choose a path before proceeding:
 
 | Goal | Start here | Completion signal |
 | --- | --- | --- |
 | Verify that it runs | Local devnet | Smoke JSON says `passed`; preserve commit and logs |
 | Learn node/pool/miner operation | Manual local devnet | Explain every port, observe a share, and distinguish it from on-chain reward |
-| Develop or submit a PR | Tests and adversarial coverage | Workspace, pool, miner, wallet backend, and fuzz-target checks all exit zero |
+| Develop or submit a PR | Tests and adversarial coverage | Base-chain workspace and fuzz checks exit zero; each independent client passes its own CI and optional compatibility suite |
 | Research pool decentralization | Non-custodial pool semantics | Evaluate each attack separately; a signature alone is not the claim |
 | Research useful work | Useful-Work boundary | Base PoW remains the independent security floor |
 | Operate a testnet or audit | Incentivized testnet and external validation | Every launch blocker is closed with public evidence |
 
-The normative/supporting documents have separate roles: the [devnet profile](docs/consensus/devnet-v1.md), [pool threat model](docs/research/non-custodial-pool.md), [Useful-Work boundary](docs/research/useful-work-augmented-pow.md), [testnet runbook](docs/operations/incentivized-testnet.md), and [security policy](SECURITY.md). This README teaches operation but does not replace them.
+The normative/supporting documents have separate roles: the [devnet v2 profile](docs/consensus/devnet-v2.md), [pool threat model](docs/research/non-custodial-pool.md), [Useful-Work boundary](docs/research/useful-work-augmented-pow.md), [testnet runbook](docs/operations/incentivized-testnet.md), and [security policy](SECURITY.md). This README teaches operation but does not replace them.
 
 ## Capability status
 
 | Capability | Status | Important boundary |
 | --- | --- | --- |
-| Frozen devnet v1 | Implemented | Research consensus features are disabled; chain and database identities are fixed |
-| Node, pool, and miner | Locally verified | The smoke test waits for an accepted share, not merely live processes |
+| Devnet v2 deterministic state transition | Implemented | Deterministic post-genesis coinbase derivation is consensus-bound; research mechanisms remain disabled |
+| Independent miner, pool, and wallet compatibility | Requires v2 upgrade and retest | These projects are outside the base-chain workspace and root CI; no v2 end-to-end pass is claimed here |
 | Export, reference verification, replay | Implemented | Full replay requires a fresh destination database |
 | Pool v3 miner authorization | Experimental | A pool cannot mutate an authorized header, transaction root, reward keys, or chain identity |
 | Shared pool payouts | Incomplete | PROP/PPS/PPLNS/PPS+/FPPS balances are internal accounting, not wallet funds |
-| Fork choice and reorg | **Not implemented** | Chain management appends only to the active tip; this blocks an incentivized testnet |
+| Fork choice and reorg | **Backend implemented; end-to-end automation incomplete** | The real backend recomputes work, revalidates fork state, switches atomically, restores on failure, and resumes after reopen; P2P branch intake, automatic selection, and subsystem reconciliation remain missing |
 | Privacy transactions and ZKP | Library implementation | CLSAG, commitments, and range proofs require external cryptographic review |
 | WASM contracts | Isolated library | No contract transaction, consensus execution, state root, receipt, or RPC activation exists |
 | Flutter wallet | Experimental | Software signing only; no vendor device app or physical hardware-wallet adapter |
@@ -65,7 +84,12 @@ under Pool v3, validates and authorizes a solved block. A pool aggregates
 shares and reduces payout variance; an ordinary share is accounting evidence,
 not a block or wallet payment. Chain identity combines network magic,
 consensus-parameter hash, and genesis hash. Replay sends archived blocks back
-through validation. Full competing-branch reorg is not implemented.
+through validation. The chain manager can durably execute a validated static
+multi-block reorg plan, revalidate each attachment against its fork state,
+restore the original branch after candidate failure, and resume after database
+reopen. Network ingestion and automatic selection of competing branches, plus
+mempool, wallet, explorer, and pool reconciliation, are not implemented; this
+is therefore not complete live reorg handling.
 
 Wallet mnemonics control assets. Miner, pool, and P2P identity key files only
 authenticate their respective protocols and cannot recover wallet funds.
@@ -117,17 +141,21 @@ powershell -ExecutionPolicy Bypass -File .\scripts\devnet-smoke.ps1 `
   -SkipBuild -Offline -TimeoutSeconds 120
 ```
 
-The script builds and starts a fresh devnet node, a node-connected SOLO pool,
-and a one-thread Pool v3 miner. It waits until the accounting API reports
-`valid_shares > 0`, prints JSON evidence, and stops all three processes in a
-`finally` block. Logs remain under `target/devnet-smoke-<timestamp>/`.
+The script is an optional cross-project compatibility harness. When matching
+devnet-v2 revisions of the independent pool and miner are present, it builds and
+starts a fresh node, a node-connected SOLO pool, and a one-thread Pool v3 miner.
+It waits until the accounting API reports `valid_shares > 0`, prints JSON
+evidence, and stops all three processes in a `finally` block. Logs remain under
+`target/devnet-smoke-<timestamp>/`. This repository does not currently claim a
+v2 end-to-end pass; record it only after upgrading and testing those independent
+projects at identified revisions.
 
 A passing result looks like:
 
 ```json
 {
   "status": "passed",
-  "network": "hyphen-devnet-v1",
+  "network": "hyphen-devnet-v2",
   "pool_health": "ok",
   "valid_shares": 3,
   "invalid_shares": 0,
@@ -156,7 +184,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\devnet-smoke.ps1 *>&1 |
   Tee-Object "$evidence\devnet-smoke.log"
 $smokeExit = $LASTEXITCODE
 if ($smokeExit -ne 0) { throw "devnet smoke failed: exit $smokeExit" }
-Get-FileHash .\test-vectors\chain-identity-v1.json |
+Get-FileHash .\test-vectors\chain-identity-v2.json |
   Format-List | Out-File "$evidence\chain-vector.sha256.txt"
 ```
 
@@ -251,7 +279,7 @@ target/debug/hyphen-node \
 
 Open `http://127.0.0.1:8080` or query
 `http://127.0.0.1:8080/api/info`. At genesis, `network` is
-`hyphen-devnet-v1`, height is 0, and `tip_hash` matches the identity below.
+`hyphen-devnet-v2`, height is 0, and `tip_hash` matches the identity below.
 
 2. Persistent pool identity and SOLO pool:
 
@@ -317,9 +345,9 @@ risk; it does not fund, prove solvent, or automate the pool.
 
 | Profile | Magic | Consensus parameters hash | Genesis hash |
 | --- | --- | --- | --- |
-| `devnet-v1` | `48594456` | `e9591468e6b53e922b67f6dbecd0dccec4217e95f0f09a21bce7244fbe8e8322` | `4ee146f63ec54ded2ed743e88ee4ff0981598afc0412d4261e17e43a731a1b92` |
-| `testnet-research` | `48595453` | `9b5a781f5ee647bcef6b1481b684bbd3df277118d7887e9ae49db18d507c2bda` | `d51438cdc8364e9d0a139f731296d3a33845c1bb5f4b0a7cd1fa13ebce2ae78f` |
-| `mainnet-research` | `4859504e` | `eb77360a33bd560945196590b9fe4d9aef8889724d9a6a9475e0bc4db520f957` | `fcc91f7a7537b84f8ef1757d56bac75d1fc0d18aa1540726c61db49ac8991c9e` |
+| `devnet-v2` | `48594456` | `bb0c74b93362b8265d65af5dd48796084448e6b3022c39825476ce1b84439902` | `854adc605062fb872dcd20a535dca1ec25d4af58689f1be50e6c26df0c841295` |
+| `testnet-research` | `48595453` | `462678e5ddc913b99ae7fe3ccc72a114c125273e7f559f2e67fa9f56ca8c6ec4` | `37201e26dacd35d361a83e79cb7f52d5c6bb1b139180434b889543fc08e2efaf` |
+| `mainnet-research` | `4859504e` | `4f21a74c3c32111bcc0c45fc907d77227a51ae17189d7945489898bf08e8e56e` | `9e7f8e3810a15ccf8f93e887630906c377ad14a7bde0f2783d15f0ca7120f06a` |
 
 Verify the checked-out code rather than trusting this table:
 
@@ -329,11 +357,20 @@ cargo run -p hyphen-node --locked -- --network testnet --print-chain-identity
 cargo run -p hyphen-node --locked -- --network mainnet --print-chain-identity
 ```
 
-Machine-readable vectors are in `test-vectors/chain-identity-v1.json`. The
+Machine-readable vectors are in `test-vectors/chain-identity-v2.json`. The
 normative profile and activation policy are in
-[docs/consensus/devnet-v1.md](docs/consensus/devnet-v1.md). Devnet v1 fixes a
-genesis timestamp, block version 2, parameter commitment, genesis block, and
-integer `LwmaV1`; uncles, TERA, VRE enforcement, MSE, and MDAD-SPR are off.
+[docs/consensus/devnet-v2.md](docs/consensus/devnet-v2.md). Devnet v2 fixes a
+genesis timestamp, block version 2, state-transition version 2, parameter
+commitment, deterministic coinbase derivation, genesis block, and integer
+`LwmaV1`; H-WES, H-BFM, H-FOC, H-SAC, uncles, TERA, VRE enforcement, MSE, and
+MDAD-SPR are off.
+
+Devnet v1 is historical and withdrawn because randomized coinbase construction
+could make identical block histories produce different state. Do not open a v1
+database with v2 software and do not rewrite its stored identity. Preserve any
+needed evidence, then start v2 with a fresh data directory. The historical
+profile and vector remain under `docs/consensus/devnet-v1.md` and
+`test-vectors/chain-identity-v1.json` solely to document the superseded chain.
 
 ## History export and replay
 
@@ -362,18 +399,21 @@ cross-implementation vectors.
 ## Tests and adversarial coverage
 
 ```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
-cargo test --manifest-path HyphenPool/Cargo.toml --locked
-cargo test --manifest-path HyphenMiner/Cargo.toml --locked
-cargo test --manifest-path HyphenWallet/rust/Cargo.toml --locked
 cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
+cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
 ```
 
-Add `--offline` when the complete dependency cache is present. On 2026-07-23,
-the local baseline was 105 workspace tests passed and one ignored, 11 pool
-tests passed, 2 miner tests passed, 21 Flutter Rust-backend tests passed, three
-compiled fuzz targets, and a passing node-pool-miner smoke test.
-The maximum aggregated range-proof test can take over 60 seconds in debug mode.
+These are the required base-chain checks. `HyphenPool`, `HyphenMiner`, and
+`HyphenWallet` run their own CI; when those independent checkouts are present,
+their tests and `scripts/devnet-smoke.ps1` are optional compatibility evidence,
+not root CI dependencies. Add `--offline` when the complete dependency cache is
+present. On 2026-07-30, the base-chain workspace reported 156 passed, 0 failed,
+and 0 ignored tests; strict Clippy passed, and all three fuzz targets compiled
+with the locked fuzz dependency graph. The maximum aggregated range-proof test
+took about 84 seconds in debug mode.
 
 Interpret results by level:
 
@@ -389,6 +429,11 @@ Warnings remain technical debt even with exit zero. Deprecated APIs, unused
 security checks, future incompatibilities, and ignored tests must be assigned;
 “tests pass” is not equivalent to “zero issues.”
 
+Known toolchain debt on Rust 1.97.0: `proc-macro-error2 2.0.1`, pulled only by
+`wasmer-derive 7.2.0`, triggers future-incompatibility E0365. It is an upstream
+dependency warning, not suppressed source lint. Upgrade Wasmer or the fixed
+macro dependency before a Rust release turns that warning into an error.
+
 ### Requirement-to-evidence matrix
 
 Run commands from the repository root and require exit code zero. Manual or
@@ -399,7 +444,7 @@ external rows cannot be marked complete by a unit test.
 | Freeze devnet consensus | `cargo test -p hyphen-core frozen_devnet_disables_research_consensus_features --locked`; `cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked`; history verify/replay | A language-neutral encoding and second reference verifier are still missing |
 | Transaction/RPC/P2P and attack testing | The three fuzz targets plus focused LWMA, anonymity, ledger, and recovery commands below | Stateful network sequences, long statistical runs, and real payout faults remain open |
 | Independent review and bounty | Exact-commit scope, reports, remediation, and retest under [SECURITY.md](SECURITY.md) | None has occurred; value-bearing promotion is blocked |
-| Small incentivized testnet | Devnet smoke first, then drills and metrics in [incentivized-testnet.md](docs/operations/incentivized-testnet.md) | Complete fork choice/reorg is missing, so no value-bearing testnet may start |
+| Small incentivized testnet | Devnet smoke first, then drills and metrics in [incentivized-testnet.md](docs/operations/incentivized-testnet.md) | Automatic branch intake/selection, subsystem reconciliation, and multi-node fault evidence are missing, so no value-bearing testnet may start |
 | Standalone, non-combinatorial novelty | Per-claim prior-art chart, formal property, ablation, raw data, reproduction, and independent implementation | Current work is candidate research, not a novelty or patent-freedom guarantee |
 | Non-delegable final block authority | `cargo test -p hyphen-core authorization --locked`; miner receipt tests | Solved-header/chain/reward binding exists; miner templates and direct submission do not |
 | Pool-control resistance and auditable settlement | Pool `protocol::tests` and `accounting::tests` | Cannot force payment or eliminate censorship, withholding, or clandestine pools |
@@ -437,17 +482,18 @@ injection, and killed-process mobile recovery remain open work.
 Run sustained fuzzing on Linux/WSL:
 
 ```bash
-rustup toolchain install nightly
-cargo +nightly install cargo-fuzz --locked
+rustup toolchain install nightly-2026-07-22
+cargo +nightly-2026-07-22 install cargo-fuzz --version 0.13.2 --locked
 cd crates/hyphen-fuzz
-cargo +nightly fuzz run transaction_decode -- -max_total_time=300
-cargo +nightly fuzz run rpc_decode -- -max_total_time=300
-cargo +nightly fuzz run p2p_decode -- -max_total_time=300
+cargo +nightly-2026-07-22 fuzz run transaction_decode -- -max_total_time=300
+cargo +nightly-2026-07-22 fuzz run rpc_decode -- -max_total_time=300
+cargo +nightly-2026-07-22 fuzz run p2p_decode -- -max_total_time=300
 ```
 
-The scheduled `Nightly fuzz smoke` workflow runs each target. A five-minute
-run is only a smoke test. Preserve corpus, minimized crashes, and coverage
-trends, and add dedicated Pool v3, TP v2, and wallet-file targets.
+The scheduled `Nightly fuzz smoke` workflow runs each target for 60 seconds. A
+five-minute manual run is still only a smoke test. Preserve corpus, minimized
+crashes, and coverage trends, and add dedicated Pool v3, TP v2, and wallet-file
+targets.
 
 ## Flutter wallet tutorial
 
@@ -636,7 +682,7 @@ bandwidth/latency, cache policy, and observation window before execution.
 | Question | Minimum metrics | Hyphen evidence today |
 | --- | --- | --- |
 | Initial sync | Wall/CPU time, peak RSS, disk I/O, downloaded bytes | No long public history for a fair comparison |
-| Propagation/reorg | p50/p95/p99 propagation, orphan rate, depth, convergence | Reorg is incomplete; no superiority claim is valid |
+| Propagation/reorg | p50/p95/p99 propagation, orphan rate, depth, convergence | Backend tests exist, but there is no multi-node field evidence; no superiority claim is valid |
 | PoW decentralization | Entity-adjusted shares, Top-3, HHI, hardware/region | CPU-first is a hypothesis, not field evidence |
 | Privacy | Effective anonymity, age/index bias, link rate, confidence interval | Small bias experiment only |
 | Pool control | Template origin, direct-submit rate, censorship, receipt gaps, payout delay | Authorization prototype; templates/direct submit/payment remain open |
@@ -650,11 +696,13 @@ or hide tail latency and failed runs. Until measured, the correct result is
 
 ## Incentivized testnet and external validation
 
-An incentivized testnet is blocked until competing-branch storage,
-cumulative-work fork choice, and atomic reorg rollback cover blocks,
-commitments, nullifiers, mempool, wallet, explorer, and pool settlement.
+An incentivized testnet is blocked even though competing-branch body storage,
+strict heavier-work plan validation, fork-state revalidation, atomic reorg, old
+branch restoration, and reopen recovery now have backend tests. P2P intake and
+automatic fork-choice triggering are still missing, and reorg reconciliation
+does not yet cover the mempool, wallet, explorer, or pool settlement.
 
-Once implemented, monitor reorg depth/convergence, orphan rate, P2P churn and
+Before promotion, monitor reorg depth/convergence, orphan rate, P2P churn and
 rejects, solve-time/PoW distribution, pool concentration, sync CPU/RSS/disk/
 bandwidth, receipt gaps, payout state, and mobile wallet recovery/crashes. The
 phased rollout, initial alerts, and mandatory drills are in
@@ -756,10 +804,10 @@ accounting services to the Internet.
 Complete these gates in order; failure at one gate blocks every later one:
 
 - [ ] Publish exact revision, frozen profile, identity, and machine-readable vectors.
-- [ ] Pass workspace/pool/miner/wallet checks and compile fuzz targets; assign warnings and ignores.
+- [ ] Pass base-chain workspace and fuzz checks; independently record each external project's CI and compatibility results; assign warnings and ignores.
 - [ ] Pass automated and manual node-pool-miner flows; distinguish shares, blocks, pool balances, and on-chain funds.
 - [ ] Export real generated history and obtain matching lightweight verification and fresh-state replay; add language-neutral encoding and a second implementation.
-- [ ] Implement fork choice and atomic rollback; pass partition, eclipse, timestamp/difficulty, and deep-reorg drills.
+- [ ] Connect the tested fork-state revalidation and crash-recoverable multi-block reorg backend to bounded P2P branch intake and automatic fork choice; reconcile mempool/wallet/explorer/pool state and pass partition, eclipse, timestamp/difficulty, and deep-reorg drills.
 - [ ] Add miner templates/direct submission plus public ledger availability, solvency evidence, and automatic idempotent on-chain pool payouts; test every named pool attack separately.
 - [ ] Rehearse clean-device wallet creation, backup, corruption/interruption, height-zero rescan, and history/balance comparison on target platforms.
 - [ ] Run a valueless multi-operator testnet before capped incentives; publish raw reorg, orphan, P2P, PoW/pool concentration, sync-resource, and mobile-failure data.

@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: nightly-fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -19,11 +24,16 @@ jobs:
           - rpc_decode
           - p2p_decode
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned nightly toolchain
+        run: |
+          rustup toolchain install nightly-2026-07-22 --profile minimal
+          rustup default nightly-2026-07-22
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Run bounded fuzz target
-        working-directory: crates/hyphen-fuzz
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=4096
-
+        run: >-
+          cargo fuzz run
+          --fuzz-dir crates/hyphen-fuzz
+          ${{ matrix.target }}
+          -- -max_total_time=60 -rss_limit_mb=4096

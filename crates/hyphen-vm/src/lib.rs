@@ -1,5 +1,5 @@
-pub mod engine;
 pub mod contract;
+pub mod engine;
 pub mod gas;
 pub mod host;
 pub mod state;

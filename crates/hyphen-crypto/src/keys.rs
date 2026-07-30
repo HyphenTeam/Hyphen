@@ -1,7 +1,4 @@
-use ed25519_dalek::{
-    Signer, SigningKey, Verifier, VerifyingKey,
-    Signature as Ed25519Sig,
-};
+use ed25519_dalek::{Signature as Ed25519Sig, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

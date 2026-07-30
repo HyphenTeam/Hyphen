@@ -83,7 +83,9 @@ impl BlockAuthorization {
             return Err(AuthorizationError::UnsupportedBlockVersion(header.version));
         }
         if self.version != BLOCK_AUTHORIZATION_VERSION {
-            return Err(AuthorizationError::UnsupportedAuthorizationVersion(self.version));
+            return Err(AuthorizationError::UnsupportedAuthorizationVersion(
+                self.version,
+            ));
         }
         if header.miner_pubkey == [0u8; 32] {
             return Err(AuthorizationError::ZeroMinerPublicKey);
@@ -187,7 +189,8 @@ mod tests {
         )
         .unwrap();
 
-        auth.verify(&changed_header, magic, params, genesis).unwrap();
+        auth.verify(&changed_header, magic, params, genesis)
+            .unwrap();
 
         changed_header.tx_root = Hash256::from_bytes([16u8; 32]);
         assert_eq!(

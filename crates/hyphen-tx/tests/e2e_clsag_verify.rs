@@ -4,16 +4,12 @@ use rand::rngs::OsRng;
 
 use hyphen_crypto::clsag;
 use hyphen_crypto::pedersen::{Commitment, PedersenGens};
-use hyphen_crypto::stealth::{self, StealthAddress};
+use hyphen_crypto::stealth;
 use hyphen_tx::builder::{InputSpec, TransactionBuilder};
 use hyphen_tx::note::{Note, OwnedNote};
 
-// Simulate the full: builder.build() -> serialize -> deserialize -> validator.verify() pipeline
-// This test requires a full chain store to resolve all ring member global indices.
-// The simpler e2e_build_verify_with_known_decoys and e2e_wallet_hex_roundtrip_verify
-// tests below prove the core signing/verification pipeline correctness.
+// Simulate the full builder -> serialization -> ring resolution -> verification pipeline.
 #[test]
-#[ignore]
 fn e2e_build_serialize_verify() {
     let gens = PedersenGens::default();
     let ring_size = 4usize;
@@ -41,12 +37,13 @@ fn e2e_build_serialize_verify() {
 
     // Generate decoys
     let mut decoys = Vec::new();
-    for _ in 0..(ring_size - 1) {
+    for offset in 0..(ring_size - 1) {
         let dk = Scalar::random(&mut OsRng) * G;
         let db = Scalar::random(&mut OsRng);
         let dc = gens.commit(Scalar::from(500u64), db);
-        decoys.push((dk, dc, rand::random::<u64>() % 1000));
+        decoys.push((dk, dc, 100 + offset as u64));
     }
+    let decoy_lookup = decoys.clone();
 
     let real_index = 2;
 
@@ -71,6 +68,9 @@ fn e2e_build_serialize_verify() {
     builder.add_output(change_addr, change_amount);
 
     let tx = builder.build().expect("build should succeed");
+    let encoded = tx.serialise();
+    let tx = hyphen_tx::transaction::Transaction::deserialise_limited(&encoded)
+        .expect("transaction round-trip should succeed");
 
     // Verify balance
     assert!(tx.check_balance(), "balance check must pass");
@@ -106,16 +106,24 @@ fn e2e_build_serialize_verify() {
                 ring_keys.push(pk);
                 ring_commits.push(cm);
             } else {
-                // For the test, we need to recover the decoy data from the OutputRef
-                // In real validator, this comes from resolve_ring_member
-                panic!(
-                    "input {} references unknown global_index {} — test data mismatch",
-                    i, oref.global_index
-                );
+                let (pk, cm, _) = decoy_lookup
+                    .iter()
+                    .find(|(_, _, global_index)| *global_index == oref.global_index)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "input {} references unknown global_index {}",
+                            i, oref.global_index
+                        )
+                    });
+                ring_keys.push(*pk);
+                ring_commits.push(*cm);
             }
         }
 
-        let pseudo_out = input.pseudo_output.to_point().expect("decompress pseudo_out");
+        let pseudo_out = input
+            .pseudo_output
+            .to_point()
+            .expect("decompress pseudo_out");
 
         clsag::clsag_verify(msg.as_bytes(), &ring_keys, &ring_commits, &pseudo_out, sig)
             .unwrap_or_else(|e| panic!("CLSAG verify failed for input {i}: {e}"));
@@ -128,7 +136,6 @@ fn e2e_build_serialize_verify() {
 #[test]
 fn e2e_build_verify_with_known_decoys() {
     let gens = PedersenGens::default();
-    let ring_size = 4usize;
 
     // Simulate a set of outputs that exist in the chain's output_index
     struct FakeOutput {
@@ -239,7 +246,10 @@ fn e2e_build_verify_with_known_decoys() {
             ring_commits.push(cm);
         }
 
-        let pseudo_out = input.pseudo_output.to_point().expect("decompress pseudo_out");
+        let pseudo_out = input
+            .pseudo_output
+            .to_point()
+            .expect("decompress pseudo_out");
 
         clsag::clsag_verify(msg.as_bytes(), &ring_keys, &ring_commits, &pseudo_out, sig)
             .unwrap_or_else(|e| panic!("CLSAG verify failed for input {i}: {e}"));
@@ -254,11 +264,11 @@ fn e2e_wallet_hex_roundtrip_verify() {
     let gens = PedersenGens::default();
 
     // Step 1: Simulate scanning — create output with stealth keys
-    let (view_key, spend_key, addr) = stealth::generate_keys();
+    let (_view_key, spend_key, addr) = stealth::generate_keys();
     let output_index = 0u64;
     let value = 5_000_000u64;
 
-    let (eph, one_time_pk, ss) = stealth::derive_one_time_key(&addr, output_index).unwrap();
+    let (_eph, one_time_pk, ss) = stealth::derive_one_time_key(&addr, output_index).unwrap();
 
     let blinding = stealth::derive_commitment_blinding(&ss);
     let commitment = gens.commit(Scalar::from(value), blinding);
@@ -313,7 +323,10 @@ fn e2e_wallet_hex_roundtrip_verify() {
         .unwrap()
         .decompress()
         .unwrap();
-    assert_eq!(reconstructed_pk, stored_pk, "spend key reconstruction failed");
+    assert_eq!(
+        reconstructed_pk, stored_pk,
+        "spend key reconstruction failed"
+    );
 
     // Verify reconstructed blinding matches commitment
     let reconstructed_blind = owned.blinding_scalar();
@@ -405,7 +418,10 @@ fn e2e_wallet_hex_roundtrip_verify() {
             }
         }
 
-        let pseudo_out = input.pseudo_output.to_point().expect("decompress pseudo_out");
+        let pseudo_out = input
+            .pseudo_output
+            .to_point()
+            .expect("decompress pseudo_out");
 
         clsag::clsag_verify(msg.as_bytes(), &ring_keys, &ring_commits, &pseudo_out, sig)
             .unwrap_or_else(|e| panic!("CLSAG verify failed for input {i}: {e}"));

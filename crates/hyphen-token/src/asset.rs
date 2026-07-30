@@ -8,11 +8,8 @@ impl AssetId {
     pub const NATIVE: Self = Self([0u8; 32]);
 
     pub fn from_issuance(issuer_pk: &[u8; 32], nonce: u64) -> Self {
-        let hash = hyphen_crypto::blake3_hash_many(&[
-            b"Hyphen_asset_id",
-            issuer_pk,
-            &nonce.to_le_bytes(),
-        ]);
+        let hash =
+            hyphen_crypto::blake3_hash_many(&[b"Hyphen_asset_id", issuer_pk, &nonce.to_le_bytes()]);
         Self(*hash.as_bytes())
     }
 
@@ -127,10 +124,14 @@ mod tests {
     fn asset_metadata_creation() {
         let issuer = [1u8; 32];
         let meta = AssetMetadata::new(
-            issuer, 0,
-            "TestToken".into(), "TT".into(),
-            8, Some(1_000_000),
-            AssetType::Fungible, 100,
+            issuer,
+            0,
+            "TestToken".into(),
+            "TT".into(),
+            8,
+            Some(1_000_000),
+            AssetType::Fungible,
+            100,
         );
         assert!(!meta.asset_id.is_native());
         assert_eq!(meta.decimals, 8);

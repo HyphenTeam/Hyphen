@@ -1,0 +1,27 @@
+{
+  "schema": "hyphen-h-bfm-vector-v0",
+  "hash": "BLAKE3-256",
+  "epoch": 7,
+  "lane_count": 3,
+  "previous_frontier": [
+    "0101010101010101010101010101010101010101010101010101010101010101",
+    "0202020202020202020202020202020202020202020202020202020202020202",
+    "0303030303030303030303030303030303030303030303030303030303030303"
+  ],
+  "selected_frontier": [
+    "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+    "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+  ],
+  "canonical_block_order": [
+    "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+    "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+  ],
+  "excluded_blocks": [
+    "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d"
+  ],
+  "frontier_commitment": "52163670f4e6325ce99cee5c8957a3484c7f777aaf36203403b2ab648e154a58",
+  "order_root": "428daa299b3875e453775aeb2826a7856ad1e09735dc0b0ed0d2221f7e4b9bf1",
+  "receipt_root": "3c693cd7b414b77bb9a7b1a3941c02f94a36a1e3f5ebf4e98a635dc5863e1073"
+}

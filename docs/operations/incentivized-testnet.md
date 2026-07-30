@@ -1,17 +1,25 @@
 # Incentivized Testnet Readiness and Monitoring
 
 Status: proposed operations gate. The current node is suitable for local
-devnet experiments, but not yet for an incentivized public testnet because it
-lacks competing-branch fork choice and reorg rollback.
+devnet experiments, but not yet for an incentivized public testnet. Persistent
+branch metadata, bounded immutable branch-body storage, heavier-work planning,
+and atomic rollback now feed a real `Blockchain` reorg backend. Backend tests
+cover a successful heavier branch, candidate-validation failure with exact old
+state restoration, forged-work rejection without mutation, and database-reopen
+recovery. Live P2P branch ingestion, automatic fork-choice triggering,
+dependent-subsystem reconciliation, and multi-node fault evidence are still
+missing.
 
 ## Entry blockers
 
 Do not attach monetary value or public rewards until the following are
 implemented and tested:
 
-- cumulative-work fork choice, competing-branch storage, atomic rollback, and
-  forward application for blocks, commitments, nullifiers, mempool, wallet,
-  explorer, and pool settlement;
+- bounded live P2P competing-branch ingestion and automatic cumulative-work
+  fork-choice triggering, using the existing fork-state validation and
+  crash-recoverable multi-block backend;
+- deterministic reorg reconciliation for the mempool, wallet, explorer, and
+  pool settlement, plus process-kill/reopen and multi-node partition evidence;
 - authenticated and rate-limited public RPC/pool edges;
 - automatic pool payout lifecycle or a testnet-only statement that balances
   have no monetary value;
@@ -74,4 +82,3 @@ divergence, unexplained supply/accounting mismatch, failed wallet recovery, or
 missing raw monitoring data. Parameter changes require a written hypothesis,
 before/after dashboards, a new chain identity when consensus-critical, and a
 rollback plan.
-

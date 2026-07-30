@@ -18,8 +18,13 @@ pub enum IssuanceError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IssuancePolicy {
     Fixed,
-    Mintable { authority: [u8; 32] },
-    Capped { max_supply: u64, authority: [u8; 32] },
+    Mintable {
+        authority: [u8; 32],
+    },
+    Capped {
+        max_supply: u64,
+        authority: [u8; 32],
+    },
 }
 
 impl IssuancePolicy {
@@ -65,10 +70,7 @@ impl MintRecord {
     }
 
     pub fn verify_commitment(&self) -> bool {
-        let expected = Commitment::create(
-            self.amount,
-            Scalar::from_bytes_mod_order(self.blinding),
-        );
+        let expected = Commitment::create(self.amount, Scalar::from_bytes_mod_order(self.blinding));
         self.commitment == expected
     }
 }
@@ -95,14 +97,7 @@ mod tests {
     #[test]
     fn mint_record_commitment_verify() {
         let blinding = Scalar::random(&mut OsRng);
-        let record = MintRecord::new(
-            AssetId::NATIVE,
-            1000,
-            blinding,
-            vec![0u8; 64],
-            0,
-            0,
-        );
+        let record = MintRecord::new(AssetId::NATIVE, 1000, blinding, vec![0u8; 64], 0, 0);
         assert!(record.verify_commitment());
     }
 }

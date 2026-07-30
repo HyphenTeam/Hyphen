@@ -91,11 +91,7 @@ impl WotsSecretKey {
     }
 
     fn chain_secret(&self, idx: u16) -> [u8; 32] {
-        let h = blake3_hash_many(&[
-            b"Hyphen_WOTS_sk",
-            &self.seed,
-            &idx.to_le_bytes(),
-        ]);
+        let h = blake3_hash_many(&[b"Hyphen_WOTS_sk", &self.seed, &idx.to_le_bytes()]);
         *h.as_bytes()
     }
 

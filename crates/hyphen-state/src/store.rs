@@ -4,6 +4,8 @@ use thiserror::Error;
 
 use crate::compress::CompressedTree;
 
+pub type OutputRecord = ([u8; 32], [u8; 32], u64, u64);
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("sled error: {0}")]
@@ -19,11 +21,12 @@ pub enum StoreError {
 type Result<T> = std::result::Result<T, StoreError>;
 
 pub struct BlockStore {
-    blocks: CompressedTree,
-    height_index: sled::Tree,
-    tx_index: sled::Tree,
-    output_index: sled::Tree,
-    coinbase_index: sled::Tree,
+    pub(crate) blocks: CompressedTree,
+    pub(crate) height_index: sled::Tree,
+    pub(crate) tx_index: sled::Tree,
+    pub(crate) output_index: sled::Tree,
+    pub(crate) coinbase_index: sled::Tree,
+    pub(crate) undo_index: CompressedTree,
 }
 
 impl BlockStore {
@@ -34,6 +37,7 @@ impl BlockStore {
             tx_index: db.open_tree("tx_index")?,
             output_index: db.open_tree("output_index")?,
             coinbase_index: db.open_tree("coinbase_index")?,
+            undo_index: CompressedTree::new(db.open_tree("block_undo")?),
         })
     }
 
@@ -105,13 +109,13 @@ impl BlockStore {
         self.tx_index.flush()?;
         self.output_index.flush()?;
         self.coinbase_index.flush()?;
+        self.undo_index.flush()?;
         Ok(())
     }
 
     /// Store the serialised coinbase transaction for a given block height.
     pub fn insert_coinbase(&self, height: u64, data: &[u8]) -> Result<()> {
-        self.coinbase_index
-            .insert(height.to_be_bytes(), data)?;
+        self.coinbase_index.insert(height.to_be_bytes(), data)?;
         Ok(())
     }
 
@@ -202,11 +206,7 @@ impl BlockStore {
 
     /// Get `count` random outputs below `ceiling` global index.
     /// Returns (one_time_pubkey, commitment, global_index, block_height) tuples.
-    pub fn get_random_outputs(
-        &self,
-        count: usize,
-        ceiling: u64,
-    ) -> Result<Vec<([u8; 32], [u8; 32], u64, u64)>> {
+    pub fn get_random_outputs(&self, count: usize, ceiling: u64) -> Result<Vec<OutputRecord>> {
         use rand::Rng;
         if ceiling == 0 {
             return Ok(Vec::new());

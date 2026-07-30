@@ -28,8 +28,12 @@ pub const FEATURE_UNCLES: u32 = 1 << 0;
 pub const FEATURE_TERA: u32 = 1 << 1;
 pub const FEATURE_VRE: u32 = 1 << 2;
 pub const FEATURE_MSE: u32 = 1 << 3;
+pub const FEATURE_CANONICAL_TX_ORDER: u32 = 1 << 4;
 pub const RESEARCH_CONSENSUS_FEATURES: u32 =
-    FEATURE_UNCLES | FEATURE_TERA | FEATURE_VRE | FEATURE_MSE;
+    FEATURE_UNCLES | FEATURE_TERA | FEATURE_VRE | FEATURE_MSE | FEATURE_CANONICAL_TX_ORDER;
+/// Version 2 replaces node-local random coinbase construction with a
+/// deterministic, block-bound state transition.
+pub const STATE_TRANSITION_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[repr(u8)]
@@ -154,7 +158,8 @@ impl ChainConfig {
     /// will be detected and rejected.
     pub fn consensus_params_hash(&self) -> [u8; 32] {
         let mut buf = Vec::with_capacity(256);
-        buf.extend_from_slice(b"HyphenConsensusParams/v4-profiled-devnet");
+        buf.extend_from_slice(b"HyphenConsensusParams/v5-deterministic-coinbase");
+        buf.extend_from_slice(&STATE_TRANSITION_VERSION.to_le_bytes());
         buf.extend_from_slice(&FROZEN_BLOCK_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.network_magic);
         buf.extend_from_slice(&self.consensus_features.to_le_bytes());
@@ -295,13 +300,13 @@ impl ChainConfig {
         }
     }
 
-    /// Frozen development network used for reproducible consensus testing.
+    /// Development network v2 used for reproducible consensus testing.
     ///
     /// Unreviewed research mechanisms are disabled. Any future activation
     /// requires a new profile, test vectors and therefore a new chain ID.
     pub fn devnet() -> Self {
         Self {
-            network_name: "hyphen-devnet-v1".into(),
+            network_name: "hyphen-devnet-v2".into(),
             network_magic: [0x48, 0x59, 0x44, 0x56],
             consensus_features: 0,
             difficulty_algorithm: DifficultyAlgorithm::LwmaV1,
@@ -368,6 +373,9 @@ mod tests {
         let frozen = ChainConfig::devnet();
         let mut research = frozen.clone();
         research.consensus_features = FEATURE_VRE;
-        assert_ne!(frozen.consensus_params_hash(), research.consensus_params_hash());
+        assert_ne!(
+            frozen.consensus_params_hash(),
+            research.consensus_params_hash()
+        );
     }
 }

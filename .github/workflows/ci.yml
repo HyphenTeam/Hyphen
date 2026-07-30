@@ -11,30 +11,49 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Test node workspace
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+          rustup default 1.97.0
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint base-chain workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Validate research vectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          for vector in test-vectors/*.json; do
+            python3 -m json.tool "$vector" >/dev/null
+          done
+      - name: Test base-chain workspace
         run: cargo test --workspace --all-targets --locked
-      - name: Test pool workspace
-        run: cargo test --manifest-path HyphenPool/Cargo.toml --locked
-      - name: Test miner workspace
-        run: cargo test --manifest-path HyphenMiner/Cargo.toml --locked
-      - name: Test Flutter wallet Rust backend
-        run: cargo test --manifest-path HyphenWallet/rust/Cargo.toml --locked
       - name: Compile transaction, RPC, and P2P fuzz targets
         run: cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
       - name: Verify published chain identity vectors
         run: cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
 
-  windows-devnet-smoke:
-    runs-on: windows-latest
+  windows-node-smoke:
+    runs-on: windows-2022
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run node-pool-miner smoke test
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - name: Build Hyphen node
+        run: cargo build -p hyphen-node --locked
+      - name: Verify devnet chain identity
         shell: pwsh
-        run: ./scripts/devnet-smoke.ps1 -TimeoutSeconds 180
+        run: ./target/debug/hyphen-node.exe --network devnet --print-chain-identity

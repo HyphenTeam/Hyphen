@@ -12,14 +12,12 @@ pub enum CompressError {
 
 #[inline]
 pub fn compress(data: &[u8]) -> Result<Vec<u8>, CompressError> {
-    zstd::bulk::compress(data, ZSTD_LEVEL)
-        .map_err(|e| CompressError::Compress(e.to_string()))
+    zstd::bulk::compress(data, ZSTD_LEVEL).map_err(|e| CompressError::Compress(e.to_string()))
 }
 
 #[inline]
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, CompressError> {
-    zstd::stream::decode_all(data)
-        .map_err(|e| CompressError::Decompress(e.to_string()))
+    zstd::stream::decode_all(data).map_err(|e| CompressError::Decompress(e.to_string()))
 }
 
 pub struct CompressedTree {
@@ -31,48 +29,78 @@ impl CompressedTree {
         Self { inner: tree }
     }
 
-    pub fn insert(&self, key: impl AsRef<[u8]>, value: &[u8]) -> Result<Option<Vec<u8>>, CompressError> {
+    pub fn insert(
+        &self,
+        key: impl AsRef<[u8]>,
+        value: &[u8],
+    ) -> Result<Option<Vec<u8>>, CompressError> {
         let compressed = compress(value)?;
-        match self.inner.insert(key, compressed).map_err(|e| CompressError::Compress(e.to_string()))? {
+        match self
+            .inner
+            .insert(key, compressed)
+            .map_err(|e| CompressError::Compress(e.to_string()))?
+        {
             Some(old) => Ok(Some(decompress(&old)?)),
             None => Ok(None),
         }
     }
 
     pub fn get(&self, key: impl AsRef<[u8]>) -> Result<Option<Vec<u8>>, CompressError> {
-        match self.inner.get(key).map_err(|e| CompressError::Decompress(e.to_string()))? {
+        match self
+            .inner
+            .get(key)
+            .map_err(|e| CompressError::Decompress(e.to_string()))?
+        {
             Some(data) => Ok(Some(decompress(&data)?)),
             None => Ok(None),
         }
     }
 
     pub fn contains_key(&self, key: impl AsRef<[u8]>) -> Result<bool, CompressError> {
-        self.inner.contains_key(key).map_err(|e| CompressError::Decompress(e.to_string()))
+        self.inner
+            .contains_key(key)
+            .map_err(|e| CompressError::Decompress(e.to_string()))
     }
 
     pub fn remove(&self, key: impl AsRef<[u8]>) -> Result<Option<Vec<u8>>, CompressError> {
-        match self.inner.remove(key).map_err(|e| CompressError::Decompress(e.to_string()))? {
+        match self
+            .inner
+            .remove(key)
+            .map_err(|e| CompressError::Decompress(e.to_string()))?
+        {
             Some(old) => Ok(Some(decompress(&old)?)),
             None => Ok(None),
         }
     }
 
     pub fn flush(&self) -> Result<(), CompressError> {
-        self.inner.flush().map_err(|e| CompressError::Compress(e.to_string()))?;
+        self.inner
+            .flush()
+            .map_err(|e| CompressError::Compress(e.to_string()))?;
         Ok(())
     }
 
     pub fn iter(&self) -> CompressedIter {
-        CompressedIter { inner: self.inner.iter() }
+        CompressedIter {
+            inner: self.inner.iter(),
+        }
     }
 
-    pub fn insert_raw(&self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Result<(), CompressError> {
-        self.inner.insert(key, value.as_ref()).map_err(|e| CompressError::Compress(e.to_string()))?;
+    pub fn insert_raw(
+        &self,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<(), CompressError> {
+        self.inner
+            .insert(key, value.as_ref())
+            .map_err(|e| CompressError::Compress(e.to_string()))?;
         Ok(())
     }
 
     pub fn get_raw(&self, key: impl AsRef<[u8]>) -> Result<Option<sled::IVec>, CompressError> {
-        self.inner.get(key).map_err(|e| CompressError::Decompress(e.to_string()))
+        self.inner
+            .get(key)
+            .map_err(|e| CompressError::Decompress(e.to_string()))
     }
 
     pub fn inner(&self) -> &sled::Tree {
@@ -89,12 +117,10 @@ impl Iterator for CompressedIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.inner.next()? {
-            Ok((key, val)) => {
-                match decompress(&val) {
-                    Ok(decompressed) => Some(Ok((key, decompressed))),
-                    Err(e) => Some(Err(e)),
-                }
-            }
+            Ok((key, val)) => match decompress(&val) {
+                Ok(decompressed) => Some(Ok((key, decompressed))),
+                Err(e) => Some(Err(e)),
+            },
             Err(e) => Some(Err(CompressError::Decompress(e.to_string()))),
         }
     }

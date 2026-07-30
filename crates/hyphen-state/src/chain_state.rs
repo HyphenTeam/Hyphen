@@ -18,7 +18,7 @@ pub enum StateError {
 
 type Result<T> = std::result::Result<T, StateError>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChainTip {
     pub height: u64,
     pub hash: Hash256,
@@ -27,11 +27,11 @@ pub struct ChainTip {
 }
 
 pub struct ChainState {
-    tree: CompressedTree,
+    pub(crate) tree: CompressedTree,
 }
 
-const TIP_KEY: &[u8] = b"chain_tip";
-const EPOCH_SEED_PREFIX: &[u8] = b"epoch_seed:";
+pub(crate) const TIP_KEY: &[u8] = b"chain_tip";
+pub(crate) const EPOCH_SEED_PREFIX: &[u8] = b"epoch_seed:";
 
 impl ChainState {
     pub fn open(db: &sled::Db) -> Result<Self> {

@@ -15,9 +15,8 @@ use zeroize::Zeroize;
 
 use hyphen_crypto::hash::{hash_to_point, hash_to_scalar};
 
-static TWIST_GEN: once_cell::sync::Lazy<RistrettoPoint> = once_cell::sync::Lazy::new(|| {
-    hash_to_point(b"Hyphen_ICD_twist_generator_v1")
-});
+static TWIST_GEN: once_cell::sync::Lazy<RistrettoPoint> =
+    once_cell::sync::Lazy::new(|| hash_to_point(b"Hyphen_ICD_twist_generator_v1"));
 
 #[derive(Clone, Serialize, Deserialize, Zeroize)]
 #[zeroize(drop)]

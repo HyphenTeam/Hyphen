@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use hyphen_crypto::Hash256;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ContractAddress(pub [u8; 32]);

@@ -2,9 +2,11 @@
 
 [English](README.md) | 中文
 
-Hyphen 是一个用 Rust 编写的实验性、隐私导向、CPU-first PoW 区块链研究项目。仓库包含全节点、共识与密码学库、CPU 矿工、矿池、Flutter 钱包、独立 WASM 执行库，以及节点到矿池和矿池到矿工的带签名协议。
+Hyphen 是一个用 Rust 编写的实验性、隐私导向、CPU-first PoW 区块链研究项目。本仓库的正式范围是 Hyphen 主链：全节点、共识、状态、密码学、交易、P2P/RPC、协议支持库和测试向量。
 
-> **安全状态，2026-07-23：** 本仓库的 devnet 节点、Template Provider、Pool v3 矿池和 CPU 矿工已经完成本机端到端运行验证，但项目还没有外部密码学/共识审计、完整 reorg、长期公开测试网、自动共享矿池付款或正式 bug bounty。不要发送真实资产，不要把钱包或矿池宣传成可承载大额价值的生产系统。
+`HyphenMiner/`、`HyphenPool/` 和 `HyphenWallet/` 是三个独立项目，不属于 Hyphen 主链仓库或根 Cargo workspace。开发者可以为了协议联调把它们分别检出到仓库顶层，但这些目录会被 Git 忽略，主链 CI 也不会依赖它们。主链协议变更必须先更新版本化规范和测试向量，再由三个独立项目分别升级并运行兼容测试。完整边界见 [仓库与兼容边界](docs/architecture/repository-boundaries.md)。
+
+> **安全状态，2026-07-30：** Hyphen 主链的 devnet v2、单元测试、解码 fuzz target 编译和链身份检查可以独立验证；与三个外部项目的端到端兼容测试属于单独的集成测试。项目还没有外部密码学/共识审计，也没有贯通网络接入、自动分叉选择及各依赖子系统对账的完整 reorg、长期公开测试网或正式 bug bounty。不要发送真实资产，也不要把任何外部客户端的可用性当作主链生产安全证明。
 
 ## 这份文档怎么读
 
@@ -24,23 +26,25 @@ Hyphen 是一个用 Rust 编写的实验性、隐私导向、CPU-first PoW 区�
 | --- | --- | --- |
 | 我只想确认项目能运行 | “5 分钟跑起来” | smoke 输出 `status: passed`，并保存 commit 与日志目录 |
 | 我想学会节点、矿池和挖矿 | “手动启动” | 能解释各接口用途、看到 accepted share，并知道 share 不是链上奖励 |
-| 我想开发或提交 PR | “测试与攻击性验证” | workspace、矿池、矿工、钱包后端和 fuzz target 编译全部退出码为 0 |
+| 我想开发或提交 PR | “测试与攻击性验证” | 主链 workspace 与 fuzz 门禁退出码为 0；三个独立项目各自通过 CI，并按需通过跨项目兼容套件 |
 | 我想研究抗矿池控制 | “Hyphen Non-Custodial Pool Protocol” | 能逐项说明六类攻击的已实现防线和开放问题，不能只说“有签名” |
 | 我想研究 Useful-Work | “Useful-Work 的边界” | 保持基础 PoW 独立安全下界，外部任务不增加发行量或 chain weight |
 | 我想组织测试网或审计 | “激励测试网”和“外部验证” | 所有 launch blocker 关闭，并公开精确 revision、原始数据、报告和复测 |
 
-相关文档各有唯一职责：[devnet-v1.md](docs/consensus/devnet-v1.md) 定义冻结共识；[non-custodial-pool.md](docs/research/non-custodial-pool.md) 定义矿池威胁模型；[useful-work-augmented-pow.md](docs/research/useful-work-augmented-pow.md) 定义 Useful-Work 准入边界；[incentivized-testnet.md](docs/operations/incentivized-testnet.md) 定义测试网上线和监控；[SECURITY.md](SECURITY.md) 定义漏洞报告与发布阻断条件。README 教你使用，但不能替代这些规范。
+相关文档各有唯一职责：[devnet-v2.md](docs/consensus/devnet-v2.md) 定义当前 devnet 共识；[non-custodial-pool.md](docs/research/non-custodial-pool.md) 定义矿池威胁模型；[useful-work-augmented-pow.md](docs/research/useful-work-augmented-pow.md) 定义 Useful-Work 准入边界；[incentivized-testnet.md](docs/operations/incentivized-testnet.md) 定义测试网上线和监控；[SECURITY.md](SECURITY.md) 定义漏洞报告与发布阻断条件。README 教你使用，但不能替代这些规范。
+
+Hyphen 主链新的四项核心研究方向是：可恢复状态过期与见证携带执行、并行区块编织融合、带明确网络假设的快速排序证书，以及用户控制的选择性审计证明。其统一符号、不可实现边界、定理状态和落地顺序见 [四项核心创新研究章程](docs/research/four-core-innovations.md)。这些机制当前均未进入 devnet v2。
 
 ## 先看结论
 
 | 能力 | 当前状态 | 你应如何理解 |
 | --- | --- | --- |
-| 冻结 devnet v1 | 已实现 | 研究特性关闭，链身份、数据库身份和测试向量固定 |
-| 节点启动与本地挖矿 | 已验证 | 一键脚本实测节点、矿池、矿工连通并产生有效 share |
+| Devnet v2 确定性状态转换 | 已实现 | 创世后 coinbase 的确定性派生已绑定共识；四项研究机制保持关闭 |
+| 独立矿工、矿池和钱包兼容性 | 等待 v2 升级与复测 | 三个项目不属于主链 workspace 和根 CI；本文不声称 v2 端到端联调已通过 |
 | 历史导出、验证、replay | 已实现 | archive 绑定链身份，完整 replay 必须写入新数据库 |
 | Pool v3 矿工出块授权 | 实验实现 | 池方不能在矿工授权后替换区块头、交易根、收益密钥或链身份 |
 | 共享矿池付款 | 未完成 | PROP/PPS/PPLNS/PPS+/FPPS 余额只是矿池内部账本，不是钱包到账资产 |
-| Fork choice 与 reorg | 未完成 | 当前链管理器只追加活动 tip，激励测试网上线前必须补齐竞争分支和状态回滚 |
+| Fork choice 与 reorg | 后端已实现，端到端自动化未完成 | 真实后端会重算工作量、按分叉状态重验、原子切换、失败恢复旧链并在重开时续跑；仍缺 P2P 分支接入、自动选择和各子系统对账 |
 | 隐私交易与 ZKP | 库实现 | CLSAG、承诺、range proof 等需要独立密码学审查 |
 | WASM 合约 | 独立库 | 尚未接入交易、区块执行、状态根、回执或 RPC，链上不能部署合约 |
 | Flutter 钱包 | 实验软件 | 只适合无价值测试；硬件钱包只有协议模型，没有厂商 App 和物理设备适配 |
@@ -74,7 +78,7 @@ Hyphen 是一个用 Rust 编写的实验性、隐私导向、CPU-first PoW 区�
 | coinbase | 区块奖励输出；SOLO 模式直接绑定矿工钱包，shared 模式当前进入池收益地址后仍需外部付款 |
 | chain identity | 网络 magic、共识参数哈希和创世哈希的组合；任一不同都表示不是同一条链 |
 | replay | 将历史区块重新走一遍权威验证路径，检查新实现是否得到同一结果 |
-| reorg | 更重竞争分支替换当前 tip；Hyphen 目前缺少完整实现，所以不能进入有价值测试网 |
+| reorg | 更重竞争分支替换当前 tip；Hyphen 已有真实链后端执行分叉状态重验、原子多块切换、失败恢复和重开续跑，但尚未接入 P2P 自动收集/选择竞争分支，也未同步对账 mempool、钱包、浏览器和矿池，所以不能进入有价值测试网 |
 
 密钥也不要混淆：钱包的 24 词助记词控制资产；`devnet-miner.key` 授权矿工找到的区块；`devnet-pool.key` 标识并签署矿池消息；节点的 `p2p_identity.key` 标识网络节点。后三者都不能恢复钱包资产。
 
@@ -142,10 +146,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\devnet-smoke.ps1 `
   -SkipBuild -Offline -TimeoutSeconds 120
 ```
 
-脚本会完成以下工作：
+该脚本是可选的跨项目兼容测试入口。只有把三个独立项目升级到匹配的
+devnet-v2 revision 后，以下结果才可记为有效证据；本仓库当前不声称 v2
+端到端联调已经通过。脚本会完成以下工作：
 
 1. 构建节点、独立矿池和独立矿工。
-2. 用全新数据目录启动 `hyphen-devnet-v1` 节点。
+2. 用全新数据目录启动 `hyphen-devnet-v2` 节点。
 3. 启动连接节点 TP v2 的 SOLO 矿池。
 4. 启动单线程 Pool v3 矿工。
 5. 等到矿池账本 API 看到 `valid_shares > 0`。
@@ -157,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\devnet-smoke.ps1 `
 ```json
 {
   "status": "passed",
-  "network": "hyphen-devnet-v1",
+  "network": "hyphen-devnet-v2",
   "pool_health": "ok",
   "valid_shares": 3,
   "invalid_shares": 0,
@@ -188,7 +194,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\devnet-smoke.ps1 *>&1 |
 $smokeExit = $LASTEXITCODE
 if ($smokeExit -ne 0) { throw "devnet smoke failed: exit $smokeExit" }
 
-Get-FileHash .\test-vectors\chain-identity-v1.json |
+Get-FileHash .\test-vectors\chain-identity-v2.json |
   Format-List | Out-File "$evidence\chain-vector.sha256.txt"
 ```
 
@@ -233,7 +239,7 @@ hy12fsCeNkXNT8BTTMLVD38QsY7h8rkafxMhX96Z2juRjHc73RWHrQqPGEczfatT6ZLNDMDsG4PHwyj6
 Invoke-RestMethod http://127.0.0.1:8080/api/info | ConvertTo-Json
 ```
 
-应看到 `network` 为 `hyphen-devnet-v1`，初始 `height` 为 `0`，`tip_hash` 为本文链身份表中的 devnet 创世哈希。
+应看到 `network` 为 `hyphen-devnet-v2`，初始 `height` 为 `0`，`tip_hash` 为本文链身份表中的 devnet 创世哈希。
 
 ### 窗口 2：生成矿池身份并启动 SOLO 矿池
 
@@ -296,7 +302,7 @@ Invoke-RestMethod "http://127.0.0.1:8081/api/pool/wallet/$address/balance" |
 
 | 观察位置 | 正常信号 | 常见异常 |
 | --- | --- | --- |
-| 节点日志 | 显示 `hyphen-devnet-v1`、tip、P2P peer ID、TP/RPC/Explorer 监听地址 | genesis mismatch 表示用了旧或其他网络的数据目录 |
+| 节点日志 | 显示 `hyphen-devnet-v2`、tip、P2P peer ID、TP/RPC/Explorer 监听地址 | genesis mismatch 表示用了旧或其他网络的数据目录 |
 | Explorer `/api/info` | `network` 正确，`height` 和 `tip_hash` 可读 | 连接拒绝通常是节点未启动或 bind 地址错误 |
 | 矿池 `/healthz` | 返回健康状态 | TP 连接错误通常是 `--node` 与节点 `--template-bind` 不一致 |
 | 矿工日志 | login accepted、收到 job、hash/share 计数增长 | network、协议版本、链身份、钱包地址任一不匹配都会拒绝 |
@@ -361,15 +367,15 @@ if (Test-Path .\data\devnet-node) {
 
 下一次启动会创建新的 `devnet-node`。不要把 devnet、testnet、mainnet-research 的数据库或 replay 目标目录混用；不要删除唯一的钱包、助记词或审计证据。源码更新后先运行链身份命令，如果身份改变，则必须使用新数据目录并调查对应的规范/profile 变更。
 
-## 冻结 devnet 共识与链身份
+## Devnet v2 共识与链身份
 
-devnet v1 使用固定创世时间、固定参数承诺、固定创世块和区块版本 2。研究性的 uncles、TERA、VRE 共识强制、MSE 与 MDAD-SPR 均关闭，难度固定使用整数 LWMA v1。
+devnet v2 使用固定创世时间、固定参数承诺、固定创世块、区块版本 2 和状态转换版本 2。创世后的 coinbase 输出及 range proof 根据域分离的区块哈希、收益公钥、金额、高度和 blinding 确定性派生；普通钱包发送仍使用操作系统随机数。H-WES、H-BFM、H-FOC、H-SAC、uncles、TERA、VRE 共识强制、MSE 与 MDAD-SPR 均关闭，难度固定使用整数 LWMA v1。
 
 | Profile | Magic | 共识参数哈希 | 创世哈希 |
 | --- | --- | --- | --- |
-| `devnet-v1` | `48594456` | `e9591468e6b53e922b67f6dbecd0dccec4217e95f0f09a21bce7244fbe8e8322` | `4ee146f63ec54ded2ed743e88ee4ff0981598afc0412d4261e17e43a731a1b92` |
-| `testnet-research` | `48595453` | `9b5a781f5ee647bcef6b1481b684bbd3df277118d7887e9ae49db18d507c2bda` | `d51438cdc8364e9d0a139f731296d3a33845c1bb5f4b0a7cd1fa13ebce2ae78f` |
-| `mainnet-research` | `4859504e` | `eb77360a33bd560945196590b9fe4d9aef8889724d9a6a9475e0bc4db520f957` | `fcc91f7a7537b84f8ef1757d56bac75d1fc0d18aa1540726c61db49ac8991c9e` |
+| `devnet-v2` | `48594456` | `bb0c74b93362b8265d65af5dd48796084448e6b3022c39825476ce1b84439902` | `854adc605062fb872dcd20a535dca1ec25d4af58689f1be50e6c26df0c841295` |
+| `testnet-research` | `48595453` | `462678e5ddc913b99ae7fe3ccc72a114c125273e7f559f2e67fa9f56ca8c6ec4` | `37201e26dacd35d361a83e79cb7f52d5c6bb1b139180434b889543fc08e2efaf` |
+| `mainnet-research` | `4859504e` | `4f21a74c3c32111bcc0c45fc907d77227a51ae17189d7945489898bf08e8e56e` | `9e7f8e3810a15ccf8f93e887630906c377ad14a7bde0f2783d15f0ca7120f06a` |
 
 请用程序重新核对，不要只相信 README：
 
@@ -379,7 +385,9 @@ cargo run -p hyphen-node --locked -- --network testnet --print-chain-identity
 cargo run -p hyphen-node --locked -- --network mainnet --print-chain-identity
 ```
 
-机器可读向量在 `test-vectors/chain-identity-v1.json`，完整规范在 [docs/consensus/devnet-v1.md](docs/consensus/devnet-v1.md)。任何共识参数改变都必须产生新 profile、测试向量和链身份，不能静默修改 devnet v1。
+机器可读向量在 `test-vectors/chain-identity-v2.json`，完整规范在 [docs/consensus/devnet-v2.md](docs/consensus/devnet-v2.md)。任何共识参数改变都必须产生新 profile、测试向量和链身份，不能静默修改活动 profile。
+
+devnet v1 已撤销并仅保留为历史记录：旧实现会在每个节点独立随机构造 coinbase，导致相同区块历史可能产生不同状态。v2 软件不得打开 v1 数据库，也不得篡改数据库中存储的身份；需要保留的证据应先归档，然后使用全新数据目录启动 v2。历史规范和向量仅保存在 `docs/consensus/devnet-v1.md` 与 `test-vectors/chain-identity-v1.json`，不再代表活动网络。
 
 ## 历史导出、reference verifier 与 replay
 
@@ -411,14 +419,14 @@ cargo run -p hyphen-node --locked -- `
 ### 日常回归
 
 ```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
-cargo test --manifest-path HyphenPool/Cargo.toml --locked
-cargo test --manifest-path HyphenMiner/Cargo.toml --locked
-cargo test --manifest-path HyphenWallet/rust/Cargo.toml --locked
 cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
+cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
 ```
 
-缓存完整时可加 `--offline`。2026-07-23 本机验证基线：workspace 共 105 passed、1 ignored；矿池 11 passed；矿工 2 passed；Flutter Rust backend 21 passed；三个 fuzz target 编译通过；一键端到端 smoke 通过。workspace 中最大聚合 range-proof 测试在本机约需 60 秒，短超时不等于失败。
+以上仅是主链必需门禁。`HyphenPool`、`HyphenMiner` 和 `HyphenWallet` 各自运行 CI；三个独立 checkout 存在时，它们的测试与 `scripts/devnet-smoke.ps1` 只提供可选兼容证据，不是根 CI 依赖。缓存完整时可加 `--offline`。2026-07-30 本机验证中，主链 workspace 为 156 passed、0 failed、0 ignored，严格 Clippy 通过，三个 fuzz target 使用锁定依赖图编译通过；最大聚合 range-proof 测试约 84 秒。
 
 ### 怎样判断测试真的通过
 
@@ -432,16 +440,18 @@ cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
 
 本轮出现 warning 也要记录。warning 不会自动把退出码变成失败，但 deprecated API、unused 安全检查或 future-incompatibility 都应进入 issue/技术债；“测试通过”不能写成“零问题”。如需保留回归日志，可在上面的 evidence 目录中使用 `*>&1 | Tee-Object <文件>`，并在每条原生命令后立即保存 `$LASTEXITCODE`。
 
+Rust 1.97.0 下当前有一项已登记工具链债务：`wasmer-derive 7.2.0` 唯一引入的 `proc-macro-error2 2.0.1` 触发 future-incompatibility E0365。这是未屏蔽的上游依赖告警，不是 Hyphen 源码 lint；必须在后续 Rust 将其升级为错误前升级 Wasmer 或采用已修复的宏依赖。
+
 ### 七项要求与证据追踪
 
 这张表是发布检查表，不是路线图宣传。命令必须在仓库根目录运行，退出码为 0；“人工/外部”项不能用单元测试伪造完成。
 
 | 要求 | 现在怎样验证 | 当前结论与阻断项 |
 | --- | --- | --- |
-| 冻结 devnet 共识 | `cargo test -p hyphen-core frozen_devnet_disables_research_consensus_features --locked`；`cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked`；执行 history verify/replay | profile、链身份和向量已固定；仍缺语言无关编码与第二个 reference verifier |
+| 固定 devnet v2 共识 | `cargo test -p hyphen-core frozen_devnet_disables_research_consensus_features --locked`；`cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked`；执行 history verify/replay | profile、链身份和向量已固定；仍缺语言无关编码与第二个 reference verifier |
 | Transaction/RPC/P2P 与攻击实验 | 下文三个 fuzz target、LWMA、匿名集、池账本和钱包恢复命令 | 有单元/属性样本和 fuzz 入口；状态化网络序列、长期统计、真实支付故障仍缺 |
 | 独立审查与 bounty | 核对 [SECURITY.md](SECURITY.md) 中精确 commit、范围、报告、修复和 retest | 尚未发生，任何真实价值宣传被阻断 |
-| 小规模激励测试网 | 先通过 devnet smoke，再按 [incentivized-testnet.md](docs/operations/incentivized-testnet.md) 演练和采集指标 | 完整 fork choice/reorg 未实现，因此目前不得启动有价值激励测试网 |
+| 小规模激励测试网 | 先通过 devnet smoke，再按 [incentivized-testnet.md](docs/operations/incentivized-testnet.md) 演练和采集指标 | 自动分支接入/选择、子系统对账和多节点故障证据仍缺，因此目前不得启动有价值激励测试网 |
 | 独立而非拼装式创新 | 为每个 claim 提供 prior-art claim chart、形式化性质、ablation、原始数据、复现实验和独立实现 | 现阶段只能称候选贡献，不能保证新颖性或专利自由 |
 | 矿工不可委托最终出块权 | `cargo test -p hyphen-core authorization --locked`；`cargo test --manifest-path HyphenMiner/Cargo.toml miner_recomputes_and_chains --locked` | solved-header/链/收益绑定已有原型；矿工自主模板和直接提交仍缺 |
 | 抗池控制与可审计结算 | `cargo test --manifest-path HyphenPool/Cargo.toml protocol::tests --locked`；`cargo test --manifest-path HyphenPool/Cargo.toml accounting::tests --locked` | 可检测部分篡改、漏记与崩溃；不能强制付款或消除审查、withholding、clandestine pool |
@@ -505,15 +515,15 @@ cargo test -p hyphen-wallet encrypted_wallet_rejects_single_byte_corruption --lo
 Windows 本机先用上面的 `cargo check` 验证 target。持续 fuzz 推荐 Ubuntu 或 WSL；CI 的 `Nightly fuzz smoke` 每天分别运行 transaction、RPC、P2P target。
 
 ```bash
-rustup toolchain install nightly
-cargo +nightly install cargo-fuzz --locked
+rustup toolchain install nightly-2026-07-22
+cargo +nightly-2026-07-22 install cargo-fuzz --version 0.13.2 --locked
 cd crates/hyphen-fuzz
-cargo +nightly fuzz run transaction_decode -- -max_total_time=300
-cargo +nightly fuzz run rpc_decode -- -max_total_time=300
-cargo +nightly fuzz run p2p_decode -- -max_total_time=300
+cargo +nightly-2026-07-22 fuzz run transaction_decode -- -max_total_time=300
+cargo +nightly-2026-07-22 fuzz run rpc_decode -- -max_total_time=300
+cargo +nightly-2026-07-22 fuzz run p2p_decode -- -max_total_time=300
 ```
 
-5 分钟 smoke 不是充分 fuzz。公开测试网前应保存 corpus、崩溃样本、最小化输入、覆盖率趋势，并对 Pool v3、TP v2 和钱包文件格式增加专用 target。
+定时 workflow 对每个 target 运行 60 秒；手动 5 分钟也仍只是 smoke。公开测试网前应保存 corpus、崩溃样本、最小化输入、覆盖率趋势，并由对应独立项目为 Pool v3、TP v2 和钱包文件格式增加专用 target。
 
 ## Flutter 钱包：构建、创建、收款与恢复
 
@@ -685,11 +695,11 @@ chain_weight = 经过验证的基础 HyphenPoW
 
 | 维度 | Hyphen 当前 | Bitcoin | Monero | Zcash | Ethereum 当前 PoS |
 | --- | --- | --- | --- | --- | --- |
-| 共识 | 实验 PoW，devnet v1 冻结 | SHA-256 PoW | RandomX PoW | PoW | PoS，无 PoW 矿工 |
+| 共识 | 实验 PoW，devnet v2 固定 profile | SHA-256 PoW | RandomX PoW | PoW | PoS，无 PoW 矿工 |
 | 隐私 | shielded 库实现，未外审 | 默认透明，可使用上层协议 | 默认隐私交易 | 透明与 shielded 地址/池 | L1 默认公开 |
 | 硬件/参与门槛 | CPU-first 假设，尚无真实分布数据 | ASIC 主导 | 面向通用 CPU | ASIC 挖矿生态 | 质押、客户端与服务器运维 |
 | 池控制研究 | Pool v3 绑定矿工最终授权，但池仍选交易集 | 传统池常由运营者提供模板 | 传统池类似，可使用 P2Pool | 依矿池实现 | 不是 PoW 矿池模型 |
-| Fork choice/reorg | **未完成竞争分支 rollback** | 累计工作成熟实现 | 累计难度成熟实现 | 生产实现 | PoS fork choice/finality 生产实现 |
+| Fork choice/reorg | 真实后端已有分叉重验、原子切换、失败恢复和重开续跑测试；自动网络接入与子系统对账未完成 | 累计工作成熟实现 | 累计难度成熟实现 | 生产实现 | PoS fork choice/finality 生产实现 |
 | 合约 | VM 独立库，链上未启用 | 有限脚本 | 非通用合约 L1 | 以支付隐私为主 | 通用合约生产运行 |
 | 生产证据 | 研究/devnet，无外审 | 长期生产与广泛审查 | 长期生产与广泛审查 | 长期生产与密码学审查 | 长期生产与广泛审查 |
 
@@ -716,7 +726,7 @@ README 的表格是事实/设计对照，不是性能测试。真正对比时先
 | 实验问题 | 必须统一的条件 | 至少记录的指标 | 当前 Hyphen 状态 |
 | --- | --- | --- | --- |
 | 初始同步资源 | 同一机器、磁盘、网络限速、同等历史规模和缓存策略 | 总时间、峰值 RSS、CPU 时间、读写字节、下载字节 | 尚无长期公开历史可公平测量 |
-| 区块传播与 reorg | 同节点数、拓扑、延迟/丢包模型和竞争分支工作量 | p50/p95/p99 传播、孤块率、reorg 深度和收敛时间 | reorg 未完成，不能声称优于任何生产链 |
+| 区块传播与 reorg | 同节点数、拓扑、延迟/丢包模型和竞争分支工作量 | p50/p95/p99 传播、孤块率、reorg 深度和收敛时间 | 只有后端测试，没有多节点现场证据，不能声称优于任何生产链 |
 | PoW 去中心化 | 固定观测窗口和实体归并方法 | 矿池份额、Top-3、HHI、硬件/地区分布、收益方差 | 只有 CPU-first 设计假设，无真实分布证据 |
 | 隐私/匿名集 | 相同威胁模型、样本量和时间范围 | 有效匿名集、年龄/索引偏差、可链接率和置信区间 | 只有小型偏差实验，未达到生产证据等级 |
 | 矿池控制 | 同时测模板来源、完整区块提交权和支付可验证性 | 自主模板比例、审查成功率、receipt 缺口、拒付/延迟 | 授权绑定原型存在，自主模板/直提/强制付款缺失 |
@@ -726,7 +736,7 @@ README 的表格是事实/设计对照，不是性能测试。真正对比时先
 
 ## 激励测试网监控与上线门槛
 
-当前缺少完整 reorg，因此还不能进入有价值激励测试网。补齐竞争分支和状态回滚后，至少监控：
+尽管竞争分支区块体存储、严格较重工作量计划校验、分叉状态重验、原子重组、旧链恢复和重开续跑已有后端测试，当前仍缺 P2P 自动接入/选择及 mempool、钱包、浏览器、矿池结算对账，因此还不能进入有价值激励测试网。进入下一阶段前至少监控：
 
 - reorg 次数、深度、替换工作量和收敛时间；
 - 孤块率，按矿工、矿池、版本和区域拆分；
@@ -827,10 +837,10 @@ cargo test -p hyphen-wallet encrypted_wallet_rejects_single_byte_corruption --lo
 以下项目必须按顺序推进，前一阶段失败就不能跳到后一阶段：
 
 - [ ] 固定并发布 revision、devnet 规范、链身份和机器可读向量；三种 profile 的实现输出与向量一致。
-- [ ] workspace、矿池、矿工、钱包后端测试和 fuzz target 编译通过；warning、ignored test 和失败样本均有归属。
+- [ ] 主链 workspace 与 fuzz 门禁通过；三个外部项目分别记录各自 CI 和兼容结果；warning、ignored test 和失败样本均有归属。
 - [ ] 一键 smoke 和手动三进程流程通过；操作者能区分 share、完整区块、池内余额和链上余额。
 - [ ] 导出一段真实生成的历史，轻量 verifier 和全量 replay 在全新目录得到一致 tip；第二实现/语言无关编码仍是发布阻断项。
-- [ ] 完整 fork choice、竞争分支验证和原子状态 rollback 实现，并通过 partition、eclipse、时间戳/难度和深 reorg 故障演练。
+- [ ] 将已有竞争分支重验和崩溃可恢复多块 reorg 后端接入有界 P2P 分支接收与自动 fork choice；同步对账 mempool/钱包/浏览器/矿池状态，并通过 partition、eclipse、时间戳/难度和深 reorg 故障演练。
 - [ ] Pool 协议补齐矿工自主模板、池拒绝转发时的直接提交、公共可验证账本、偿付证明和自动幂等链上付款；分别测试六类攻击。
 - [ ] 钱包在干净的 Windows/Android/Linux/macOS 测试设备完成创建、备份、错误输入、损坏、中断、从高度 0 重扫和余额/历史核对。
 - [ ] 小规模无价值多运营方测试网满足稳定性门槛，再开启有上限的激励；公开 reorg、孤块、P2P、PoW/矿池集中度、同步资源和移动故障原始数据。

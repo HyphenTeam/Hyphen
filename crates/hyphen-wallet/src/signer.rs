@@ -241,8 +241,7 @@ impl SigningRequest {
         let mut input_total = 0u64;
         for input in &self.inputs {
             let ring_size = input.ring_public_keys.len();
-            if ring_size < 2
-                || ring_size > MAX_SIGNER_RING_SIZE
+            if !(2..=MAX_SIGNER_RING_SIZE).contains(&ring_size)
                 || input.ring_commitments.len() != ring_size
             {
                 return Err(SignerError::InvalidRequest(

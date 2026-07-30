@@ -16,10 +16,10 @@ pub enum CommitmentTreeError {
 
 type Result<T> = std::result::Result<T, CommitmentTreeError>;
 
-const TREE_STATE_KEY: &[u8] = b"merkle_tree_state";
+pub(crate) const TREE_STATE_KEY: &[u8] = b"merkle_tree_state";
 
 pub struct PersistentCommitmentTree {
-    tree_data: CompressedTree,
+    pub(crate) tree_data: CompressedTree,
     inner: MerkleTree,
 }
 
@@ -50,6 +50,14 @@ impl PersistentCommitmentTree {
 
     pub fn prove(&self, index: u64) -> Option<hyphen_crypto::merkle::MerkleProof> {
         self.inner.prove(index)
+    }
+
+    pub fn snapshot(&self) -> MerkleTree {
+        self.inner.clone()
+    }
+
+    pub(crate) fn replace_committed(&mut self, inner: MerkleTree) {
+        self.inner = inner;
     }
 
     fn persist(&self) -> Result<()> {

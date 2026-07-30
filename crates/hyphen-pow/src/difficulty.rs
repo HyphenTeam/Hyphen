@@ -44,7 +44,7 @@ pub fn next_difficulty(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConf
             let avg_solve = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
             let ratio = target_ms / avg_solve.max(1.0);
             // Micro-correction: limit to ±2%
-            let micro = ratio.max(0.98).min(1.02);
+            let micro = ratio.clamp(0.98, 1.02);
             (prev_diff as f64 * micro) as u64
         }
         SprtDecision::Changed { observed_rate } => {
@@ -198,8 +198,7 @@ fn estimate_momentum(solve_times: &[f64], target_ms: f64) -> f64 {
 
     // Normalise slope to [-1, 1] range
     // A slope of ±0.1 per block is considered maximum momentum
-    let normalised = (-slope * 10.0).clamp(-1.0, 1.0);
-    normalised
+    (-slope * 10.0).clamp(-1.0, 1.0)
 }
 
 // --- Component 3: Autocorrelation Dampener ---
@@ -453,7 +452,7 @@ fn next_difficulty_variant(
                         SprtDecision::NoChange => {
                             let avg = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
                             let ratio = target_ms / avg.max(1.0);
-                            let micro = ratio.max(0.98).min(1.02);
+                            let micro = ratio.clamp(0.98, 1.02);
                             (prev_diff as f64 * micro) as u64
                         }
                         SprtDecision::Changed { observed_rate } => {
@@ -471,7 +470,7 @@ fn next_difficulty_variant(
                         SprtDecision::NoChange => {
                             let avg = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
                             let ratio = target_ms / avg.max(1.0);
-                            let micro = ratio.max(0.98).min(1.02);
+                            let micro = ratio.clamp(0.98, 1.02);
                             (prev_diff as f64 * micro) as u64
                         }
                         SprtDecision::Changed { observed_rate } => {
@@ -492,7 +491,7 @@ fn next_difficulty_variant(
                         SprtDecision::NoChange => {
                             let avg = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
                             let ratio = target_ms / avg.max(1.0);
-                            let micro = ratio.max(0.98).min(1.02);
+                            let micro = ratio.clamp(0.98, 1.02);
                             (prev_diff as f64 * micro) as u64
                         }
                         SprtDecision::Changed { observed_rate } => {
@@ -635,7 +634,8 @@ pub fn run_full_ablation(cfg: &ChainConfig) -> Vec<AblationMetrics> {
         AblationVariant::PureLwma,
     ];
 
-    let profiles: Vec<(&str, Box<dyn Fn(u64) -> f64>)> = vec![
+    type HashrateProfile = (&'static str, Box<dyn Fn(u64) -> f64>);
+    let profiles: Vec<HashrateProfile> = vec![
         ("stable", Box::new(|_| 1.0)),
         ("step", Box::new(|h| if h < 100 { 1.0 } else { 2.0 })),
         (
@@ -676,7 +676,7 @@ mod tests {
         let timestamps: Vec<u64> = (0..n).map(|i| i * t_ms).collect();
         let difficulties: Vec<u64> = vec![1000; n as usize];
         let next = next_difficulty(&timestamps, &difficulties, &cfg);
-        assert!(next >= 800 && next <= 1200, "got {next}");
+        assert!((800..=1200).contains(&next), "got {next}");
     }
 
     #[test]

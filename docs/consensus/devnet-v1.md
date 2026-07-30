@@ -1,4 +1,9 @@
-# Hyphen Frozen Devnet v1 Consensus Profile
+# Hyphen Frozen Devnet v1 Consensus Profile (Historical)
+
+> Withdrawn on 2026-07-30. V1 generated coinbase outputs with node-local
+> randomness, so equal block histories could produce unequal spendable-output
+> state. Its identity is retained only as historical evidence and MUST NOT be
+> used for a new database. Active development uses [devnet v2](devnet-v2.md).
 
 Status: frozen for reproducible development and adversarial testing. This is
 not a production-mainnet specification or a security claim.
@@ -79,9 +84,15 @@ For every post-genesis block, the verifier MUST enforce at least:
 7. Transactions pass size, balance, signature, proof, nullifier, and state
    transition checks before the tip is committed.
 
-The current chain manager accepts only a block extending the active tip. It
-does not implement a competing-branch store, cumulative-work fork choice, or
-state rollback. Consequently reorg handling is a release blocker for an
+At withdrawal, the v1 chain manager accepted only a block extending the active tip. The
+state library contains inactive persistent branch metadata, strictly-heavier
+cumulative-work reorg planning, atomic one-tip rollback primitives, and a
+generic durable coordinator that can resume a static reorg plan or restore the
+original branch after a candidate attach failure. No live backend yet performs
+fork-specific transaction/state validation, selects a competing branch, or
+drives that coordinator. The coordinator model therefore is not active reorg
+support.
+Consequently complete reorg handling remains a release blocker for an
 incentivized public testnet, not a frozen devnet v1 capability.
 
 ## Difficulty
@@ -152,4 +163,3 @@ No in-place activation is allowed on devnet v1. Any consensus change requires:
 - reference-verifier and negative tests;
 - successful replay from that profile's genesis; and
 - independent review before promotion beyond a research network.
-

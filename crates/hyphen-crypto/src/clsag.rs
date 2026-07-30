@@ -76,11 +76,7 @@ fn aggregation_coefficients(
 }
 
 /// H_n(msg || L || R)
-fn clsag_round_hash(
-    prefix: &[u8],
-    l: &RistrettoPoint,
-    r: &RistrettoPoint,
-) -> Scalar {
+fn clsag_round_hash(prefix: &[u8], l: &RistrettoPoint, r: &RistrettoPoint) -> Scalar {
     let mut data = Vec::with_capacity(prefix.len() + 64);
     data.extend_from_slice(prefix);
     data.extend_from_slice(l.compress().as_bytes());

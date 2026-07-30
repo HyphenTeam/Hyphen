@@ -1,8 +1,25 @@
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 pub const MAX_GOSSIP_TRANSACTION_SIZE: usize = 2 * 1024 * 1024;
 pub const MAX_GOSSIP_BLOCK_SIZE: usize = 2 * 1024 * 1024;
 pub const MAX_GOSSIP_ENVELOPE_SIZE: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Error)]
+pub enum NetworkDecodeError {
+    #[error("empty network message")]
+    EmptyMessage,
+    #[error("gossip envelope exceeds the size limit")]
+    EnvelopeTooLarge,
+    #[error("gossip transaction exceeds the size limit")]
+    TransactionTooLarge,
+    #[error("gossip block exceeds the size limit")]
+    BlockTooLarge,
+    #[error("unknown network message type {0}")]
+    UnknownMessageType(u8),
+    #[error("protobuf decode failed: {0}")]
+    Protobuf(#[from] prost::DecodeError),
+}
 
 #[derive(Clone, prost::Message)]
 pub struct ProtoTransaction {
@@ -79,30 +96,30 @@ impl NetworkMessage {
         }
     }
 
-    pub fn decode_proto(data: &[u8]) -> Result<Self, prost::DecodeError> {
+    pub fn decode_proto(data: &[u8]) -> Result<Self, NetworkDecodeError> {
         use prost::Message;
         if data.is_empty() {
-            return Err(prost::DecodeError::new("empty message"));
+            return Err(NetworkDecodeError::EmptyMessage);
         }
         if data.len() > MAX_GOSSIP_ENVELOPE_SIZE {
-            return Err(prost::DecodeError::new("gossip envelope too large"));
+            return Err(NetworkDecodeError::EnvelopeTooLarge);
         }
         match data[0] {
             0 => {
                 let proto = ProtoTransaction::decode(&data[1..])?;
                 if proto.data.len() > MAX_GOSSIP_TRANSACTION_SIZE {
-                    return Err(prost::DecodeError::new("gossip transaction too large"));
+                    return Err(NetworkDecodeError::TransactionTooLarge);
                 }
                 Ok(NetworkMessage::NewTransaction(proto.data))
             }
             1 => {
                 let proto = ProtoBlock::decode(&data[1..])?;
                 if proto.data.len() > MAX_GOSSIP_BLOCK_SIZE {
-                    return Err(prost::DecodeError::new("gossip block too large"));
+                    return Err(NetworkDecodeError::BlockTooLarge);
                 }
                 Ok(NetworkMessage::NewBlock(proto.data))
             }
-            _ => Err(prost::DecodeError::new("unknown message type")),
+            message_type => Err(NetworkDecodeError::UnknownMessageType(message_type)),
         }
     }
 }

@@ -20,7 +20,9 @@ pub struct SyncManager {
 }
 
 impl Default for SyncManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SyncManager {
@@ -42,7 +44,10 @@ impl SyncManager {
         if their_cum_diff > our_cum_diff && their_height > our_height {
             info!(
                 "Peer {} is ahead (height {}, cum_diff {}), starting sync from {}",
-                peer, their_height, their_cum_diff, our_height + 1
+                peer,
+                their_height,
+                their_cum_diff,
+                our_height + 1
             );
             self.state = SyncState::Downloading {
                 peer,
@@ -58,10 +63,7 @@ impl SyncManager {
         }
     }
 
-    pub fn on_blocks_received(
-        &mut self,
-        blocks_count: usize,
-    ) -> Option<SyncRequest> {
+    pub fn on_blocks_received(&mut self, blocks_count: usize) -> Option<SyncRequest> {
         if let SyncState::Downloading {
             peer: _,
             ref mut next_height,

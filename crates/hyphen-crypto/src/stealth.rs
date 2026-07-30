@@ -1,12 +1,12 @@
+use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroize;
 
-use crate::hash::{hash_to_scalar, blake3_hash_many};
+use crate::hash::{blake3_hash_many, hash_to_scalar};
 
 const G: RistrettoPoint = RISTRETTO_BASEPOINT_POINT;
 
@@ -55,7 +55,6 @@ impl std::fmt::Display for StealthAddress {
     }
 }
 
-
 impl ViewKey {
     pub fn as_scalar(&self) -> Scalar {
         Scalar::from_bytes_mod_order(self.0)
@@ -88,7 +87,6 @@ pub fn generate_keys() -> (ViewKey, SpendKey, StealthAddress) {
     (view, spend, addr)
 }
 
-
 fn decompress(bytes: &[u8; 32]) -> Result<RistrettoPoint, StealthError> {
     CompressedRistretto::from_slice(bytes)
         .map_err(|_| StealthError::DecompressionFailed)?
@@ -102,6 +100,36 @@ pub fn derive_one_time_key(
     output_index: u64,
 ) -> Result<(EphemeralKey, RistrettoPoint, Scalar), StealthError> {
     let r = Scalar::random(&mut OsRng);
+    derive_one_time_key_with_scalar(addr, output_index, r)
+}
+
+/// Deterministic sender derivation for consensus-generated outputs.
+///
+/// `seed` must uniquely bind the consensus object. This is intentionally
+/// separate from ordinary wallet sends, which must continue to use fresh
+/// randomness through [`derive_one_time_key`].
+pub fn derive_consensus_one_time_key(
+    addr: &StealthAddress,
+    output_index: u64,
+    seed: &[u8; 32],
+) -> Result<(EphemeralKey, RistrettoPoint, Scalar), StealthError> {
+    let mut material = Vec::with_capacity(104);
+    material.extend_from_slice(seed);
+    material.extend_from_slice(&addr.view_public);
+    material.extend_from_slice(&addr.spend_public);
+    material.extend_from_slice(&output_index.to_le_bytes());
+    let mut r = hash_to_scalar(b"Hyphen/coinbase-ephemeral/v1", &material);
+    if r == Scalar::ZERO {
+        r = Scalar::ONE;
+    }
+    derive_one_time_key_with_scalar(addr, output_index, r)
+}
+
+fn derive_one_time_key_with_scalar(
+    addr: &StealthAddress,
+    output_index: u64,
+    r: Scalar,
+) -> Result<(EphemeralKey, RistrettoPoint, Scalar), StealthError> {
     let big_r = r * G;
 
     let big_a = decompress(&addr.view_public)?;
@@ -118,11 +146,7 @@ pub fn derive_one_time_key(
     // P = ss*G + B
     let p = ss * G + big_b;
 
-    Ok((
-        EphemeralKey(big_r.compress().to_bytes()),
-        p,
-        ss,
-    ))
+    Ok((EphemeralKey(big_r.compress().to_bytes()), p, ss))
 }
 
 // Receiver: recover one-time private key
@@ -192,10 +216,7 @@ pub fn decrypt_amount(encrypted: &[u8; 32], shared_secret: &Scalar) -> u64 {
 }
 
 pub fn derive_commitment_blinding(shared_secret: &Scalar) -> Scalar {
-    hash_to_scalar(
-        b"Hyphen_commitment_blind",
-        shared_secret.as_bytes(),
-    )
+    hash_to_scalar(b"Hyphen_commitment_blind", shared_secret.as_bytes())
 }
 
 pub fn compute_view_tag(shared_secret: &Scalar) -> u8 {

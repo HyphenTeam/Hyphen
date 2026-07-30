@@ -37,7 +37,7 @@ impl Validated {
 struct Priority {
     neg_fee_density: i64,
     neg_vre_quality: i64,
-    seq: u64,
+    tx_hash: Hash256,
 }
 
 struct PoolEntry {
@@ -52,7 +52,6 @@ pub struct Mempool {
     entries: HashMap<Hash256, PoolEntry>,
     by_priority: BTreeMap<Priority, Hash256>,
     key_images: HashSet<[u8; 32]>,
-    seq: u64,
     max_entries: usize,
 }
 
@@ -62,7 +61,6 @@ impl Mempool {
             entries: HashMap::new(),
             by_priority: BTreeMap::new(),
             key_images: HashSet::new(),
-            seq: 0,
             max_entries,
         }
     }
@@ -108,9 +106,8 @@ impl Mempool {
         let prio = Priority {
             neg_fee_density: -fee_density,
             neg_vre_quality: -proof.vre_quality,
-            seq: self.seq,
+            tx_hash,
         };
-        self.seq += 1;
 
         for inp in &tx.inputs {
             self.key_images.insert(inp.key_image);

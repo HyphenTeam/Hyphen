@@ -1,7 +1,7 @@
 use curve25519_dalek::scalar::Scalar;
-use serde::{Deserialize, Serialize};
-use hyphen_crypto::Hash256;
 use hyphen_crypto::pedersen::Commitment;
+use hyphen_crypto::Hash256;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Note {

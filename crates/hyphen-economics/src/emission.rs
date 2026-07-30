@@ -88,11 +88,7 @@ pub fn block_reward(height: u64, cfg: &ChainConfig) -> u64 {
 }
 
 /// Compute the block reward with an explicit MSE difficulty ratio.
-pub fn block_reward_with_mse(
-    height: u64,
-    difficulty_ratio_bps: u64,
-    cfg: &ChainConfig,
-) -> u64 {
+pub fn block_reward_with_mse(height: u64, difficulty_ratio_bps: u64, cfg: &ChainConfig) -> u64 {
     let base = lcd_base_reward(height, cfg) as u128;
     let multiplier = mse_multiplier_bps(difficulty_ratio_bps, cfg) as u128;
 

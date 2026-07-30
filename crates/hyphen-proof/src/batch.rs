@@ -1,4 +1,4 @@
-use crate::generators::{BP_GENS, MAX_RANGE_BITS, MAX_AGGREGATION};
+use crate::generators::{BP_GENS, MAX_AGGREGATION, MAX_RANGE_BITS};
 use crate::inner_product;
 use crate::range_proof::{AggregatedRangeProof, ProofError, RangeProof};
 use curve25519_dalek::ristretto::RistrettoPoint;
@@ -6,7 +6,7 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
 use hyphen_crypto::pedersen::{G_BLIND, G_VALUE};
 use merlin::Transcript;
-use rand_core::{RngCore, CryptoRng};
+use rand_core::{CryptoRng, RngCore};
 
 fn h_gen() -> RistrettoPoint {
     *G_VALUE
@@ -244,9 +244,8 @@ mod tests {
 
     #[test]
     fn batch_prove_too_many_fails() {
-        let values: Vec<u64> = (0..17).map(|i| i).collect();
+        let values: Vec<u64> = (0..17).collect();
         let blindings: Vec<Scalar> = (0..17).map(|_| Scalar::random(&mut OsRng)).collect();
         assert!(prove_multiple_with_rng(&values, &blindings, &mut OsRng).is_err());
     }
 }
-

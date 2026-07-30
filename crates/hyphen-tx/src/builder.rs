@@ -1,15 +1,18 @@
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
 use rand::rngs::OsRng;
+use rand::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
 
 use hyphen_crypto::clsag;
 use hyphen_crypto::pedersen::{Commitment, PedersenGens};
 use hyphen_crypto::stealth::{
-    self, StealthAddress,
-    encrypt_amount, derive_commitment_blinding, compute_view_tag,
+    self, compute_view_tag, derive_commitment_blinding, derive_consensus_one_time_key,
+    encrypt_amount, StealthAddress,
 };
-use hyphen_proof::range_proof::AggregatedRangeProof;
+use hyphen_crypto::Hash256;
+use hyphen_proof::{prove_multiple_with_rng, range_proof::AggregatedRangeProof};
 
 use crate::note::OwnedNote;
 use crate::nullifier;
@@ -55,7 +58,9 @@ pub struct TransactionBuilder {
 }
 
 impl Default for TransactionBuilder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TransactionBuilder {
@@ -87,10 +92,9 @@ impl TransactionBuilder {
     /// seed so the builder can derive the binding.  The epoch_seed is
     /// typically obtained from `Blockchain::epoch_seed_for_height`.
     pub fn set_epoch_seed(&mut self, epoch_seed: &[u8; 32]) -> &mut Self {
-        self.epoch_context = *hyphen_crypto::blake3_keyed(
-            b"TERA_v1_context__Hyphen_2025_ctx",
-            epoch_seed,
-        ).as_bytes();
+        self.epoch_context =
+            *hyphen_crypto::blake3_keyed(b"TERA_v1_context__Hyphen_2025_ctx", epoch_seed)
+                .as_bytes();
         self
     }
 
@@ -192,9 +196,8 @@ impl TransactionBuilder {
                         global_index: ispec.owned.note.global_index,
                     });
                 } else {
-                    let (dk, dc, di) = decoy_iter
-                        .next()
-                        .ok_or(BuilderError::RingSizeMismatch(i))?;
+                    let (dk, dc, di) =
+                        decoy_iter.next().ok_or(BuilderError::RingSizeMismatch(i))?;
                     ring_keys.push(*dk);
                     ring_commits.push(*dc);
                     ring_refs.push(OutputRef { global_index: *di });
@@ -207,7 +210,8 @@ impl TransactionBuilder {
             let temporal_nonce = *hyphen_crypto::hash::hash_to_scalar(
                 b"TERA_nonce",
                 &[spend_sk.as_bytes().as_slice(), &self.epoch_context].concat(),
-            ).as_bytes();
+            )
+            .as_bytes();
 
             let note_hash = ispec.owned.note.note_hash();
             let causal_binding = *hyphen_crypto::blake3_hash_many(&[
@@ -215,7 +219,8 @@ impl TransactionBuilder {
                 spend_sk.as_bytes(),
                 note_hash.as_bytes(),
                 &self.epoch_context,
-            ]).as_bytes();
+            ])
+            .as_bytes();
 
             tx_inputs.push(TxInput {
                 ring: ring_refs,
@@ -235,9 +240,8 @@ impl TransactionBuilder {
             });
         }
 
-        let (agg_proof, _commitments) =
-            AggregatedRangeProof::prove(&out_values, &out_blindings)
-                .map_err(|e| BuilderError::RangeProof(e.to_string()))?;
+        let (agg_proof, _commitments) = AggregatedRangeProof::prove(&out_values, &out_blindings)
+            .map_err(|e| BuilderError::RangeProof(e.to_string()))?;
 
         // Phase 2: Build the Transaction shell to compute prefix_hash
         // using the authoritative Transaction::prefix_hash() method —
@@ -301,12 +305,16 @@ pub fn build_coinbase_tx(
     spend_public: [u8; 32],
     amount: u64,
     height: u64,
+    block_hash: Hash256,
 ) -> Result<Transaction, BuilderError> {
-    let addr = StealthAddress { view_public, spend_public };
+    let addr = StealthAddress {
+        view_public,
+        spend_public,
+    };
     let gens = PedersenGens::default();
 
     let (eph, one_time_pk, shared_secret) =
-        stealth::derive_one_time_key(&addr, 0)
+        derive_consensus_one_time_key(&addr, 0, block_hash.as_bytes())
             .map_err(|e| BuilderError::Stealth(e.to_string()))?;
 
     let blinding = derive_commitment_blinding(&shared_secret);
@@ -322,9 +330,18 @@ pub fn build_coinbase_tx(
         view_tag,
     };
 
-    let (range_proof, _) =
-        AggregatedRangeProof::prove(&[amount], &[blinding])
-            .map_err(|e| BuilderError::RangeProof(e.to_string()))?;
+    let proof_seed = hyphen_crypto::blake3_hash_many(&[
+        b"Hyphen/coinbase-range-proof/v1",
+        block_hash.as_bytes(),
+        &view_public,
+        &spend_public,
+        &amount.to_le_bytes(),
+        &height.to_le_bytes(),
+        blinding.as_bytes(),
+    ]);
+    let mut proof_rng = ChaCha20Rng::from_seed(*proof_seed.as_bytes());
+    let (range_proof, _) = prove_multiple_with_rng(&[amount], &[blinding], &mut proof_rng)
+        .map_err(|e| BuilderError::RangeProof(e.to_string()))?;
 
     // Encode block height in extra field for uniqueness per block
     let extra = height.to_le_bytes().to_vec();
@@ -340,4 +357,24 @@ pub fn build_coinbase_tx(
             range_proof,
         },
     })
+}
+
+#[cfg(test)]
+mod coinbase_tests {
+    use super::*;
+    use hyphen_crypto::{SpendKey, ViewKey};
+
+    #[test]
+    fn coinbase_is_deterministic_and_block_bound() {
+        let view = ViewKey([71u8; 32]).public_point().compress().to_bytes();
+        let spend = SpendKey([72u8; 32]).public_point().compress().to_bytes();
+        let first = build_coinbase_tx(view, spend, 50, 7, Hash256::from_bytes([73u8; 32])).unwrap();
+        let repeated =
+            build_coinbase_tx(view, spend, 50, 7, Hash256::from_bytes([73u8; 32])).unwrap();
+        let another_block =
+            build_coinbase_tx(view, spend, 50, 7, Hash256::from_bytes([74u8; 32])).unwrap();
+
+        assert_eq!(first.serialise(), repeated.serialise());
+        assert_ne!(first.serialise(), another_block.serialise());
+    }
 }

@@ -88,6 +88,8 @@ pub struct TxLocationResponse {
     pub tx_index: u32,
     #[prost(bool, tag = "3")]
     pub found: bool,
+    #[prost(uint64, tag = "4")]
+    pub block_height: u64,
 }
 
 #[derive(Clone, prost::Message)]

@@ -130,14 +130,16 @@ pub fn verify(
     // Replay challenges
     let mut challenges = Vec::with_capacity(rounds);
     for i in 0..rounds {
-        let l_pt = match curve25519_dalek::ristretto::CompressedRistretto(proof.l_vec[i]).decompress() {
-            Some(p) => p,
-            None => return false,
-        };
-        let r_pt = match curve25519_dalek::ristretto::CompressedRistretto(proof.r_vec[i]).decompress() {
-            Some(p) => p,
-            None => return false,
-        };
+        let l_pt =
+            match curve25519_dalek::ristretto::CompressedRistretto(proof.l_vec[i]).decompress() {
+                Some(p) => p,
+                None => return false,
+            };
+        let r_pt =
+            match curve25519_dalek::ristretto::CompressedRistretto(proof.r_vec[i]).decompress() {
+                Some(p) => p,
+                None => return false,
+            };
         transcript_point(transcript, b"L", &l_pt);
         transcript_point(transcript, b"R", &r_pt);
         challenges.push(transcript_challenge(transcript, b"u"));

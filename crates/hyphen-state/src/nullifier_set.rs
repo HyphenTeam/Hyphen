@@ -12,7 +12,7 @@ pub enum NullifierError {
 type Result<T> = std::result::Result<T, NullifierError>;
 
 pub struct NullifierSet {
-    tree: sled::Tree,
+    pub(crate) tree: sled::Tree,
 }
 
 impl NullifierSet {
@@ -27,9 +27,7 @@ impl NullifierSet {
     }
 
     pub fn insert(&self, nullifier: &[u8; 32], block_height: u64) -> Result<()> {
-        let prev = self
-            .tree
-            .insert(nullifier, &block_height.to_le_bytes())?;
+        let prev = self.tree.insert(nullifier, &block_height.to_le_bytes())?;
         if prev.is_some() {
             return Err(NullifierError::Duplicate);
         }

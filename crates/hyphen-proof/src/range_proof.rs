@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::generators::{BP_GENS, MAX_RANGE_BITS};
 use crate::inner_product;
 use crate::inner_product::InnerProductProof;
-use hyphen_crypto::pedersen::{G_BLIND, G_VALUE, PedersenGens};
+use hyphen_crypto::pedersen::{PedersenGens, G_BLIND, G_VALUE};
 
 // V = v·H + gamma·G
 fn h_gen() -> RistrettoPoint {
@@ -118,10 +118,16 @@ impl RangeProof {
         let rho = Scalar::random(&mut OsRng);
 
         let a_point = alpha * g_blind
-            + RistrettoPoint::multiscalar_mul(a_l.iter().chain(a_r.iter()), g.iter().chain(h.iter()));
+            + RistrettoPoint::multiscalar_mul(
+                a_l.iter().chain(a_r.iter()),
+                g.iter().chain(h.iter()),
+            );
 
         let s_point = rho * g_blind
-            + RistrettoPoint::multiscalar_mul(s_l.iter().chain(s_r.iter()), g.iter().chain(h.iter()));
+            + RistrettoPoint::multiscalar_mul(
+                s_l.iter().chain(s_r.iter()),
+                g.iter().chain(h.iter()),
+            );
 
         transcript_point(&mut transcript, b"A", &a_point);
         transcript_point(&mut transcript, b"S", &s_point);
@@ -317,7 +323,6 @@ fn decompress_pt(bytes: &[u8; 32]) -> Result<RistrettoPoint, ProofError> {
         .ok_or(ProofError::Decompression)
 }
 
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AggregatedRangeProof {
     pub m: usize,
@@ -373,9 +378,15 @@ impl AggregatedRangeProof {
         let rho = Scalar::random(&mut OsRng);
 
         let a_point = alpha * g_blind
-            + RistrettoPoint::multiscalar_mul(a_l.iter().chain(a_r.iter()), g.iter().chain(h.iter()));
+            + RistrettoPoint::multiscalar_mul(
+                a_l.iter().chain(a_r.iter()),
+                g.iter().chain(h.iter()),
+            );
         let s_point = rho * g_blind
-            + RistrettoPoint::multiscalar_mul(s_l.iter().chain(s_r.iter()), g.iter().chain(h.iter()));
+            + RistrettoPoint::multiscalar_mul(
+                s_l.iter().chain(s_r.iter()),
+                g.iter().chain(h.iter()),
+            );
 
         transcript_point(&mut transcript, b"A", &a_point);
         transcript_point(&mut transcript, b"S", &s_point);
@@ -565,7 +576,15 @@ impl AggregatedRangeProof {
 
         let p_total = p_commit + t_hat * q;
 
-        if inner_product::verify(&mut transcript, &self.proof.ipp, &q, g, &h_prime, &p_total, &t_hat) {
+        if inner_product::verify(
+            &mut transcript,
+            &self.proof.ipp,
+            &q,
+            g,
+            &h_prime,
+            &p_total,
+            &t_hat,
+        ) {
             Ok(())
         } else {
             Err(ProofError::VerificationFailed)

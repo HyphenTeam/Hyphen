@@ -26,10 +26,7 @@ pub struct RpcHandler {
 }
 
 impl RpcHandler {
-    pub fn new(
-        chain: Arc<Blockchain>,
-        mempool: Arc<parking_lot::RwLock<Mempool>>,
-    ) -> Self {
+    pub fn new(chain: Arc<Blockchain>, mempool: Arc<parking_lot::RwLock<Mempool>>) -> Self {
         Self { chain, mempool }
     }
 
@@ -44,7 +41,8 @@ impl RpcHandler {
             METHOD_GET_RANDOM_OUTPUTS => self.handle_get_random_outputs(&request.payload),
             METHOD_GET_OUTPUT_INFO => self.handle_get_output_info(&request.payload),
             _ => Err(HandlerError::InvalidRequest(format!(
-                "unknown method: {}", request.method
+                "unknown method: {}",
+                request.method
             ))),
         };
 
@@ -73,11 +71,14 @@ impl RpcHandler {
         hash_arr.copy_from_slice(&req.hash);
         let hash = hyphen_crypto::Hash256::from_bytes(hash_arr);
 
-        let block = self.chain.store().get_block_by_hash(&hash)
+        let block = self
+            .chain
+            .store()
+            .get_block_by_hash(&hash)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
-        let header_data = bincode::serialize(&block.header)
-            .map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let header_data =
+            bincode::serialize(&block.header).map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
         if let Ok(coinbase_blob) = self.chain.store().get_coinbase(block.header.height) {
@@ -96,11 +97,14 @@ impl RpcHandler {
 
     fn handle_get_block_by_height(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = GetBlockByHeightRequest::decode(payload)?;
-        let block = self.chain.store().get_block_by_height(req.height)
+        let block = self
+            .chain
+            .store()
+            .get_block_by_height(req.height)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
-        let header_data = bincode::serialize(&block.header)
-            .map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let header_data =
+            bincode::serialize(&block.header).map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
         // Append coinbase transaction if one was generated for this block
@@ -119,9 +123,14 @@ impl RpcHandler {
     }
 
     fn handle_get_chain_info(&self) -> Result<Vec<u8>, HandlerError> {
-        let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let tip = self
+            .chain
+            .tip()
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
         let next_height = tip.height + 1;
-        let epoch_seed = self.chain.epoch_seed_for_height(next_height)
+        let epoch_seed = self
+            .chain
+            .epoch_seed_for_height(next_height)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
         let resp = ChainInfoResponse {
             height: tip.height,
@@ -138,7 +147,9 @@ impl RpcHandler {
     fn handle_get_tx_location(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = GetTxLocationRequest::decode(payload)?;
         if req.tx_hash.len() != 32 {
-            return Err(HandlerError::InvalidRequest("tx_hash must be 32 bytes".into()));
+            return Err(HandlerError::InvalidRequest(
+                "tx_hash must be 32 bytes".into(),
+            ));
         }
         let mut hash_arr = [0u8; 32];
         hash_arr.copy_from_slice(&req.tx_hash);
@@ -146,10 +157,18 @@ impl RpcHandler {
 
         match self.chain.store().get_tx_location(&tx_hash) {
             Ok((block_hash, idx)) => {
+                let block_height = self
+                    .chain
+                    .store()
+                    .get_block_by_hash(&block_hash)
+                    .map_err(|error| HandlerError::Internal(error.to_string()))?
+                    .header
+                    .height;
                 let resp = TxLocationResponse {
                     block_hash: block_hash.to_vec(),
                     tx_index: idx,
                     found: true,
+                    block_height,
                 };
                 Ok(resp.encode_to_vec())
             }
@@ -158,6 +177,7 @@ impl RpcHandler {
                     block_hash: vec![],
                     tx_index: 0,
                     found: false,
+                    block_height: 0,
                 };
                 Ok(resp.encode_to_vec())
             }
@@ -171,7 +191,10 @@ impl RpcHandler {
 
         // ── Pre-validation: check key images against blockchain nullifiers ──
         for inp in &tx.inputs {
-            if self.chain.nullifiers.contains(&inp.key_image)
+            if self
+                .chain
+                .nullifiers
+                .contains(&inp.key_image)
                 .unwrap_or(false)
             {
                 let resp = SubmitTransactionResponse {
@@ -184,10 +207,15 @@ impl RpcHandler {
         }
 
         // ── Full transaction validation (balance, CLSAG, TERA, MD-VRE) ──
-        let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let tip = self
+            .chain
+            .tip()
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
         let next_height = tip.height + 1;
 
-        let valid_epoch_contexts = self.chain.build_valid_epoch_contexts(next_height)
+        let valid_epoch_contexts = self
+            .chain
+            .build_valid_epoch_contexts(next_height)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let total_outputs = {
@@ -256,13 +284,17 @@ impl RpcHandler {
     fn handle_get_random_outputs(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = GetRandomOutputsRequest::decode(payload)?;
         let count = (req.count as usize).min(128);
-        let tip = self.chain.tip().map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let tip = self
+            .chain
+            .tip()
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
         let ceiling = if req.below_index > 0 {
             req.below_index.min(tip.total_outputs)
         } else {
             tip.total_outputs
         };
-        let random_outs = self.chain
+        let random_outs = self
+            .chain
             .store()
             .get_random_outputs(count, ceiling)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
@@ -282,7 +314,9 @@ impl RpcHandler {
     fn handle_get_output_info(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = GetOutputInfoRequest::decode(payload)?;
         if req.global_indices.len() > 256 {
-            return Err(HandlerError::InvalidRequest("too many indices (max 256)".into()));
+            return Err(HandlerError::InvalidRequest(
+                "too many indices (max 256)".into(),
+            ));
         }
         let store = self.chain.store();
         let mut outputs = Vec::with_capacity(req.global_indices.len());

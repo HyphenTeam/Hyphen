@@ -10,6 +10,16 @@ Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $repoRoot
 
+$externalProjects = @(
+    'HyphenPool\Cargo.toml',
+    'HyphenMiner\Cargo.toml'
+)
+foreach ($manifest in $externalProjects) {
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw "Compatibility smoke requires the independent project manifest '$manifest'. Check out HyphenPool and HyphenMiner at the repository root; they are not part of the Hyphen workspace or main CI."
+    }
+}
+
 function Invoke-Cargo {
     param([string[]]$CargoArgs)
 

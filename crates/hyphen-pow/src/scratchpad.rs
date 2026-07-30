@@ -68,10 +68,7 @@ impl Scratchpad {
     }
 
     pub fn finalize(&self) -> Hash256 {
-        let full = blake3::keyed_hash(
-            self.state[..32].try_into().unwrap(),
-            &self.data,
-        );
+        let full = blake3::keyed_hash(self.state[..32].try_into().unwrap(), &self.data);
         Hash256::from_bytes(*full.as_bytes())
     }
 }

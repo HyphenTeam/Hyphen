@@ -395,8 +395,7 @@ fn handle_behaviour_event(
                         if let Ok(block) = hyphen_core::Block::deserialise_limited(
                             &block_bytes,
                             blockchain.cfg.max_block_size,
-                        )
-                        {
+                        ) {
                             info!(
                                 "Received block {} from {}",
                                 block.header.height, propagation_source
@@ -602,10 +601,9 @@ fn handle_sync_response(
             info!("Sync from {peer}: accepted {accepted}/{count} blocks");
         }
         SyncResponse::Block(data) => {
-            if let Ok(block) = hyphen_core::Block::deserialise_limited(
-                &data,
-                blockchain.cfg.max_block_size,
-            ) {
+            if let Ok(block) =
+                hyphen_core::Block::deserialise_limited(&data, blockchain.cfg.max_block_size)
+            {
                 if let Err(e) = blockchain.accept_block(&block) {
                     warn!("Synced block rejected: {e}");
                 }
@@ -895,13 +893,14 @@ fn build_template(
     let difficulty = blockchain.next_difficulty()?;
     let epoch_seed = blockchain.epoch_seed_for_height(next_height)?;
 
-    let tx_blobs: Vec<Vec<u8>> = {
+    let mut tx_blobs: Vec<Vec<u8>> = {
         let pool = mempool.read();
         pool.get_block_candidates(cfg.max_block_size)
             .iter()
             .filter_map(|tx| bincode::serialize(tx).ok())
             .collect()
     };
+    tx_blobs.sort_unstable_by_key(|transaction| hyphen_crypto::blake3_hash(transaction));
 
     let commitment_root = blockchain.commitment_tree.read().root();
     let nullifier_root = blockchain.nullifiers.root_hash().unwrap_or_default();
@@ -979,19 +978,17 @@ fn handle_block_submission(
     blockchain: &Arc<Blockchain>,
     mempool: &Arc<RwLock<Mempool>>,
 ) -> SubmitBlockResult {
-    let block = match hyphen_core::Block::deserialise_limited(
-        block_data,
-        blockchain.cfg.max_block_size,
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            return SubmitBlockResult {
-                accepted: false,
-                error: format!("deserialise: {e}"),
-                block_hash: Vec::new(),
-            };
-        }
-    };
+    let block =
+        match hyphen_core::Block::deserialise_limited(block_data, blockchain.cfg.max_block_size) {
+            Ok(b) => b,
+            Err(e) => {
+                return SubmitBlockResult {
+                    accepted: false,
+                    error: format!("deserialise: {e}"),
+                    block_hash: Vec::new(),
+                };
+            }
+        };
 
     let block_hash = block.hash();
     info!(
@@ -1031,66 +1028,47 @@ fn handle_block_submission(
 fn handle_job_declaration(
     req: &DeclareJobRequest,
     blockchain: &Arc<Blockchain>,
-    _mempool: &Arc<RwLock<Mempool>>,
+    mempool: &Arc<RwLock<Mempool>>,
     cfg: &ChainConfig,
 ) -> DeclareJobResult {
-    for (i, tx_blob) in req.custom_transactions.iter().enumerate() {
-        if let Err(e) = hyphen_tx::Transaction::deserialise_limited(tx_blob) {
-            return DeclareJobResult {
-                accepted: false,
-                job_id: Vec::new(),
-                error: format!("tx[{i}] decode: {e}"),
-                updated_header: Vec::new(),
-            };
-        }
+    let reject = |error: String| DeclareJobResult {
+        accepted: false,
+        job_id: Vec::new(),
+        error,
+        updated_header: Vec::new(),
+    };
+    if req.coinbase_script.len() > 4 * 1024 {
+        return reject("coinbase script exceeds 4 KiB".into());
+    }
+    if req.custom_transactions.len() > 10_000 {
+        return reject("transaction count exceeds declaration limit".into());
+    }
+    let base_template = match build_template(blockchain, mempool, cfg) {
+        Ok(template) => template,
+        Err(error) => return reject(format!("base template: {error}")),
+    };
+    if req.template_id != base_template.template_id {
+        return reject("stale or unknown base template id".into());
+    }
+    if cfg.feature_enabled(hyphen_core::FEATURE_CANONICAL_TX_ORDER)
+        && req.custom_transactions.windows(2).any(|pair| {
+            hyphen_crypto::blake3_hash(&pair[0]) >= hyphen_crypto::blake3_hash(&pair[1])
+        })
+    {
+        return reject("transactions must be in strict canonical hash order".into());
     }
 
-    let tip = match blockchain.tip() {
-        Ok(t) => t,
-        Err(e) => {
-            return DeclareJobResult {
-                accepted: false,
-                job_id: Vec::new(),
-                error: format!("tip: {e}"),
-                updated_header: Vec::new(),
-            };
-        }
+    let mut header: hyphen_core::BlockHeader =
+        match bincode::deserialize(&base_template.header_data) {
+            Ok(header) => header,
+            Err(error) => return reject(format!("base header: {error}")),
+        };
+    let total_fee = match blockchain
+        .validate_transaction_blobs_for_height(&req.custom_transactions, header.height)
+    {
+        Ok(total_fee) => total_fee,
+        Err(error) => return reject(format!("candidate validation: {error}")),
     };
-
-    let next_height = tip.height + 1;
-    let difficulty = blockchain
-        .next_difficulty()
-        .unwrap_or(cfg.genesis_difficulty);
-    let epoch_seed = blockchain
-        .epoch_seed_for_height(next_height)
-        .unwrap_or(hyphen_crypto::Hash256::ZERO);
-
-    let commitment_root = blockchain.commitment_tree.read().root();
-    let nullifier_root = blockchain.nullifiers.root_hash().unwrap_or_default();
-
-    let mut header = hyphen_core::BlockHeader {
-        version: hyphen_core::FROZEN_BLOCK_VERSION,
-        height: next_height,
-        timestamp: ntp_adjusted_timestamp_ms(),
-        prev_hash: tip.hash,
-        tx_root: hyphen_crypto::Hash256::ZERO,
-        commitment_root,
-        nullifier_root,
-        state_root: hyphen_crypto::Hash256::ZERO,
-        receipt_root: hyphen_crypto::Hash256::ZERO,
-        uncle_root: hyphen_crypto::Hash256::ZERO,
-        pow_commitment: hyphen_crypto::blake3_hash(epoch_seed.as_bytes()),
-        epoch_seed,
-        difficulty,
-        nonce: 0,
-        extra_nonce: [0u8; 32],
-        miner_pubkey: [0u8; 32],
-        total_fee: 0,
-        reward: 0,
-        view_tag: 0,
-        block_size: 0,
-    };
-
     let custom_block = hyphen_core::Block {
         header: header.clone(),
         transactions: req.custom_transactions.clone(),
@@ -1098,14 +1076,19 @@ fn handle_job_declaration(
         block_authorization: Vec::new(),
     };
     header.tx_root = custom_block.compute_tx_root();
+    header.total_fee = total_fee;
 
     let job_id = hyphen_crypto::blake3_hash_many(&[
-        &next_height.to_le_bytes(),
+        b"Hyphen/TP/DeclaredJob/v1",
+        &req.template_id,
         &req.coinbase_script,
         header.tx_root.as_bytes(),
+        &total_fee.to_le_bytes(),
     ]);
-
-    let header_data = bincode::serialize(&header).unwrap_or_default();
+    let header_data = match bincode::serialize(&header) {
+        Ok(data) => data,
+        Err(error) => return reject(format!("header serialisation: {error}")),
+    };
 
     DeclareJobResult {
         accepted: true,

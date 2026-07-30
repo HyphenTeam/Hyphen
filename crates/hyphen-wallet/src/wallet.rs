@@ -177,6 +177,13 @@ impl Wallet {
         let value = stealth::decrypt_amount(encrypted_amount, &ss);
 
         let blinding_scalar = derive_commitment_blinding(&ss);
+        let expected_commitment =
+            hyphen_crypto::pedersen::Commitment::create(value, blinding_scalar);
+        if expected_commitment.as_bytes() != &commitment_bytes {
+            return Err(WalletError::Stealth(
+                "decrypted amount does not open the output commitment".into(),
+            ));
+        }
 
         let note = SerializableOwnedNote {
             commitment: commitment_bytes,
@@ -368,6 +375,28 @@ mod tests {
         );
         assert_eq!(restored.scan_height(), 0);
         assert_eq!(restored.balance(), 0);
+    }
+
+    #[test]
+    fn scanner_rejects_amount_that_does_not_open_commitment() {
+        let mut wallet = Wallet::from_seed([0x31; 32]);
+        let address = wallet.stealth_address();
+        let output_index = 0;
+        let (ephemeral, one_time, shared) =
+            stealth::derive_one_time_key(&address, output_index).unwrap();
+        let encrypted = stealth::encrypt_amount(42, &shared);
+
+        let result = wallet.try_own_output(
+            [0x7f; 32],
+            &one_time.compress().to_bytes(),
+            &ephemeral.0,
+            &encrypted,
+            1,
+            1,
+            output_index,
+        );
+        assert!(matches!(result, Err(WalletError::Stealth(_))));
+        assert_eq!(wallet.balance(), 0);
     }
 
     #[test]

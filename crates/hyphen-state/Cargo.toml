@@ -19,3 +19,6 @@ parking_lot.workspace   = true
 log.workspace           = true
 hex.workspace           = true
 rand.workspace          = true
+
+[dev-dependencies]
+serde_json.workspace = true

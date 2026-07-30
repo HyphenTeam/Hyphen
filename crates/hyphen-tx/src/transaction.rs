@@ -1,3 +1,4 @@
+use bincode::Options;
 use hyphen_crypto::clsag::ClsagSignature;
 use hyphen_crypto::pedersen::Commitment;
 use hyphen_crypto::Hash256;
@@ -139,18 +140,14 @@ impl Transaction {
 
         let fee_point = Scalar::from(self.fee) * *G_VALUE;
 
-        let sum_pseudo: Option<curve25519_dalek::ristretto::RistrettoPoint> = self
-            .inputs
-            .iter()
-            .try_fold(
+        let sum_pseudo: Option<curve25519_dalek::ristretto::RistrettoPoint> =
+            self.inputs.iter().try_fold(
                 curve25519_dalek::ristretto::RistrettoPoint::default(),
                 |acc, inp| inp.pseudo_output.to_point().ok().map(|p| acc + p),
             );
 
-        let sum_out: Option<curve25519_dalek::ristretto::RistrettoPoint> = self
-            .outputs
-            .iter()
-            .try_fold(
+        let sum_out: Option<curve25519_dalek::ristretto::RistrettoPoint> =
+            self.outputs.iter().try_fold(
                 curve25519_dalek::ristretto::RistrettoPoint::default(),
                 |acc, out| out.commitment.to_point().ok().map(|p| acc + p),
             );
@@ -190,4 +187,3 @@ mod adversarial_decode_tests {
         }
     }
 }
-use bincode::Options;

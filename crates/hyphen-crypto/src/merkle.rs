@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::hash::{blake3_hash_many, Hash256};
+use serde::{Deserialize, Serialize};
 
 pub const MERKLE_DEPTH: usize = 32;
 
@@ -163,7 +163,10 @@ mod tests {
         }
         for (i, leaf) in leaves.iter().enumerate() {
             let proof = tree.prove(i as u64).unwrap();
-            assert!(proof.verify(leaf, &tree.root()), "proof failed for leaf {i}");
+            assert!(
+                proof.verify(leaf, &tree.root()),
+                "proof failed for leaf {i}"
+            );
         }
     }
 }

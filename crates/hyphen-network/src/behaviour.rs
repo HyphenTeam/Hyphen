@@ -9,8 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use crate::protocol::{
-    NetworkMessage, SyncRequest, SyncResponse, MAX_GOSSIP_BLOCK_SIZE,
-    MAX_GOSSIP_ENVELOPE_SIZE, MAX_GOSSIP_TRANSACTION_SIZE,
+    NetworkMessage, SyncRequest, SyncResponse, MAX_GOSSIP_BLOCK_SIZE, MAX_GOSSIP_ENVELOPE_SIZE,
+    MAX_GOSSIP_TRANSACTION_SIZE,
 };
 
 #[derive(Debug, Clone)]

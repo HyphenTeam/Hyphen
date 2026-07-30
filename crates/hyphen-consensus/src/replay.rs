@@ -198,7 +198,7 @@ mod tests {
     fn published_chain_identity_vectors_match_the_implementation() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../test-vectors/chain-identity-v1.json"
+            "/../../test-vectors/chain-identity-v2.json"
         );
         let bytes = std::fs::read(path).expect("read published chain identity vectors");
         let vectors: Vec<ChainIdentityVector> =
@@ -207,7 +207,7 @@ mod tests {
 
         for vector in vectors {
             let cfg = match vector.profile.as_str() {
-                "devnet-v1" => ChainConfig::devnet(),
+                "devnet-v2" => ChainConfig::devnet(),
                 "testnet-research" => ChainConfig::testnet(),
                 "mainnet-research" => ChainConfig::mainnet(),
                 other => panic!("unknown chain identity vector profile {other}"),

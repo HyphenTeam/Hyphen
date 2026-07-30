@@ -29,12 +29,21 @@ impl ContractState {
         k
     }
 
-    pub fn get(&self, contract: &ContractAddress, key: &[u8]) -> Result<Option<Vec<u8>>, StateError> {
+    pub fn get(
+        &self,
+        contract: &ContractAddress,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StateError> {
         let sk = Self::storage_key(contract, key);
         Ok(self.tree.get(&sk)?.map(|iv| iv.to_vec()))
-        }
+    }
 
-    pub fn set(&self, contract: &ContractAddress, key: &[u8], value: &[u8]) -> Result<(), StateError> {
+    pub fn set(
+        &self,
+        contract: &ContractAddress,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StateError> {
         let sk = Self::storage_key(contract, key);
         self.tree.insert(&sk, value)?;
         Ok(())
@@ -60,7 +69,11 @@ impl OverlayState {
         }
     }
 
-    pub fn get(&self, contract: &ContractAddress, key: &[u8]) -> Result<Option<Vec<u8>>, StateError> {
+    pub fn get(
+        &self,
+        contract: &ContractAddress,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StateError> {
         let sk = ContractState::storage_key(contract, key);
         if let Some(entry) = self.writes.get(&sk) {
             return Ok(entry.clone());

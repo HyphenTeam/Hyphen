@@ -33,11 +33,19 @@ pub struct HyphenAddress {
 
 impl HyphenAddress {
     pub fn new_mainnet(view_public: [u8; 32], spend_public: [u8; 32]) -> Self {
-        Self { version: VERSION_MAINNET, view_public, spend_public }
+        Self {
+            version: VERSION_MAINNET,
+            view_public,
+            spend_public,
+        }
     }
 
     pub fn new_testnet(view_public: [u8; 32], spend_public: [u8; 32]) -> Self {
-        Self { version: VERSION_TESTNET, view_public, spend_public }
+        Self {
+            version: VERSION_TESTNET,
+            view_public,
+            spend_public,
+        }
     }
 
     fn checksum(version: u8, view: &[u8; 32], spend: &[u8; 32]) -> [u8; CHECKSUM_LEN] {
@@ -63,7 +71,9 @@ impl HyphenAddress {
 
     pub fn decode(s: &str) -> Result<Self, AddressError> {
         let body = s.strip_prefix(PREFIX).ok_or(AddressError::MissingPrefix)?;
-        let payload = bs58::decode(body).into_vec().map_err(|_| AddressError::Base58Decode)?;
+        let payload = bs58::decode(body)
+            .into_vec()
+            .map_err(|_| AddressError::Base58Decode)?;
         if payload.len() != PAYLOAD_LEN {
             return Err(AddressError::InvalidLength);
         }
@@ -79,11 +89,19 @@ impl HyphenAddress {
         if payload[65..69] != expected_cs {
             return Err(AddressError::ChecksumMismatch);
         }
-        Ok(Self { version, view_public: view, spend_public: spend })
+        Ok(Self {
+            version,
+            view_public: view,
+            spend_public: spend,
+        })
     }
 
-    pub fn is_mainnet(&self) -> bool { self.version == VERSION_MAINNET }
-    pub fn is_testnet(&self) -> bool { self.version == VERSION_TESTNET }
+    pub fn is_mainnet(&self) -> bool {
+        self.version == VERSION_MAINNET
+    }
+    pub fn is_testnet(&self) -> bool {
+        self.version == VERSION_TESTNET
+    }
 }
 
 impl std::fmt::Debug for HyphenAddress {

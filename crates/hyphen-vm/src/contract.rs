@@ -12,12 +12,7 @@ pub struct Contract {
 }
 
 impl Contract {
-    pub fn new(
-        deployer: [u8; 32],
-        code: Vec<u8>,
-        nonce: u64,
-        height: u64,
-    ) -> Self {
+    pub fn new(deployer: [u8; 32], code: Vec<u8>, nonce: u64, height: u64) -> Self {
         let address = ContractAddress::from_deployer_and_nonce(&deployer, nonce);
         let code_hash = hyphen_crypto::blake3_hash(&code);
         Self {
