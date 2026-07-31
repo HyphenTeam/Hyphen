@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hyphen_crypto::Hash256;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const RECORD_MAGIC: &[u8; 4] = b"HWSR";
@@ -43,7 +44,7 @@ const D_STATE_ROOT: &[u8] = b"HYPHEN_STATE_V1";
 ///
 /// Shielded notes are intentionally absent: expiring them safely requires a
 /// zero-knowledge relation that binds ownership and nullifier non-membership.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum StateClass {
     PublicAccount = 1,
@@ -51,7 +52,7 @@ pub enum StateClass {
     AssetMetadata = 3,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum StateStatus {
     Live = 1,
@@ -60,7 +61,7 @@ pub enum StateStatus {
     Consumed = 4,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateRecord {
     pub chain_id: Hash256,
     pub class: StateClass,
@@ -97,7 +98,7 @@ impl StateRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatestEntry {
     pub version: u64,
     pub status: StateStatus,
@@ -215,7 +216,7 @@ pub trait RestorePolicy {
     ) -> bool;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateRoots {
     pub live: Hash256,
     pub latest: Hash256,
@@ -346,7 +347,7 @@ pub enum WesError {
 
 /// Pure H-WES transition model. It does not persist archived record bodies;
 /// only their MMR hashes remain in validator state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReferenceExpiringState {
     chain_id: Hash256,
     live: BTreeMap<Hash256, StateRecord>,
@@ -368,6 +369,13 @@ impl ReferenceExpiringState {
             nullifiers: BTreeSet::new(),
             availability_root,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.live.is_empty()
+            && self.latest.is_empty()
+            && self.archive.leaves.is_empty()
+            && self.nullifiers.is_empty()
     }
 
     pub fn insert_initial(&mut self, record: StateRecord, at_height: u64) -> Result<(), WesError> {
@@ -828,7 +836,7 @@ pub fn verify_lifecycle_receipt(
     shape_is_valid && verify_mmr_proof(event.hash(), proof, archive_root)
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ArchiveMmr {
     leaves: Vec<Hash256>,
 }

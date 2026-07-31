@@ -4,15 +4,19 @@ pub mod branch_store;
 pub mod chain_state;
 pub mod commitment_tree;
 pub mod compress;
+pub mod compute_state;
 pub mod expiring_state;
 pub mod nullifier_set;
 pub mod persistent_smt;
 pub mod proof_store;
 pub mod reorg_journal;
 pub mod store;
+pub mod vm_state;
+pub mod wes_state;
 
 pub use atomic::{
-    commit_block_update, revert_block_update, AtomicBlockUpdate, AtomicStateError, IndexedOutput,
+    commit_block_update, consensus_state_root, revert_block_update, AtomicBlockUpdate,
+    AtomicStateError, AtomicStateStores, IndexedOutput,
 };
 pub use branch_archive::{BranchArchiveError, BranchBlockArchive};
 pub use branch_store::{
@@ -21,6 +25,7 @@ pub use branch_store::{
 pub use chain_state::ChainState;
 pub use commitment_tree::PersistentCommitmentTree;
 pub use compress::CompressedTree;
+pub use compute_state::{ComputeStateStore, COMPUTE_STATE_KEY};
 pub use expiring_state::{
     verify_consume_witness, verify_lifecycle_receipt, verify_restore_witness, AuthorizationAction,
     AuthorizationRequest, ConsumeWitness, LifecycleEvent, LifecycleReceipt, LifecycleTransition,
@@ -42,3 +47,8 @@ pub use reorg_journal::{
     MAX_REJECTION_REASON_BYTES, MAX_REORG_PATH_BLOCKS,
 };
 pub use store::BlockStore;
+pub use vm_state::{VmStateStore, VM_STATE_KEY};
+pub use wes_state::{
+    owner_policy as wes_owner_policy, SignedStateCreate, WesStateStore, WesTransaction,
+    WesTransactionError, WES_STATE_KEY,
+};

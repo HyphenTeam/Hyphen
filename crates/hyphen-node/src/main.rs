@@ -409,6 +409,124 @@ fn handle_behaviour_event(
                         }
                     }
                     hyphen_network::NetworkMessage::NewTransaction(tx_bytes) => {
+                        match hyphen_compute::ComputeTransaction::decode(&tx_bytes) {
+                            Ok(Some(_)) => {
+                                let next_height = match blockchain
+                                    .tip()
+                                    .ok()
+                                    .and_then(|tip| tip.height.checked_add(1))
+                                {
+                                    Some(height) => height,
+                                    None => return,
+                                };
+                                if let Err(error) = blockchain
+                                    .validate_transaction_blobs_for_height(
+                                        std::slice::from_ref(&tx_bytes),
+                                        next_height,
+                                    )
+                                {
+                                    warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P AetherCompute transaction rejected from {}: {error}",
+                                        propagation_source
+                                    );
+                                    return;
+                                }
+                                match mempool.write().insert_protocol(
+                                    tx_bytes,
+                                    hyphen_mempool::ValidatedProtocol::new(),
+                                ) {
+                                    Ok(hash) => info!(
+                                        target: "hyphen::metrics",
+                                        "P2P AetherCompute transaction {} accepted from {}",
+                                        hash,
+                                        propagation_source
+                                    ),
+                                    Err(error) => warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P AetherCompute transaction mempool-rejected from {}: {error}",
+                                        propagation_source
+                                    ),
+                                }
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                warn!(
+                                    target: "hyphen::metrics",
+                                    "P2P AetherCompute decode failed from {}: {error}",
+                                    propagation_source
+                                );
+                                return;
+                            }
+                        }
+                        match hyphen_vm::VmTransaction::decode(&tx_bytes) {
+                            Ok(Some(_)) => {
+                                let next_height = match blockchain
+                                    .tip()
+                                    .ok()
+                                    .and_then(|tip| tip.height.checked_add(1))
+                                {
+                                    Some(height) => height,
+                                    None => return,
+                                };
+                                if let Err(error) = blockchain
+                                    .validate_transaction_blobs_for_height(
+                                        std::slice::from_ref(&tx_bytes),
+                                        next_height,
+                                    )
+                                {
+                                    warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P WASM transaction rejected from {}: {error}",
+                                        propagation_source
+                                    );
+                                    return;
+                                }
+                                let _ = mempool.write().insert_protocol(
+                                    tx_bytes,
+                                    hyphen_mempool::ValidatedProtocol::new(),
+                                );
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                warn!(
+                                    target: "hyphen::metrics",
+                                    "P2P WASM decode failed from {}: {error}",
+                                    propagation_source
+                                );
+                                return;
+                            }
+                        }
+                        match hyphen_state::WesTransaction::decode(&tx_bytes) {
+                            Ok(Some(_)) => {
+                                let next_height = match blockchain
+                                    .tip()
+                                    .ok()
+                                    .and_then(|tip| tip.height.checked_add(1))
+                                {
+                                    Some(height) => height,
+                                    None => return,
+                                };
+                                if blockchain
+                                    .validate_transaction_blobs_for_height(
+                                        std::slice::from_ref(&tx_bytes),
+                                        next_height,
+                                    )
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let _ = mempool.write().insert_protocol(
+                                    tx_bytes,
+                                    hyphen_mempool::ValidatedProtocol::new(),
+                                );
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(_) => return,
+                        }
                         let tx = match hyphen_tx::Transaction::deserialise_limited(&tx_bytes) {
                             Ok(t) => t,
                             Err(e) => {
@@ -989,15 +1107,13 @@ fn build_template(
 
     let mut tx_blobs: Vec<Vec<u8>> = {
         let pool = mempool.read();
-        pool.get_block_candidates(cfg.max_block_size)
-            .iter()
-            .filter_map(|tx| hyphen_codec::serialize(tx).ok())
-            .collect()
+        pool.get_block_candidate_blobs(cfg.max_block_size)
     };
     tx_blobs.sort_unstable_by_key(|transaction| hyphen_crypto::blake3_hash(transaction));
 
     let commitment_root = blockchain.commitment_tree.read().root();
     let nullifier_root = blockchain.nullifiers.root_hash().unwrap_or_default();
+    let state_root = blockchain.state_root_after(&tx_blobs, next_height)?;
 
     let reward = hyphen_economics::emission::block_reward(next_height, cfg);
 
@@ -1025,7 +1141,7 @@ fn build_template(
         tx_root,
         commitment_root,
         nullifier_root,
-        state_root: hyphen_crypto::Hash256::ZERO,
+        state_root,
         receipt_root: hyphen_crypto::Hash256::ZERO,
         uncle_root: hyphen_crypto::Hash256::ZERO,
         pow_commitment: hyphen_crypto::blake3_hash(epoch_seed.as_bytes()),
@@ -1101,6 +1217,26 @@ fn handle_block_submission(
                 .flat_map(|tx| tx.inputs.iter().map(|i| i.key_image).collect::<Vec<_>>())
                 .collect();
             mempool.write().purge_confirmed(&key_images);
+            let protocol_hashes = block
+                .transactions
+                .iter()
+                .filter_map(|blob| {
+                    let compute = hyphen_compute::ComputeTransaction::decode(blob)
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    let wasm = hyphen_vm::VmTransaction::decode(blob)
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    let wes = hyphen_state::WesTransaction::decode(blob)
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    (compute || wasm || wes).then(|| hyphen_crypto::blake3_hash(blob))
+                })
+                .collect::<Vec<_>>();
+            mempool.write().purge_confirmed_protocol(&protocol_hashes);
 
             SubmitBlockResult {
                 accepted: true,
@@ -1171,6 +1307,10 @@ fn handle_job_declaration(
     };
     header.tx_root = custom_block.compute_tx_root();
     header.total_fee = total_fee;
+    header.state_root = match blockchain.state_root_after(&req.custom_transactions, header.height) {
+        Ok(root) => root,
+        Err(error) => return reject(format!("consensus state transition: {error}")),
+    };
 
     let job_id = hyphen_crypto::blake3_hash_many(&[
         b"Hyphen/TP/DeclaredJob/v1",

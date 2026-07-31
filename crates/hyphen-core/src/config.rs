@@ -29,8 +29,17 @@ pub const FEATURE_TERA: u32 = 1 << 1;
 pub const FEATURE_VRE: u32 = 1 << 2;
 pub const FEATURE_MSE: u32 = 1 << 3;
 pub const FEATURE_CANONICAL_TX_ORDER: u32 = 1 << 4;
-pub const RESEARCH_CONSENSUS_FEATURES: u32 =
-    FEATURE_UNCLES | FEATURE_TERA | FEATURE_VRE | FEATURE_MSE | FEATURE_CANONICAL_TX_ORDER;
+pub const FEATURE_USEFUL_WORK: u32 = 1 << 5;
+pub const FEATURE_WASM: u32 = 1 << 6;
+pub const FEATURE_H_WES: u32 = 1 << 7;
+pub const RESEARCH_CONSENSUS_FEATURES: u32 = FEATURE_UNCLES
+    | FEATURE_TERA
+    | FEATURE_VRE
+    | FEATURE_MSE
+    | FEATURE_CANONICAL_TX_ORDER
+    | FEATURE_USEFUL_WORK
+    | FEATURE_WASM
+    | FEATURE_H_WES;
 /// Version 2 replaces node-local random coinbase construction with a
 /// deterministic, block-bound state transition.
 pub const STATE_TRANSITION_VERSION: u16 = 2;

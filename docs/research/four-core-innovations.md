@@ -1,3 +1,223 @@
+# Hyphen Research Mechanisms: Proofs, Prior Work and Implementation Charter
+
+Status: pre-specification, 2026-07-31.
+
+This is not a deployed-feature statement. None of the four mechanisms is part
+of current `hyphen-devnet-v2` consensus. Activation requires a new research
+profile, chain identity, specification version and vectors. README and white
+papers must not call a mechanism solved, proved or production-ready before its
+proof obligations, attack tests and independent review are complete.
+
+## 1. Current foundation and prerequisite gaps
+
+Hyphen is a linear-tip PoW chain with shielded UTXOs, a persistent commitment
+tree and nullifier set. State storage provides atomic multi-tree block commit,
+single-tip undo logs, immutable hash-checked competing-branch bodies and
+strictly-heavier-work reorg plans. The real `Blockchain` backend recomputes
+work, holds an exclusive transition lock, detaches to the common ancestor and
+revalidates every attach block against fork state through the authoritative
+acceptance path. It restores the old branch after failure and resumes a durable
+journal after reopen.
+
+Live P2P competing-branch intake, automatic fork choice, reconciliation of
+mempool/wallet/explorer/pool, mesh fusion, BFT finality and complete selective
+audit proofs remain absent. The research profile atomically commits the signed
+WASM ledger and H-WES public creation/bounded expiry into the unified state root
+and reorg path; shielded recovery and consume remain disabled.
+
+The required order is reproducible encoding and atomic transitions; competing
+branches, fork choice and rollback; witness-carrying state; parallel production
+and fusion; fast ordering over an explicit Sybil/network model. Audit circuits
+may proceed in parallel but must bind final transaction encoding and state roots.
+The relevant primitives are in `hyphen-state` atomic/branch/journal modules and
+`hyphen-consensus::chain`. Existing tests cover successful heavier switches,
+interrupted detach/restore, invalid attach recovery, forged-work rejection and
+database-reopen continuation. Network automation, subsystem reconciliation,
+OS-level kill tests and formal state-machine checks are still release blockers.
+
+## 2. Common notation and assumptions
+
+| Symbol | Definition |
+| --- | --- |
+| `lambda` | security parameter, target at least 128 bits |
+| `H_ds(tag, parts)` | domain-separated 256-bit BLAKE3; collision and second-preimage resistance assumed |
+| `Sig` | digital signature, assumed EUF-CMA secure |
+| `t`, `e` | transition height/logical slot and expiry/fusion epoch |
+| `k`, `n`, `f` | lane count, committee seat count and Byzantine-seat bound; BFT requires `n>=3f+1` |
+| `Delta` | honest-node delay bound after GST |
+| `L_t`, `V_t`, `N_t`, `A_t`, `D_t` | live, latest, nullifier, archive and availability commitments |
+| `S_t` | `H_ds("HYPHEN_STATE_V1", L_t || V_t || N_t || A_t || D_t)` |
+| `F_e` | prior anchor and fusion frontier/vector commitment |
+| `QC` | certificate of at least `2f+1` committee signatures |
+| `G_v`, `G_r` | Ristretto value generator and standard blinding/output-key basepoint |
+| `C(v,r)` | Pedersen commitment `v*G_v + r*G_r` |
+
+Consensus objects require canonical, language-neutral, bounded encoding. Rust
+uses the repository-owned `hyphen-codec` v1. Its fixed-width format, limits and
+schema-relative canonicality are documented in the codec README. It remains
+unaudited; cross-language implementations need fixed vectors, not just Rust
+round trips.
+
+## 3. Candidate contribution one: H-WES
+
+Hyphen Witness-Carried Expiring State is a working name, not a novelty claim.
+Nullifiers/key images, consensus and issuance limits, state referenced by live
+contracts or pending transactions, and commitments needed to prove freshness
+cannot simply be forgotten. MMR inclusion alone proves that a record existed,
+not that it is the latest or remains unspent.
+
+For versioned record
+
+```text
+R = (chain_id, class, x, version, value_hash, owner_policy,
+     created_at, lease_end, status)
+```
+
+`V_t[x]` commits the latest version/status/archive index/value/head hashes.
+Expiry appends an authenticated historical record, removes the live entry and
+updates latest status using a bounded authenticated lease queue. Recovery
+carries archive and latest proofs, the value blob, owner proof, nullifier proof
+where applicable and an availability proof. The first profile uses hash-based
+SMT/MMR proofs rather than prematurely adopting an unaudited pairing scheme.
+
+H-WES-S1 reduces stale-version resurrection to latest-tree soundness and hash
+collision resistance. H-WES-S2 follows from monotonic nullifiers checked and
+inserted before commit. H-WES-L1 is conditional: recovery requires at least one
+honest provider retaining the body and fresh witness; no commitment restores
+data deleted by everyone.
+
+The reference fixes 159-byte records, deterministic expiry order, MMR/latest
+proofs, terminal recovery/consume semantics, authorization context and negative
+tests. Persistent namespaced SMTs, authenticated blob/chunk storage, P2P proof
+serving and DA certificate verification exist. The research-profile chain now
+persists all five roots and public creation/bounded expiry in the same atomic
+block/reorg transition. Shielded owner/nullifier recovery and consume, provider
+challenge/repair, long-term retention evidence and independent review remain
+closed. The complete lower bounds and EAOM model are in
+[`h-wes-theorem-and-object-model.md`](h-wes-theorem-and-object-model.md).
+
+## 4. H-BFM fusion and visible-domain fairness
+
+Hyphen Braided Fusion Mesh is also a working name and cannot claim novelty for
+block DAGs or GHOSTDAG blue-set ordering. The candidate treats parallel blocks
+as availability/execution batches: deterministic lanes reference the previous
+fusion checkpoint and other lane frontiers; consensus fixes one frontier
+vector; the reachable available closure is canonically topologically ordered;
+conflicts yield one deterministic success and later failure receipts; reward
+rules must not pay spam or duplicate payloads.
+
+For DAG `G_e=(B_e,E_e)`, order by Kahn's algorithm and choose the minimum
+
+```text
+rank(B) = (logical_round(B), lane(B), H(canonical_block(B)))
+```
+
+among zero-indegree nodes. H-BFM-S1 follows by induction: equal DAG, encoding
+and pre-state yield one sequence and state. H-BFM-S2 includes timely valid
+certified blocks in the reachable closure but does not promise success for
+conflicts or inclusion for delayed, withheld, uncertified or lane-invalid
+blocks.
+
+Open problems include permissionless lane assignment, withholding and
+equivocation, cross-lane double spend, frontier agreement and DA, spam-safe
+credit, the exact PoW-weight/issuance relationship and atomic deep-mesh reorg.
+The inactive `fusion.rs` model and vectors cover unique lane chains, certified
+closure, canonical order, conflict receipts and permutation invariance, not a
+complete mesh consensus. Visible-domain fairness is specified separately in
+[`private-visible-fair-ordering.md`](private-visible-fair-ordering.md).
+
+## 5. Candidate contribution two: H-FOC'
+
+Hyphen Fast Ordering Certificates cannot promise unconditional 100 ms global
+finality. FLP applies in full asynchrony; partial synchrony bounds finality by
+actual `Delta` and protocol rounds; permissionless `n` and `f` need an
+enforceable Sybil-resistance mechanism. Separate metrics are required:
+
+```text
+T_preorder_p50 <= 100 ms
+T_final_p95 <= r*Delta + T_verify + T_queue
+```
+
+Any result must publish geography, node count, bandwidth, loss, delay,
+Byzantine fraction and failures.
+
+For `n=3f+1`, `q=2f+1`, votes bind chain, epoch, committee, view, slot, parent
+frontier and order root. Two quorums intersect in at least `f+1` seats, hence
+one honest seat when at most `f` are adversarial. Persistent same-phase locking
+prevents conflicting QCs. This combinatorial lemma is not a complete
+view-change or handoff proof. Partial-synchrony liveness still requires a live
+leader election, timeout protocol and pacemaker.
+
+The inactive kernel samples work-weighted seats with replacement from a prior
+finalized PoW epoch, aggregates work by public key, verifies Ed25519 seat votes,
+enforces threshold/context and rejects duplicate seats/double-signing. One key
+may own multiple seats, so the premise is adversarial seats, not nodes. The
+current epoch seed is grindable and cannot activate the layer. Old/new
+committee dual-QC handoff, final committee sourcing, online pacemaker and block
+execution remain unwired; H-FOC' is not a BFT finality layer.
+
+## 6. Candidate contribution three: H-SAC
+
+Hyphen Selective Audit Capabilities is not a regulatory backdoor and must have
+no chain-wide master decryption key. It distinguishes selective plaintext
+opening from a zero-knowledge provenance-compliance proof. Cryptography proves
+only a specified on-chain/external predicate; issuer correctness and real-world
+identity are external trust assumptions.
+
+The candidate relation binds chain, transaction, selected commitments,
+nullifiers, policy root, scope and expiry to private values, blindings, spend
+secrets, true ring indices, ownership and policy paths. It must constrain
+commitment openings, nullifiers, ring membership, credential membership,
+canonical scope and transaction balance. Completeness, knowledge soundness and
+out-of-scope zero knowledge require a finalized circuit, proof system, simulator
+and independent review.
+
+The inactive v0 wallet package is deliberately narrower. It reveals one value
+and blinding, verifies the Pedersen opening and a Schnorr proof of the one-time
+output key, and binds chain, transaction, index, auditor, scope, expiry and
+nonce. It rejects identity public keys/nonces and noncanonical scalars. It is
+not encrypted, does not prove canonical inclusion, real ring input or legal
+provenance, and is called targeted opening disclosure. The leakage lower bound,
+composition analysis and v0 distance are in
+[`h-sac-leakage-lower-bound.md`](h-sac-leakage-lower-bound.md).
+
+## 7. Proof ledger
+
+| ID | Property | Current status | Closure condition |
+| --- | --- | --- | --- |
+| BASE-R1 | Crash-resumable reorg or old-chain restore | Real backend and fork-state tests complete | P2P selection, subsystem reconciliation, kill/reopen, formal and multi-node tests |
+| H-WES-N0/N1 | Latest authentication implication and archive suffix bound | Black-box proofs complete | Independent formal review and broader randomized/batch models |
+| H-WES-S1/S2 | No stale resurrection and monotonic nullifiers | Five roots, public create/expiry and atomic reorg wired | Shielded recovery/consume relations and review |
+| H-WES-L1 | Conditional recovery | Assumptions explicit | DA withholding drills and recovery benchmarks |
+| H-BFM-S1/S2 | Deterministic same-set fusion and certified inclusion | Reference model/candidate property | Set agreement, DA/reward rules and model checking |
+| VF-S1 | Nonconflicting strong edges and SCC batching | Signed evidence model | Enforced receipts, beacon, benchmarks and review |
+| H-FOC-S1/S2 | QC intersection and conditional handoff safety | Lemma and conditional proof | Live view change, dual QC, adaptive model and PoW finality |
+| H-FOC-L1 | Partial-synchrony liveness | Incomplete | Leader, timeout, pacemaker and proof |
+| H-SAC-D1/N1 | Targeted disclosure and leakage lower bound | Implementation/sketch and derivation | Canonical inclusion, task distribution, simulation and review |
+| H-SAC-C1/S1/Z1 | Provenance completeness/soundness/zero knowledge | Incomplete | Circuit, proof system, vectors, simulator, ceremony and audit |
+
+## 8. Acceptance evidence
+
+Each mechanism must ship a versioned specification, threat model,
+language-neutral encoding, positive/negative vectors, reference verifier,
+property/fuzz tests, fault injection, raw benchmark data, a formal model or
+model-checking result and an independent review. Without raw data it is
+"unmeasured". Rust tests directly load the v0 vectors and H-WES lifecycle v1
+vector, but this is not a second implementation or external review.
+
+## 9. Verified prior-work entry points
+
+The Chinese section below retains the complete bibliography: Utreexo,
+FlyClient, Ethereum state expiry, PHANTOM/GHOSTDAG, Narwhal/Tusk, DAG-Rider,
+Prism, HotStuff, FLP, partial synchrony, order-fair consensus, Themis and Zcash
+disclosure. The search date is 2026-07-31. These references prove that related
+fields exist, not that Hyphen is novel. Formal novelty requires systematic
+literature, patent and independent review.
+
+---
+
+<!-- hyphen-bilingual-chinese -->
+
 # Hyphen 研究机制：证明、先验工作与实现章程
 
 状态：预规范（pre-specification），2026-07-31。
@@ -15,9 +235,9 @@ nullifier set 的 PoW 链。状态库已经有原子跨树区块提交、持久�
 reorg 计划。真实 `Blockchain` 后端会重算计划工作量，持有独占状态转换锁，
 先撤回到共同祖先，再通过权威区块接收路径按分叉状态完整重验每个候选块；
 候选失败时恢复原分支，数据库重开时自动续跑持久日志。它仍没有 P2P 竞争
-分支接入、自动 fork choice 触发、mempool/钱包/浏览器/矿池对账、账户状态
-过期、区块网状融合、BFT 最终性或完整选择性审计证明。WASM 也尚未接入共识
-状态转换。
+分支接入、自动 fork choice 触发、mempool/钱包/浏览器/矿池对账、区块网状融合、
+BFT 最终性或完整选择性审计证明。研究链 profile 已将签名 WASM 账本与 H-WES
+公共创建/限量过期接入统一状态根和原子 reorg；shielded 恢复/消费仍保持关闭。
 
 因此实现顺序必须是：
 
@@ -153,8 +373,9 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 证明草图：假设旧版本恢复成功。验证通过意味着旧版本与 `V_t[x]` 承诺的
 最新版本相等，或攻击者构造了另一条对同一根有效的路径。前者与“旧于最新”
 矛盾，后者给出 `H` 碰撞。因此在假设下成功概率可忽略。状态：规范树编码、
-纯 verifier、旧版本负向测试和独立的持久 SMT 已完成；SMT 尚未与 EAOM 五根及
-主链状态做统一原子接线，独立密码学评审也尚未完成。
+纯 verifier、旧版本负向测试和独立的持久 SMT 已完成；研究 profile 已将 EAOM 五根、
+公开创建和有界过期与主链状态统一原子接线，但 shielded recovery/consume 关系和
+独立密码学评审仍未完成。
 
 **H-WES-S2（nullifier 单调安全）**：如果 `N_t subseteq N_{t+1}` 且每次花费
 在状态提交前检查并插入 nullifier，则状态过期不会使已花费 Note 再次有效。
@@ -181,17 +402,19 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 向量位于 `test-vectors/h-wes-v0.json`。它已经固定 159 字节记录编码、确定性
 到期顺序、MMR 包含证明、最新版证明、恢复/消费终态和原子恢复转换，并覆盖
 旧版本、终态复活、篡改证明、授权上下文替换与重复 nullifier 的负向测试。
-生命周期状态机本身尚未与持久主链状态和 rollback 原子接线。配套的持久命名空间
-SMT、认证 blob/chunk proof store、P2P proof serving 以及 DA 证书验证器已经实现，
-但 DA 证书只证明诚实签名者在签名时取得完整 blob，不证明未来持续保存。shielded
-Note 的零知识恢复关系仍不存在。因此当前状态仍是“可执行参考模型”，不是已激活共识。
+研究 profile 已把五根、公开创建和有界过期接入持久主链状态与原子 rollback。
+配套的持久命名空间 SMT、认证 blob/chunk proof store、P2P proof serving 以及 DA
+证书验证器已经实现，但 DA 证书只证明诚实签名者在签名时取得完整 blob，不证明未来
+持续保存。shielded Note 的零知识恢复/消费关系仍不存在。因此当前状态仍是受限研究
+profile 生命周期，不是生产可用的完整 H-WES 协议。
 
 原始“四条件不可能性”缺少 succinctness，完整 archive 单轮扫描是反例。补强
 后的 membership-only 黑盒后缀查询下界、EAOM 生命周期、线性化点、授权关系、
 安全游戏和复杂度表见
 [`h-wes-theorem-and-object-model.md`](h-wes-theorem-and-object-model.md)。当前代码
 已加入 action/height/lease/pre-state 绑定、恢复终态回执、消费终态和
-no-resurrection 测试；持久 SMT、DA 和共识接线仍未完成。
+no-resurrection 测试；持久 SMT、五根和公开创建/过期已接入研究 profile，shielded
+恢复/消费、长期 DA challenge/repair 和独立审查仍未完成。
 
 ## 4. H-BFM 规范融合机制与隐私可见域公平候选
 
@@ -449,8 +672,8 @@ schema 编码；链上包含性和 `global_index` 仍必须由区块/状态证�
 | BASE-R1 | 静态 reorg 计划可崩溃续跑或恢复旧链 | 真实后端、分叉状态重验、恢复与数据库重开测试完成 | P2P 自动接入/选择、mempool/钱包/浏览器/矿池对账、操作系统级 kill/reopen、形式化状态机检查和多节点故障演练 |
 | H-WES-N0 | 安全恢复语义蕴含 latest 认证能力 | 定理与黑盒构造完成 | 独立形式化评审 |
 | H-WES-N1 | membership-only archive 后缀查询下界 | 黑盒 cell-probe 证明完成 | 随机化/批证明模型扩展与同行评审 |
-| H-WES-S1 | 旧版本不可复活 | reference verifier 与负向测试完成 | 持久认证字典、共识原子接线、外审 |
-| H-WES-S2 | nullifier 单调防双花 | 论证完成/参考模型 | 持久 accumulator、reorg 测试、外审 |
+| H-WES-S1 | 旧版本不可复活 | reference verifier、五根持久化、公共创建/过期与原子 reorg 测试完成 | shielded 恢复关系、外审 |
+| H-WES-S2 | nullifier 单调防双花 | 参考模型与持久五根已接线 | shielded consume 电路、执行交易、外审 |
 | H-WES-L1 | 有条件恢复 | 明确假设 | DA 协议、扣留演练、恢复基准 |
 | H-BFM-S1 | 同集合确定性融合（非新颖性声明） | 证明及参考模型完成 | set agreement、状态机模型检查 |
 | H-BFM-S2 | 有证书区块可融合 | 候选性质 | cutoff/DA/奖励规则与攻击仿真 |

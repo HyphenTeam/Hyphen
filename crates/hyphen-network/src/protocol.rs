@@ -295,7 +295,7 @@ mod tests {
     use hyphen_consensus::{
         InclusionReceiptStatement, InclusionReceiptVote, InclusionReceiptVoteGossip,
     };
-    use hyphen_crypto::{Hash256, Signature};
+    use hyphen_crypto::{Hash256, SecretKey, Signature};
     use prost::Message;
 
     fn hash(byte: u8) -> Hash256 {
@@ -337,6 +337,38 @@ mod tests {
             NetworkMessage::NewTransaction(data) => assert_eq!(data, vec![1, 2, 3, 4]),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn h_wes_envelope_round_trips_as_transaction_gossip() {
+        let owner = SecretKey([31; 32]);
+        let record = hyphen_state::StateRecord {
+            chain_id: hash(1),
+            class: hyphen_state::StateClass::ContractStorage,
+            key: hash(2),
+            version: 0,
+            value_hash: hash(3),
+            owner_policy: hyphen_state::wes_owner_policy(owner.public_key()),
+            created_at: 7,
+            lease_end: 20,
+            status: hyphen_state::StateStatus::Live,
+        };
+        let transaction = hyphen_state::WesTransaction::Create(
+            hyphen_state::SignedStateCreate::sign(record, &owner).unwrap(),
+        );
+        let payload = transaction.encode().unwrap();
+        let encoded = NetworkMessage::NewTransaction(payload)
+            .encode_proto()
+            .unwrap();
+        let NetworkMessage::NewTransaction(decoded) =
+            NetworkMessage::decode_proto(&encoded).unwrap()
+        else {
+            panic!("wrong gossip variant");
+        };
+        assert_eq!(
+            hyphen_state::WesTransaction::decode(&decoded).unwrap(),
+            Some(transaction)
+        );
     }
 
     #[test]

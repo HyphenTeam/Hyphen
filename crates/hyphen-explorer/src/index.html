@@ -77,6 +77,30 @@
             color: var(--text)
         }
 
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap
+        }
+
+        .nav-button {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.88em;
+            font-weight: 600
+        }
+
+        .nav-button:hover {
+            color: #fff;
+            background: var(--bg3);
+            border-color: var(--link)
+        }
+
         .search-box {
             display: flex;
             gap: 6px
@@ -223,6 +247,37 @@
 
         .right {
             text-align: right
+        }
+
+        .status-pill {
+            display: inline-block;
+            min-width: 72px;
+            padding: 2px 8px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            text-align: center;
+            text-transform: uppercase;
+            font-size: 0.72em;
+            font-weight: 700
+        }
+
+        .status-open {
+            color: var(--text2)
+        }
+
+        .status-submitted {
+            color: #f0c674;
+            border-color: #806b38
+        }
+
+        .status-finalized {
+            color: var(--green);
+            border-color: #28765d
+        }
+
+        .status-rejected {
+            color: #ff7185;
+            border-color: #893447
         }
 
         /* Pagination */
@@ -380,6 +435,16 @@
                 align-items: stretch
             }
 
+            .header-actions,
+            .search-box {
+                width: 100%
+            }
+
+            .search-box input {
+                flex: 1;
+                min-width: 0
+            }
+
             .stats-inner {
                 grid-template-columns: repeat(2, 1fr)
             }
@@ -408,10 +473,13 @@
     <div class="header">
         <div class="header-inner">
             <div class="logo" onclick="navigate('')">HYPHEN<span>Explorer</span></div>
-            <div class="search-box">
-                <input type="text" id="searchInput" placeholder="Search by block height, hash, or tx hash..."
-                    onkeydown="if(event.key==='Enter')doSearch()">
-                <button onclick="doSearch()">Search</button>
+            <div class="header-actions">
+                <button class="nav-button" onclick="navigate('science')">AetherCompute</button>
+                <div class="search-box">
+                    <input type="text" id="searchInput" placeholder="Block, transaction, or scientific task..."
+                        onkeydown="if(event.key==='Enter')doSearch()">
+                    <button onclick="doSearch()">Search</button>
+                </div>
             </div>
         </div>
     </div>
@@ -431,6 +499,7 @@
     <script>
         const API = '';
         let currentPage = 0;
+        let currentSciencePage = 0;
         const LIMIT = 20;
         let liveTipHeight = null;
         let liveRefreshTimer = null;
@@ -456,6 +525,11 @@
             } else if (path.startsWith('/tx/')) {
                 const hash = path.slice(4);
                 showTx(hash);
+            } else if (path.startsWith('/science/task/')) {
+                const id = path.slice(14);
+                showScientificTask(id);
+            } else if (path === '/science') {
+                showScience();
             } else {
                 currentPage = 0;
                 showHome();
@@ -515,6 +589,12 @@
             if (typeof n === 'string') n = parseFloat(n);
             if (isNaN(n)) return '0';
             return n.toLocaleString('en-US');
+        }
+
+        function statusPill(status) {
+            const known = ['open', 'submitted', 'finalized', 'rejected'];
+            const value = known.includes(status) ? status : 'open';
+            return `<span class="status-pill status-${value}">${esc(status)}</span>`;
         }
 
         // ── Stats bar ───────────────────────────────────────────────────
@@ -593,6 +673,120 @@
         }
 
         // ── Block detail page ───────────────────────────────────────────
+        async function showScience() {
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading scientific work...</div>';
+            await loadStats();
+
+            try {
+                const offset = currentSciencePage * LIMIT;
+                const data = await apiGet(`/api/science/tasks?offset=${offset}&limit=${LIMIT}`);
+                const totalPages = Math.max(1, Math.ceil(data.total / data.limit));
+                let html = `<div class="section-title"><span class="icon">&#9883;</span> AetherCompute Scientific Work</div>`;
+                html += `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>Task</th><th>Domain</th><th>Status</th><th>Arithmetic</th>
+      <th class="right">Operations</th><th class="right">Reward</th>
+      <th class="right">Published</th><th class="right">Providers</th>
+    </tr></thead><tbody>`;
+
+                if (data.tasks.length === 0) {
+                    html += '<tr><td colspan="8">No scientific tasks are recorded on chain.</td></tr>';
+                } else {
+                    for (const task of data.tasks) {
+                        html += `<tr>
+      <td class="hash-cell"><a href="#/science/task/${esc(task.task_id)}">${shortHash(esc(task.task_id))}</a></td>
+      <td>${esc(task.domain)}</td>
+      <td>${statusPill(task.status)}</td>
+      <td>${esc(task.arithmetic)}</td>
+      <td class="right">${formatNumber(task.max_operations)}</td>
+      <td class="right mono">${esc(task.reward)} HPN</td>
+      <td class="right"><a href="#/block/${task.published_height}">#${formatNumber(task.published_height)}</a></td>
+      <td class="right">${formatNumber(task.retention_providers)}</td>
+    </tr>`;
+                    }
+                }
+
+                html += '</tbody></table></div>';
+                html += `<div class="pagination">
+    <button ${currentSciencePage <= 0 ? 'disabled' : ''} onclick="currentSciencePage--;showScience()">&#9664; Previous</button>
+    <span class="page-info">Page ${currentSciencePage + 1} of ${totalPages} (${formatNumber(data.total)} tasks)</span>
+    <button ${currentSciencePage >= totalPages - 1 ? 'disabled' : ''} onclick="currentSciencePage++;showScience()">Next &#9654;</button>
+  </div>`;
+                content.innerHTML = html;
+            } catch (e) {
+                content.innerHTML = `<div class="error-msg">Unable to load scientific work: ${esc(e.message)}<br><br><a href="#/">Back to home</a></div>`;
+            }
+        }
+
+        async function showScientificTask(id) {
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading scientific task...</div>';
+            await loadStats();
+
+            try {
+                const task = await apiGet(`/api/science/task/${encodeURIComponent(id)}`);
+                let html = `<div class="section-title"><span class="icon">&#9883;</span> Scientific Task ${shortHash(esc(task.task_id))}</div>`;
+                html += `<div class="detail-card"><h2>On-chain State ${statusPill(task.status)}</h2><div class="detail-grid">`;
+                const stateFields = [
+                    ['Task ID', esc(task.task_id)],
+                    ['Domain', esc(task.domain)],
+                    ['Arithmetic Profile', esc(task.arithmetic)],
+                    ['Scientist', esc(task.scientist)],
+                    ['Published Height', `<a href="#/block/${task.published_height}">#${formatNumber(task.published_height)}</a>`],
+                    ['Publish Deadline', formatNumber(task.publish_deadline)],
+                    ['Challenge Deadline', task.challenge_deadline == null ? 'Not active' : formatNumber(task.challenge_deadline)],
+                    ['Finalized Height', task.finalized_height == null ? 'Not finalized' : formatNumber(task.finalized_height)],
+                    ['Rejected Height', task.rejected_height == null ? 'Not rejected' : formatNumber(task.rejected_height)],
+                    ['Retain Until Height', task.retain_until_height == null ? 'Not finalized' : formatNumber(task.retain_until_height)],
+                    ['Retention Providers', formatNumber(task.retention_providers)],
+                    ['Reward', `${esc(task.reward)} HPN (${formatNumber(task.reward_atomic)} atomic)`],
+                    ['Maximum Operations', formatNumber(task.max_operations)],
+                ];
+                for (const [label, value] of stateFields) {
+                    html += `<div class="detail-label">${label}</div><div class="detail-value">${value}</div>`;
+                }
+                html += '</div></div>';
+
+                html += '<div class="detail-card"><h2>Program and Input Commitments</h2><div class="detail-grid">';
+                const inputFields = [
+                    ['Program Hash', esc(task.program_hash)],
+                    ['Circuit ID', esc(task.circuit_id)],
+                    ['Input Object Hash', esc(task.input_object_hash)],
+                    ['Input Bytes', formatNumber(task.input_bytes)],
+                    ['Input Chunk Root', esc(task.input_chunk_root)],
+                    ['Input Locator', esc(task.input_locator)],
+                ];
+                for (const [label, value] of inputFields) {
+                    html += `<div class="detail-label">${label}</div><div class="detail-value">${value}</div>`;
+                }
+                html += '</div></div>';
+
+                if (task.output_object_hash != null) {
+                    html += '<div class="detail-card"><h2>Submitted Result Commitments</h2><div class="detail-grid">';
+                    const resultFields = [
+                        ['Worker', esc(task.worker)],
+                        ['Proof System ID', task.proof_system == null ? 'None' : formatNumber(task.proof_system)],
+                        ['Output Object Hash', esc(task.output_object_hash)],
+                        ['Output Bytes', formatNumber(task.output_bytes)],
+                        ['Output Chunk Root', esc(task.output_chunk_root)],
+                        ['Output Locator', esc(task.output_locator)],
+                        ['Trace Root', esc(task.trace_root)],
+                        ['Checkpoint Root', esc(task.checkpoint_root)],
+                    ];
+                    for (const [label, value] of resultFields) {
+                        html += `<div class="detail-label">${label}</div><div class="detail-value">${value}</div>`;
+                    }
+                    html += '</div></div>';
+                }
+
+                html += '<div class="pagination"><button onclick="navigate(\'science\')">Scientific Work</button><button onclick="navigate(\'\')">Home</button></div>';
+                content.innerHTML = html;
+            } catch (e) {
+                content.innerHTML = `<div class="error-msg">Scientific task not found: ${esc(id)}<br><br><a href="#/science">Back to scientific work</a></div>`;
+            }
+        }
+
         async function showBlock(id) {
             const content = document.getElementById('content');
             content.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading block...</div>';
@@ -705,6 +899,8 @@
                     navigate('block/' + (result.height != null ? result.height : result.hash));
                 } else if (result.result_type === 'tx') {
                     navigate('tx/' + q);
+                } else if (result.result_type === 'science_task') {
+                    navigate('science/task/' + result.hash);
                 } else {
                     content.innerHTML = `<div class="error-msg">No results found for: ${esc(q)}<br><br><a href="#/">Back to home</a></div>`;
                 }

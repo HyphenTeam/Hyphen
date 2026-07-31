@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
+use hyphen_compute::{ArithmeticProfile, ScientificDomain, TaskRecord, TaskStatus};
 use hyphen_consensus::Blockchain;
 use hyphen_core::block::{Block, BlockHeader};
 use hyphen_core::config::ChainConfig;
@@ -183,6 +184,53 @@ struct ExplorerUpdatesResponse {
     latest_block: Option<BlockSummary>,
 }
 
+#[derive(Serialize)]
+struct ScientificTaskResponse {
+    task_id: String,
+    status: &'static str,
+    domain: &'static str,
+    arithmetic: &'static str,
+    scientist: String,
+    published_height: u64,
+    publish_deadline: u64,
+    challenge_deadline: Option<u64>,
+    finalized_height: Option<u64>,
+    retain_until_height: Option<u64>,
+    rejected_height: Option<u64>,
+    reward: String,
+    reward_atomic: u64,
+    max_operations: u64,
+    program_hash: String,
+    circuit_id: String,
+    input_object_hash: String,
+    input_bytes: u64,
+    input_chunk_root: String,
+    input_locator: String,
+    output_object_hash: Option<String>,
+    output_bytes: Option<u64>,
+    output_chunk_root: Option<String>,
+    output_locator: Option<String>,
+    worker: Option<String>,
+    proof_system: Option<u16>,
+    trace_root: Option<String>,
+    checkpoint_root: Option<String>,
+    retention_providers: usize,
+}
+
+#[derive(Serialize)]
+struct ScientificTasksResponse {
+    tasks: Vec<ScientificTaskResponse>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+}
+
+#[derive(Deserialize)]
+struct ScientificTasksQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
 #[derive(Default)]
 struct ExplorerCache {
     indexed_tip_height: Option<u64>,
@@ -339,6 +387,124 @@ fn block_summary(block: &Block) -> BlockSummary {
         total_fee_atomic: header.total_fee,
         miner_pubkey: hex::encode(header.miner_pubkey),
     }
+}
+
+fn scientific_task(task_id: Hash256, record: TaskRecord) -> ScientificTaskResponse {
+    let spec = &record.task.spec;
+    let domain = match spec.domain {
+        ScientificDomain::QuantumChromodynamics => "QCD",
+        ScientificDomain::ManifoldDynamics => "Manifold",
+        ScientificDomain::Connectomics => "Connectomics",
+    };
+    let arithmetic = match spec.arithmetic {
+        ArithmeticProfile::DeterministicFixedPointV1 => "fixed-point-v1",
+    };
+    let (
+        status,
+        result,
+        challenge_deadline,
+        finalized_height,
+        retain_until_height,
+        rejected_height,
+    ) = match &record.status {
+        TaskStatus::Open => ("open", None, None, None, None, None),
+        TaskStatus::Submitted {
+            result,
+            challenge_deadline,
+            ..
+        } => (
+            "submitted",
+            Some(result),
+            Some(*challenge_deadline),
+            None,
+            None,
+            None,
+        ),
+        TaskStatus::Rejected {
+            rejected_height, ..
+        } => ("rejected", None, None, None, None, Some(*rejected_height)),
+        TaskStatus::Finalized {
+            result,
+            finalized_height,
+            retain_until_height,
+        } => (
+            "finalized",
+            Some(result),
+            None,
+            Some(*finalized_height),
+            Some(*retain_until_height),
+            None,
+        ),
+    };
+    let output = result.map(|signed| &signed.claim.output);
+
+    ScientificTaskResponse {
+        task_id: task_id.to_string(),
+        status,
+        domain,
+        arithmetic,
+        scientist: spec.scientist.to_string(),
+        published_height: record.published_height,
+        publish_deadline: spec.publish_deadline,
+        challenge_deadline,
+        finalized_height,
+        retain_until_height,
+        rejected_height,
+        reward: format_hpn(spec.reward),
+        reward_atomic: spec.reward,
+        max_operations: spec.max_operations,
+        program_hash: spec.program_hash.to_string(),
+        circuit_id: spec.circuit_id.to_string(),
+        input_object_hash: spec.input.object_hash.to_string(),
+        input_bytes: spec.input.byte_len,
+        input_chunk_root: spec.input.chunk_root.to_string(),
+        input_locator: spec.input.locator.clone(),
+        output_object_hash: output.map(|value| value.object_hash.to_string()),
+        output_bytes: output.map(|value| value.byte_len),
+        output_chunk_root: output.map(|value| value.chunk_root.to_string()),
+        output_locator: output.map(|value| value.locator.clone()),
+        worker: result.map(|signed| signed.claim.worker.to_string()),
+        proof_system: result.map(|signed| signed.claim.proof_system),
+        trace_root: result.map(|signed| signed.claim.trace_root.to_string()),
+        checkpoint_root: result.map(|signed| signed.claim.checkpoint_root.to_string()),
+        retention_providers: record.retention.len(),
+    }
+}
+
+async fn get_scientific_tasks(
+    State(state): State<Arc<ExplorerState>>,
+    Query(params): Query<ScientificTasksQuery>,
+) -> impl IntoResponse {
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let (records, total) = state.blockchain.compute_tasks(offset, limit);
+    let tasks = records
+        .into_iter()
+        .map(|(task_id, record)| scientific_task(task_id, record))
+        .collect();
+    (
+        StatusCode::OK,
+        Json(ScientificTasksResponse {
+            tasks,
+            total,
+            offset,
+            limit,
+        }),
+    )
+}
+
+async fn get_scientific_task(
+    State(state): State<Arc<ExplorerState>>,
+    Path(task_id): Path<String>,
+) -> impl IntoResponse {
+    let Some(task_id) = parse_hash(&task_id) else {
+        return error_json(StatusCode::BAD_REQUEST, "task ID must be 64 hex characters")
+            .into_response();
+    };
+    let Some(record) = state.blockchain.compute_task(task_id) else {
+        return error_json(StatusCode::NOT_FOUND, "scientific task not found").into_response();
+    };
+    (StatusCode::OK, Json(scientific_task(task_id, record))).into_response()
 }
 
 fn parse_hash(s: &str) -> Option<Hash256> {
@@ -557,6 +723,18 @@ async fn search_handler(
             )
                 .into_response();
         }
+
+        if state.blockchain.compute_task(hash).is_some() {
+            return (
+                StatusCode::OK,
+                Json(SearchResponse {
+                    result_type: "science_task".into(),
+                    height: None,
+                    hash: Some(hash.to_string()),
+                }),
+            )
+                .into_response();
+        }
     }
 
     (
@@ -686,6 +864,8 @@ pub fn explorer_router(blockchain: Arc<Blockchain>, cfg: ChainConfig) -> Router 
         .route("/api/blocks", get(get_blocks))
         .route("/api/block/{id}", get(get_block_handler))
         .route("/api/tx/{hash}", get(get_tx))
+        .route("/api/science/tasks", get(get_scientific_tasks))
+        .route("/api/science/task/{id}", get(get_scientific_task))
         .route("/api/miner/{pubkey}/rewards", get(get_miner_rewards))
         .route("/api/miner/{pubkey}/blocks", get(get_miner_blocks))
         .route("/api/search", get(search_handler))

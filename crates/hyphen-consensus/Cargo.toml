@@ -12,6 +12,8 @@ hyphen-proof.workspace     = true
 hyphen-tx.workspace        = true
 hyphen-economics.workspace = true
 hyphen-state.workspace     = true
+hyphen-compute.workspace   = true
+hyphen-vm.workspace        = true
 curve25519-dalek.workspace = true
 serde.workspace            = true
 hyphen-codec.workspace     = true
@@ -25,3 +27,4 @@ chrono.workspace           = true
 
 [dev-dependencies]
 serde_json.workspace       = true
+wasmer.workspace           = true

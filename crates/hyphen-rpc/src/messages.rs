@@ -122,6 +122,122 @@ pub const METHOD_GET_MEMPOOL: u32 = 5;
 pub const METHOD_GET_TX_LOCATION: u32 = 6;
 pub const METHOD_GET_RANDOM_OUTPUTS: u32 = 7;
 pub const METHOD_GET_OUTPUT_INFO: u32 = 8;
+pub const METHOD_GET_COMPUTE_TASK: u32 = 9;
+pub const METHOD_GET_VM_CONTRACT: u32 = 10;
+pub const METHOD_GET_VM_STORAGE: u32 = 11;
+pub const METHOD_GET_H_WES_ROOTS: u32 = 12;
+pub const METHOD_LIST_COMPUTE_TASKS: u32 = 13;
+
+#[derive(Clone, prost::Message)]
+pub struct GetComputeTaskRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub task_id: Vec<u8>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct ComputeTaskResponse {
+    #[prost(bool, tag = "1")]
+    pub found: bool,
+    /// Canonical `hyphen_compute::TaskRecord` bytes for lossless clients.
+    #[prost(bytes = "vec", tag = "2")]
+    pub record_data: Vec<u8>,
+    /// 0=open, 1=submitted, 2=rejected, 3=finalized.
+    #[prost(uint32, tag = "3")]
+    pub status: u32,
+    #[prost(uint64, optional, tag = "4")]
+    pub challenge_deadline: Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub retain_until_height: Option<u64>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct ListComputeTasksRequest {
+    #[prost(uint64, tag = "1")]
+    pub offset: u64,
+    #[prost(uint32, tag = "2")]
+    pub limit: u32,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct ComputeTaskItem {
+    #[prost(bytes = "vec", tag = "1")]
+    pub task_id: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub record_data: Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub status: u32,
+    #[prost(uint64, optional, tag = "4")]
+    pub challenge_deadline: Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub retain_until_height: Option<u64>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct ListComputeTasksResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub tasks: Vec<ComputeTaskItem>,
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+    #[prost(uint64, tag = "3")]
+    pub offset: u64,
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct GetVmContractRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub address: Vec<u8>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct VmContractResponse {
+    #[prost(bool, tag = "1")]
+    pub found: bool,
+    #[prost(bytes = "vec", tag = "2")]
+    pub code_hash: Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub code: Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub deployer: Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub deployed_height: u64,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct GetVmStorageRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub address: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub key: Vec<u8>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct VmStorageResponse {
+    #[prost(bool, tag = "1")]
+    pub found: bool,
+    #[prost(bytes = "vec", tag = "2")]
+    pub value: Vec<u8>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct GetHWesRootsRequest {}
+
+#[derive(Clone, prost::Message)]
+pub struct HWesRootsResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub live: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub latest: Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub nullifiers: Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub archive: Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub availability: Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub consensus_root: Vec<u8>,
+}
 
 #[derive(Clone, prost::Message)]
 pub struct GetOutputInfoRequest {

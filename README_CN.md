@@ -1,3 +1,12 @@
+# Hyphen Main Chain (Chinese Compatibility Entry)
+
+This compatibility entry preserves the Chinese documentation URL. The complete
+English-first, Chinese-second README is available in [README.md](README.md).
+
+---
+
+<!-- hyphen-bilingual-chinese -->
+
 # Hyphen 主链
 
 [English](README.md)
@@ -15,12 +24,12 @@ Hyphen 是一条用 Rust 编写、面向隐私交易和 CPU 优先工作量证�
 | 基础 PoW 主链 | 已接入区块验证与状态提交 | 未证明长期经济安全或主网安全 |
 | 隐私交易库 | 有承诺、范围证明、CLSAG、隐身输出与测试 | 未经过外部密码学审计 |
 | 分支切换 | 后端可验证候选分支、原子切换、失败恢复 | P2P 自动收集分支和全系统 reorg 对账仍未贯通 |
-| H-WES | 已有生命周期模型、持久命名空间 SMT、认证 blob/proof serving、DA 证书验证器 | 尚未原子接入主链状态根，缺 shielded 电路、provider 激励和外审 |
+| H-WES | 研究链已接入五根原子状态、签名公共创建、限量确定性过期与重组回滚 | 缺 shielded 恢复/消费电路、provider 激励和外审 |
 | H-BFM | 对一个已一致的有限 DAG 给出唯一规范拓扑序 | 尚未解决 DAG 集合一致、缺数、冲突执行、激励与活性 |
 | H-FOC' | 已有持久 PREPARE/COMMIT lock、timeout/view-change、双委员会 handoff、receipt obligation 和 P2P receipt 类型 | 缺不可偏置 beacon、在线 pacemaker/leader、已最终委员会来源、区块执行接线和 WAN 基准 |
 | H-SAC | 已有单输出 opening、绑定 auditor/scope 的 Schnorr 所有权证明和泄漏下界 | 缺冻结的合规关系、provenance ZK 电路、证明器/验证器接线和独立电路审计 |
-| Useful-Work | 只有研究规范，功能关闭 | 不能写成 AI 挖矿或已提供安全收益 |
-| WASM VM | 独立库可测试 | 没有合约交易、区块执行、状态根、回执和 RPC 接线 |
+| AetherCompute | 已接入任务/结果/挑战/续存/结算状态机、RPC/P2P、mempool 和状态根 | 默认证明验证器拒绝结算，需激活真实电路/VK 后端 |
+| WASM VM | 研究链已接入签名部署/调用、nonce、gas、状态根和原子回滚 | 仍需经济收费、回执 RPC 与外审 |
 
 共识与持久状态序列化已切换到仓库内自研的
 [`hyphen-codec`](crates/hyphen-codec/README.md)。其格式固定宽度、有限长、拒绝尾随字节、
@@ -130,7 +139,7 @@ Live(x,v) -> Expired(x,v) -> Recovered(x,v; successor=v+1)
                               \-> Consumed(x,v).
 ```
 
-恢复在同一个线性化点追加终态历史事件并创建 `Live(x,v+1)`；消费没有后继。授权摘要绑定 action、高度、新租期和 pre-state root，旧授权不能被改成另一动作或租期。当前 reference model 已覆盖恢复回执、消费终态和 no-resurrection 负向测试；持久 SMT、认证 blob store、P2P proof serving 和 DA 证书验证器也已有独立实现，但尚未把这些根原子接入当前区块状态转换。
+恢复在同一个线性化点追加终态历史事件并创建 `Live(x,v+1)`；消费没有后继。授权摘要绑定 action、高度、新租期和 pre-state root，旧授权不能被改成另一动作或租期。当前 reference model 已覆盖恢复回执、消费终态和 no-resurrection 负向测试；持久 SMT、认证 blob store、P2P proof serving 和 DA 证书验证器也已有独立实现。研究 profile 已把五根、公开创建和有界过期原子接入当前区块状态转换与 reorg；shielded recovery/consume 仍关闭。
 
 对可花费对象，nullifier 集满足单调性：
 
@@ -144,7 +153,7 @@ N_t subseteq N_(t+1).
 
 认证 blob store 对完整对象计算 content hash，并对每个 chunk 计算 `H(object,index,count,len,bytes)` 后建立 Merkle root。chunk proof 同时绑定对象、位置、总块数、长度和内容；完整重组还会再次核对 content hash。DA 证书要求 `2f+1` 个不同 seat 在签名前验证完整 blob，所以最多 `f` 个恶意 seat 时，至少 `f+1` 个诚实 signer 在签名时持有该 blob。这个结论不等于“未来永久可用”；如果之后所有副本都删除，任何 commitment 都不能恢复信息。
 
-**仍未完成：** 主链状态根/reorg 原子接线、存储 provider 激励与修复、状态租金参数、每块过期工作上限、shielded 所有权/nullifier 电路、长期空间与恢复基准、独立审计。
+**仍未完成：** 存储 provider 激励与 challenge/repair、状态租金参数、shielded 所有权/nullifier recovery/consume 电路、长期空间与恢复基准、独立审计。
 
 ### 二、H-BFM：必要的规范融合机制，不作为新颖性声明
 

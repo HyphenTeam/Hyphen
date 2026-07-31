@@ -1,3 +1,208 @@
+# H-SAC: Minimum Leakage Lower Bound for Compliance Tasks
+
+Status: theoretical boundary and interface specification. Current code provides
+only single-output plaintext opening disclosure, not the near-optimal
+zero-knowledge protocol described here.
+
+## 1. Variables
+
+Let
+
+```text
+X : complete private user state (amounts, openings, true inputs,
+    credentials and transaction relationships);
+P : public chain information known to the adversary before the protocol;
+Y = F(X,P) : compliance-task output;
+V : final adversarial view, including transcript, public output, errors and timing.
+```
+
+`F` must be a concrete decidable task, such as testing whether selected
+commitments sum below a threshold or whether a true-source credential belongs
+to a policy root. "Legitimate funds" is not a trust-free mathematical
+predicate; issuer lists, real identities and policy correctness are external
+assumptions in `P`. Information quantities are defined relative to an explicit
+distribution `(X,P)`. Without one, Shannon leakage has no numeric meaning and
+only worst-case indistinguishability or simulation definitions apply.
+
+## 2. Zero-error lower bound
+
+If the auditor recovers `Y` from `(V,P)` without error,
+`H(Y | V,P)=0`. Because `Y=F(X,P)` is deterministic, the chain rule gives
+
+```text
+I(X;V | P)
+ = I(X,Y;V | P)
+ = I(Y;V | P) + I(X;V | Y,P)
+ >= I(Y;V | P)
+ = H(Y | P) - H(Y | V,P)
+ = H(Y | P).
+```
+
+### Theorem SAC-N1 (task-output lower bound)
+
+Every protocol that lets the auditor correctly determine `Y` leaks at least
+
+```text
+Leak(X -> V | P) >= H(F(X,P) | P).
+```
+
+This leakage is inherent in the function and independent of whether the
+protocol uses a view key, SNARK, MPC or trusted hardware.
+
+## 3. Error-tolerant bound
+
+Let the range of `Y` have size `M>=2`, let the auditor output `Y_hat(V,P)`, and
+assume error at most `epsilon`. Fano's inequality gives
+
+```text
+H(Y | V,P) <= h_2(epsilon) + epsilon log_2(M-1),
+h_2(epsilon)=-epsilon log_2 epsilon
+             -(1-epsilon)log_2(1-epsilon),
+```
+
+and therefore
+
+```text
+I(X;V | P)
+ >= H(Y | P)-h_2(epsilon)-epsilon log_2(M-1).
+```
+
+For a Boolean output this is `H(Y|P)-h_2(epsilon)`. Regulatory protocols must
+state their false-positive and false-negative error rather than hide it in an
+unspecified epsilon.
+
+## 4. What it means to attain the bound
+
+### 4.1 Perfect task privacy
+
+If `I(X;V | Y,P)=0`, then after conditioning on the public facts and necessary
+task result the view contains no further information about `X`. Under zero
+error, `I(X;V | P)=H(Y|P)`. Equivalently, a simulator given only `(P,Y)` can
+produce the same view distribution. Cryptographic protocols normally obtain
+only computational indistinguishability for PPT adversaries:
+
+```text
+Real(X,P) ~=_c Sim(P,F(X,P)).
+```
+
+That is computational near-optimality, not an unconditional Shannon equality.
+
+### 4.2 Worst-case transcript bound
+
+A deterministic zero-error auditor must distinguish the output equivalence
+classes reachable for fixed `P`. If `R_P=|{F(x,P)}|`, the worst-case view needs
+at least `log_2 R_P` bits of distinguishing power. This is not the same as
+average mutual information and the two must not be conflated.
+
+## 5. Repeated disclosures compose
+
+For adaptive tasks `Y_j=F_j(X,P,V_<j)` and joint view `V_(1:q)`, correct answers
+to all tasks imply
+
+```text
+I(X;V_(1:q) | P) >= H(Y_1,...,Y_q | P)
+```
+
+minus the corresponding Fano terms when error is allowed. Even task-optimal
+Boolean proofs can progressively identify `X`. H-SAC therefore needs capability
+scope and task identifiers, query/disclosure budgets, expiry and revocation, a
+user-auditable disclosure log, and protection against rewriting a narrow task
+as a high-cardinality output. Revocation cannot erase transcripts already
+learned by an auditor.
+
+## 6. Subtract public on-chain information first
+
+`P` includes at least chain ID, block time, transaction size, fee, commitment,
+nullifier, public scripts and observable network data. The bound is `H(Y|P)`,
+not `H(Y)`, because the public chain may already reveal some or all of the
+answer. Conversely, zero knowledge does not automatically hide timing, proof
+size, failure reasons, RPC source IP or capability-request patterns; they are
+part of the real `V` and threat model.
+
+## 7. Candidate H-SAC' relation
+
+Public statement:
+
+```text
+Z=(cid, task_id, task_output Y, scope, expiry, auditor_pk,
+   selected_commitments, input_nullifiers, policy_root, inclusion_roots).
+```
+
+Private witness:
+
+```text
+W=(values,blindings,spend_secrets,real_ring_indices,
+   ownership_paths,policy_credentials,policy_paths).
+```
+
+The relation `R_F(Z,W)=1` must constrain correct commitment openings,
+ownership/nullifiers, authenticated-chain inclusion, credential membership,
+statement binding of scope/task/auditor/expiry, `F(W,public facts)=Y`, and the
+transaction balance relation where relevant. Output should be an
+auditor-addressed encrypted capability plus a zero-knowledge proof. Merely
+putting `auditor_pk` in a public proof prevents cross-auditor replay but does not
+encrypt plaintext fields.
+
+If `R_F` has completeness, knowledge soundness and zero knowledge, and a
+transcript simulator uses only `(P,Y)`, it approaches SAC-N1 computationally.
+Chain inclusion, credential issuance and encryption still need separate proof.
+
+## 8. Distance from the current implementation
+
+`crates/hyphen-wallet/src/audit.rs` v0 reveals in plaintext:
+
+```text
+chain_id, txid, output/global index, auditor key, scope, validity,
+nonce, commitment, one-time public key, amount, blinding, Schnorr proof.
+```
+
+`DISCLOSED_FIELDS_V0` exposes a machine-readable leakage list. The package
+proves an amount opening and one-time-key ownership but places amount and
+blinding directly in `V`. For a one-bit task this is far above the theoretical
+minimum. It also does not prove canonical-chain inclusion, output-index
+consistency, the real ring input or provenance path, policy credentials,
+real-world legitimacy, or auditor-only readability. V0 is targeted opening
+disclosure, not a complete audit key or optimal selective transparency.
+
+## 9. Why no new ZK crate is connected yet
+
+A proof-system choice fixes field, curve, setup, recursion, circuit-audit and
+long-term compatibility assumptions. H-SAC public inputs, migration rules and
+provenance policy are not frozen. Production integration first requires a
+frozen `F`, public inputs and leakage ledger; a maintained externally reviewed
+proof system; circuit/constraint hashes and parameter generation; positive and
+negative cross-implementation vectors; soundness, zero-knowledge, side-channel
+and malformed-proof review; and only then transaction, block, state-root and
+RPC wiring.
+
+The presence of Circom 2.2.3 proves only that the environment can compile
+Circom. Hyphen uses Ristretto255/BLAKE3 while ordinary Circom uses the BN254
+scalar field. Reducing a 256-bit digest into one signal is non-injective. A
+sound relation must constrain bit decomposition, BLAKE3 and Ristretto
+encoding/group equations, or prove binding to a versioned field-friendly
+relation. See
+[`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md).
+
+The repository has no H-SAC Circom source, R1CS, proving/verifying key, Rust
+verifier, cross-implementation vectors or external audit report. An "audited
+H-SAC ZK circuit" is explicitly unfinished.
+
+## 10. Prior-art boundary
+
+Monero view keys/payment proofs, Zcash viewing/payment disclosure, selective
+anonymous-credential disclosure, revocable credentials and general ZK/MPC
+already cover much of this design space. Verifiable starting points are the
+Zcash Protocol Specification and ZIP-310, and *Practical Revocable Anonymous
+Credentials* (FC 2012, DOI `10.1007/978-3-642-32805-3_22`). A research
+contribution should concern task-conditioned leakage after public chain side
+information, composition budgets and simulations attaining the lower bound,
+not renaming a view key. Formal novelty still requires systematic literature
+and patent searches.
+
+---
+
+<!-- hyphen-bilingual-chinese -->
+
 # H-SAC：合规任务的最小泄漏下界
 
 状态：理论边界与接口规范。当前代码只有单输出明文 opening disclosure，不是本文

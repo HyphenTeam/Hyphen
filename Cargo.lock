@@ -1971,6 +1971,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyphen-compute"
+version = "0.1.0"
+dependencies = [
+ "hyphen-codec",
+ "hyphen-crypto",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "hyphen-consensus"
 version = "0.1.0"
 dependencies = [
@@ -1978,6 +1988,7 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "hex",
  "hyphen-codec",
+ "hyphen-compute",
  "hyphen-core",
  "hyphen-crypto",
  "hyphen-economics",
@@ -1985,6 +1996,7 @@ dependencies = [
  "hyphen-proof",
  "hyphen-state",
  "hyphen-tx",
+ "hyphen-vm",
  "log",
  "parking_lot 0.12.5",
  "serde",
@@ -1992,6 +2004,7 @@ dependencies = [
  "sled",
  "thiserror 2.0.19",
  "tracing",
+ "wasmer",
 ]
 
 [[package]]
@@ -2046,6 +2059,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "hex",
+ "hyphen-compute",
  "hyphen-consensus",
  "hyphen-core",
  "hyphen-crypto",
@@ -2067,6 +2081,7 @@ dependencies = [
  "hyphen-core",
  "hyphen-crypto",
  "hyphen-proof",
+ "hyphen-state",
  "hyphen-tx",
  "log",
  "parking_lot 0.12.5",
@@ -2107,6 +2122,7 @@ dependencies = [
  "clap",
  "hex",
  "hyphen-codec",
+ "hyphen-compute",
  "hyphen-consensus",
  "hyphen-core",
  "hyphen-crypto",
@@ -2120,6 +2136,7 @@ dependencies = [
  "hyphen-state",
  "hyphen-transport",
  "hyphen-tx",
+ "hyphen-vm",
  "libp2p",
  "parking_lot 0.12.5",
  "prost",
@@ -2168,6 +2185,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "hyphen-codec",
+ "hyphen-compute",
  "hyphen-consensus",
  "hyphen-core",
  "hyphen-crypto",
@@ -2175,6 +2193,7 @@ dependencies = [
  "hyphen-state",
  "hyphen-token",
  "hyphen-tx",
+ "hyphen-vm",
  "parking_lot 0.12.5",
  "prost",
  "prost-types",
@@ -2192,9 +2211,11 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "hex",
  "hyphen-codec",
+ "hyphen-compute",
  "hyphen-core",
  "hyphen-crypto",
  "hyphen-tx",
+ "hyphen-vm",
  "log",
  "parking_lot 0.12.5",
  "rand 0.10.2",
@@ -2259,7 +2280,6 @@ dependencies = [
  "hyphen-codec",
  "hyphen-core",
  "hyphen-crypto",
- "hyphen-state",
  "hyphen-token",
  "serde",
  "sled",
@@ -2268,6 +2288,7 @@ dependencies = [
  "wasmer",
  "wasmer-middlewares",
  "wasmparser 0.255.0",
+ "zstd",
 ]
 
 [[package]]

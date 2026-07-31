@@ -1,7 +1,7 @@
 use hyphen_crypto::Hash256;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ContractAddress(pub [u8; 32]);
 
 impl ContractAddress {
@@ -54,7 +54,7 @@ pub struct StateChange {
     pub new_value: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContractCall {
     pub caller: [u8; 32],
     pub contract: ContractAddress,
@@ -64,7 +64,7 @@ pub struct ContractCall {
     pub value: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeployParams {
     pub deployer: [u8; 32],
     pub code: Vec<u8>,

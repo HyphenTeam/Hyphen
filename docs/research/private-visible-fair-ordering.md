@@ -1,3 +1,248 @@
+# Private Visible-Domain Fair Ordering and H-FOC'
+
+Status: inactive research specification. This document does not claim to
+eliminate MEV or provide 100 ms global finality.
+
+## 1. Why public-transaction fairness does not transfer directly
+
+Write a private transaction as
+
+```text
+tx = (pub(tx), hid(tx); witness),
+```
+
+where `pub(tx)` is the consensus-visible projection and `hid(tx)` contains the
+amount, sender, recipient, true ring member and application semantics. The
+candidate Hyphen profile permits only
+
+```text
+M(tx)=(txid, fee_class, encoded_len, public_conflict_tag)
+```
+
+to enter the fairness function. `txid` is an opaque commitment identifier and
+`public_conflict_tag` may be a nullifier or public conflict class. Every added
+field must first enter the leakage ledger. Consensus cannot define fairness by
+hidden amount, user or economic intent without observing or inferring data it
+is meant not to learn.
+
+## 2. Fairness evidence
+
+An epoch committee has `n=3f+1` work-weighted seats and threshold `q=2f+1`.
+After cutoff `tau`, seat `i` signs its local receive sequence:
+
+```text
+O_i=(cid,e,committee_id,view,slot,tau,i,R_M,seq_i),
+sigma_i=Sign_i(H_ds("OBS",O_i)).
+```
+
+`R_M` is the canonical root of the complete visible metadata set. Evidence
+needs valid signatures from at least `q` distinct seats and rejects duplicate
+seats, unknown or duplicate transactions and context replay. Define quorum
+visibility by
+
+```text
+Visible_q(x) iff |{i : x in seq_i}| >= q.
+```
+
+Only quorum-visible transactions enter the slot's fair candidate set. This is
+a checkable inclusion premise, not protection against network-layer censorship
+that prevents a transaction from obtaining `q` receipts.
+
+## 3. Visible Strong Receive Order (VSRO)
+
+For two quorum-visible transactions, define
+
+```text
+before_i(x,y)=1 iff x,y in seq_i and pos_i(x)<pos_i(y),
+x <_E y iff sum_i before_i(x,y) >= q.
+```
+
+`<_E` need not be total. Construct the directed evidence graph
+`G_E=(T,E)`, with `x -> y iff x <_E y`, contract every strongly connected
+component into a fair batch, and deterministically topologically sort the
+condensation DAG. VSRO makes no within-batch guarantee. The implementation uses
+
+```text
+rank(x)=H_ds("TIE",rho_after_cutoff || txid_x),
+```
+
+where `rho_after_cutoff` must become fixed and unbiasable only after the receive
+cutoff. Early knowledge permits sender txid grinding; leader seed choice permits
+within-batch manipulation.
+
+### Theorem VF-S1: opposing strong edges cannot coexist
+
+For `x != y`, `x <_E y` and `y <_E x` cannot both hold. Each legal seat order
+contributes in only one direction. Both directions would require at least
+`2q=4f+2` contributions from a `3f+1`-seat committee, a contradiction. `□`
+
+A directed triangle is also impossible: a total order supports at most two
+triangle edges, so all sequences provide at most `2n=6f+2` supports, below the
+`3q=6f+3` required. Condorcet cycles of length four or more remain possible;
+the implementation therefore preserves SCC batches instead of deleting edges.
+
+### Theorem VF-S2: strong receive evidence implies an edge
+
+If at least `q` valid observations contain `x,y` and all place `x` before `y`,
+then `x <_E y` and the output places `batch(x)` no later than `batch(y)`. This
+follows directly from the definition and from topological ordering of the
+condensation DAG; transactions in one SCC receive only a same-batch guarantee.
+`□`
+
+### Theorem VF-P1: the hidden projection adds no ordering leakage
+
+Let hidden worlds `W0,W1` have computationally indistinguishable validity
+proofs and public projections and the same distribution of signed receive
+evidence. Ordering is a deterministic polynomial-time function of
+`(M,E,rho)`. A PPT distinguisher using the ordering output would, by
+post-processing, distinguish the public projections, contradicting the
+premise. This data-processing result does not prove that the underlying
+transaction protocol itself is zero knowledge.
+
+## 4. Exact boundary of local MEV resistance
+
+For fixed admissible evidence `E` and post-cutoff seed `rho`, let
+`Ord(E,rho)` be the unique output and define
+
+```text
+Adv_order(A | E,rho)
+ = Pr[Verify(order_A,E,rho)=1 and order_A != Ord(E,rho)].
+```
+
+Under hash binding, EUF-CMA signatures and a deterministic verifier, this is
+negligible: a leader cannot select another order root for the same evidence.
+This removes only ordering discretion after evidence is fixed. It does not
+cover delayed propagation, favorable observation subsets, Byzantine receive
+order reports, public fee/nullifier strategies, txid grinding, selective
+submission, cutoff or seed manipulation, execution-time hidden semantics,
+or cross-slot reordering. The accurate name is visible-domain local ordering
+resistance, not "MEV solved".
+
+## 5. Dynamic PoW committee
+
+Aggregate previous-finalized-epoch work `w_j` by public key, let
+`W=sum_j w_j`, and sample `n=3f+1` seats with replacement using an unbiasable
+seed `rho_e`:
+
+```text
+u_l = H_to_[0,W)(rho_e || e || l),
+seat_l = min {j : sum_(a<=j) w_a > u_l}.
+```
+
+One key may own multiple seats, which are not independent operators. The
+security premise is at most `f` adversarial seats, not nodes. With adversarial
+work fraction `alpha`, independent samples and an unbiasable seed,
+
+```text
+P_bad(n,f,alpha)
+ = sum_(i=f+1)^n C(n,i) alpha^i (1-alpha)^(n-i).
+```
+
+For `g` grindable candidate seeds, only
+`P_bad_grind <= min(1, g * P_bad)` follows by a union bound. Pool identity
+concentration, correlated sampling and adaptive corruption need separate
+measurement. The current previous-epoch-block-hash seed is grindable and does
+not satisfy this premise. Activation requires the unique threshold beacon or
+VDF gates in
+[`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md).
+
+## 6. H-FOC' certificate stages
+
+Each slot requires at least PROPOSE, OBSERVE, FAIR-AGGREGATE, PREPARE/COMMIT and
+HANDOFF stages. Votes bind
+`(cid,e,committee,view,slot,parent,R_M,R_E,R_order)`; handoff binds the next
+committee to one finalized PoW checkpoint.
+
+`fast_ordering.rs` contains the single-statement preorder kernel.
+`fair_finality.rs` implements PREPARE/COMMIT QCs, commit locks, timeout
+certificates, highest-prepare inheritance, view-change proposal checks and
+dual-committee handoff. An honest voter uses CAS plus sled flush before
+releasing phase, timeout or handoff signatures, preserving anti-equivocation
+across restart. This remains inactive: no online pacemaker, leader, finalized
+committee provider or block-execution wiring exists.
+
+### Theorem FOC-S1: fixed-committee QC intersection
+
+Two `q=2f+1` quorums in `n=3f+1` seats intersect in at least
+`2q-n=f+1` seats, including one honest seat when at most `f` are adversarial.
+If honest seats do not sign conflicting roots for one
+`(epoch,view,slot,phase)`, two conflicting same-phase QCs cannot form. This is
+not a complete cross-view or cross-epoch safety proof.
+
+### Theorem FOC-S1b: cross-view commit safety
+
+If `X` obtains a COMMIT QC in view `v`, its signers first verify a same-view
+PREPARE QC and lock `(v,X)`. Assume the earliest conflicting PREPARE QC for `Y`
+occurs at `w>v`. Its proposal must carry a view `w-1` timeout certificate. The
+certificate and `X`'s commit QC intersect in an honest signer whose timeout vote
+carries a highest prepare of view at least `v`. The proposal must inherit that
+highest value. Fixed-view QC intersection handles `h=v`; minimality of `w`
+handles `v<h<w`. In every case it must propose `X`, contradicting a prepare QC
+for `Y`. This relies on honest highest-prepare disclosure, enforced inheritance,
+persistent locks and at most `f` adversarial seats. `□`
+
+### Theorem FOC-S2: inductive dual-committee handoff safety
+
+An epoch handoff needs commit QCs from both old and new committees over the
+same finalized PoW checkpoint. If each committee has at most `f` adversarial
+seats and honest cross-view locking, conflicting handoffs violate FOC-S1 on
+each side. Starting from the unique configured genesis checkpoint gives an
+induction over epochs. Code binds chain, epoch, committee ID, role, previous
+handoff and finalized checkpoint, preventing replay of one committee QC as a
+dual handoff. The premise fails if either committee is compromised, the PoW
+checkpoint is not final, corruption is instantaneous and adaptive, or locks
+are not preserved across view change. `□`
+
+## 7. Liveness and performance
+
+After GST, with delay bound `Delta`, signature cost `T_sig`, fairness cost
+`T_fair(s,m)=Theta(s*m^2)` and `r` serial WAN phases, only
+
+```text
+T_final <= r*Delta + T_sig + T_fair(s,m) + T_queue
+```
+
+can be stated. The implementation bounds pair work. Evidence is currently
+`Theta(s*m)` and uses no aggregate signatures. A 100 ms claim requires public
+regional, ASN, bandwidth, loss, committee-size, batch-size and raw-sample
+benchmarks; it cannot follow from asymptotic notation.
+
+## 8. Code status
+
+`private_fair_ordering.rs` implements canonical visible commitments, Ed25519
+seat observations, quorum visibility and strong edges, SCC batches, post-cutoff
+tie-breaking, permutation-invariance and rejection tests, and a pair-work CPU
+budget. `fairness_receipts.rs` provides signed `observed_at`, cutoff rejection,
+quorum receipt validation, durable idempotent obligations, conflict/capacity
+checks and restart recovery. Finality prepare rejects orders that omit an
+obligation. P2P has a typed 512 KiB receipt topic.
+
+An inclusion theorem follows because receipt quorum `Q_r` and proposal quorum
+`Q_p`, each of size `2f+1`, intersect in at least one honest seat. That signer
+persisted the obligation before signing and refuses an omitting prepare, leaving
+at most `2f` votes. `□` This holds only when production forces the voter API,
+committee/context/cutoff metadata match, and the transaction is valid and
+available. The current node has no finalized committee source, does not activate
+received obligations, and lacks trusted receive timestamps, aggregation and
+mempool/fusion/block-execution wiring. It is not production fair consensus.
+
+## 9. Prior art
+
+Directly relevant work includes Kelkar et al., *Order-Fairness for Byzantine
+Consensus* (CRYPTO 2020), Kursawe's *Wendy* (AFT 2020), Cachin et al.'s *Quick
+Order Fairness* (FC 2022), *Order-Fair Consensus in the Permissionless Setting*
+(AFT 2022), Zhang et al.'s *Themis* (CCS 2023), *Separation is Good* (NDSS
+2024), and ByzCoin (CCS 2016), with the DOIs listed in the Chinese section.
+These cover BFT fairness, permissionless fairness and PoW/BFT combinations.
+Hyphen may currently claim only a candidate framework that makes the hidden
+projection explicit, provides visible-domain batch fairness and binds it to PoW
+seat evidence. It must not claim priority before systematic literature and
+attack studies.
+
+---
+
+<!-- hyphen-bilingual-chinese -->
+
 # 隐私可见域公平排序与 H-FOC'
 
 状态：未激活研究规范。本文不给出“消灭 MEV”或“100 ms 全球最终性”结论。

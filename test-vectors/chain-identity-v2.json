@@ -8,13 +8,13 @@
   {
     "profile": "testnet-research",
     "network_magic": "48595453",
-    "consensus_params_hash": "462678e5ddc913b99ae7fe3ccc72a114c125273e7f559f2e67fa9f56ca8c6ec4",
-    "genesis_hash": "37201e26dacd35d361a83e79cb7f52d5c6bb1b139180434b889543fc08e2efaf"
+    "consensus_params_hash": "25e535d64e6a22a3e97883b4e3d6e46f302305bb9eea317dca1e46b2136715eb",
+    "genesis_hash": "472c2ab5b99f9675d3938b9f56307c1d97417d4a8f98e6b0a9f63cdf3c6e6cc3"
   },
   {
     "profile": "mainnet-research",
     "network_magic": "4859504e",
-    "consensus_params_hash": "4f21a74c3c32111bcc0c45fc907d77227a51ae17189d7945489898bf08e8e56e",
-    "genesis_hash": "9e7f8e3810a15ccf8f93e887630906c377ad14a7bde0f2783d15f0ca7120f06a"
+    "consensus_params_hash": "9460af076ee394ff271c195023619639b52607f9448128e033926a97dafa6801",
+    "genesis_hash": "8d4573751405b45537dabc78b7a6580ee268e33f0af058891b483bd349339ff7"
   }
 ]

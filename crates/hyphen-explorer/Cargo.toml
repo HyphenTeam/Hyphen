@@ -9,6 +9,7 @@ description = "Blockchain explorer for the Hyphen blockchain"
 [dependencies]
 hyphen-crypto.workspace    = true
 hyphen-core.workspace      = true
+hyphen-compute.workspace   = true
 hyphen-consensus.workspace = true
 hyphen-economics.workspace = true
 hyphen-state.workspace     = true

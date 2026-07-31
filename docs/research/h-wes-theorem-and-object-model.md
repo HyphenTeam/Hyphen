@@ -1,3 +1,267 @@
+# H-WES: From Recovery Lower Bounds to Expirable Authenticated Objects
+
+Status: inactive research specification. It fixes the problem, model, theorems
+and implementation interface; it is neither a novelty proof nor a cryptographic
+audit report.
+
+## 1. Correcting an over-strong impossibility statement
+
+The following alone do not imply impossibility: old versions are not
+recoverable, a client initially keeps only a historical witness, validators do
+not persist a `key -> latest` authenticated index, and recovery is noninteractive
+or constant-round. A counterexample sends the entire archive in one round. The
+verifier recomputes the append-only commitment and scans every version of the
+key. It keeps no latest index and rejects stale versions, at `Theta(N)`
+communication, prover I/O and verifier work.
+
+The provable goal must therefore include **succinct recovery**. The model below
+treats the archive as a black-box authenticated store and requires recovery to
+open a sublinear number of archive cells.
+
+## 2. State and archive model
+
+For security parameter `lambda`, key space `K` and value space `V`, an object
+incarnation is
+
+```text
+I = (cid, class, k, v, h_val, P_owner, h_create, h_lease),
+```
+
+where versions for one key strictly increase. At height `t`,
+
+```text
+Hist_t = (r_0, ..., r_(N_t-1)),
+A_t = CommitArchive(Hist_t).
+```
+
+The archive exposes only authenticated positional opening and append checks:
+
+```text
+Open(A_t, i) -> (r_i, pi_i),
+VerifyOpen(A_t, i, r_i, pi_i) -> {0,1},
+VerifyAppend(A_s, A_t, pi_(s,t)) -> {0,1},  s <= t.
+```
+
+It has no native key query, range non-membership or maximum-version operation.
+Define `Head_t(k)` as the maximum-version record for `k`; consensus rejects
+duplicate versions before append.
+
+An authenticated latest oracle is any `(D_t, ProveLatest, VerifyLatest)` that
+authenticates `Head_t(k).(version,status)`. `D_t` may be an SMT, Verkle or vector
+commitment root, a SNARK statement or another digest. A short freshness proof
+is semantically equivalent to a latest dictionary even when no BTreeMap exists.
+
+## 3. Lower-bound theorems
+
+### Theorem H-WES-N0: secure recovery implies authenticated head recovery
+
+Let recovery `Pi=(ProveRec,VerifyRec)` be complete for the current expired
+incarnation, latest-only sound against old or non-expired incarnations, and use
+public verifier state `S_t`. Taking `D_t=S_t`, running `ProveRec` without the
+final mutation and running the read-only phase of `VerifyRec` constructs an
+authenticated predicate
+
+```text
+IsRecoverableHead_t(k,v)=1 iff Head_t(k).(version,status)=(v,Expired).
+```
+
+Completeness and latest-only soundness transfer directly. The theorem need not
+construct a full latest dictionary, but it shows that secure recovery without
+any latest-equivalent authentication is semantically contradictory. `□`
+
+### Theorem H-WES-N1: suffix-query lower bound for membership-only archives
+
+Treat `A_t` as an opaque oracle handle usable only by `Open/VerifyOpen`. A
+candidate at position `i` has suffix length `m=N_t-i-1`. Without a latest
+oracle, a zero-error verifier deciding head status for every legal history must
+open all `m` suffix cells in the worst case.
+
+If an accepting execution leaves position `j` unopened, compare histories
+`H0`, where no later record has key `k`, and `H1`, identical except that cell
+`j` is a newer valid version of `k`. All observed openings are identical, yet
+the candidate is latest only in `H0`; one of completeness or soundness fails.
+`□`
+
+For randomized verification with perfect completeness and false-accept
+probability at most `epsilon` for each single-successor history,
+
+```text
+E[Q] = sum_j Pr[query j] >= (1-epsilon)m.
+```
+
+With two-sided error at most `epsilon`, the bound is
+`E[Q]>=(1-2epsilon)m`. This is a cell-probe bound for a black-box unordered
+membership-only archive, not an unconditional bound for every commitment or
+SNARK. A latest dictionary, maintained witness/index, key-ordered archive,
+linear-work archive-scan SNARK or trusted online oracle falls outside its
+premises.
+
+### Corollary H-WES-N2: three costs cannot all disappear
+
+Secure recovery must pay for at least one of authenticated latest state,
+ongoing witness/index maintenance, or linear suffix data/prover work. H-WES
+chooses fixed-size consensus roots, external latest/history bodies, and
+on-demand `O(log K)+O(log N)` proofs without continual owner witness updates.
+
+## 4. Expirable Authenticated Object Model (EAOM)
+
+Lifecycle attaches to incarnation `(k,v)`:
+
+```text
+Live(k,v) -> Expired(k,v) -> Recovered(k,v; successor=v+1)
+                           \-> Consumed(k,v)
+```
+
+Recovered and Consumed are terminal for that incarnation. Recovery atomically
+closes `(k,v)` and creates `Live(k,v+1)`. Global authenticated state is
+
+```text
+S_t = (R_live,t, R_latest,t, R_null,t, R_hist,t, R_DA,t),
+R_state = H_ds("HYPHEN_STATE_V1",
+               R_live || R_latest || R_null || R_hist || R_DA).
+```
+
+The roots commit live bodies, per-key latest status, permanent nullifiers,
+append-only lifecycle history and recovery-data availability.
+
+`Expire(k,v,t)` requires `Head_t(k)=(v,Live)` and `t>=lease_end(k,v)`. It
+removes the live entry, appends an Expired record and changes the latest head;
+the atomic block-state commit is the linearization point.
+
+Recovery authorizes
+
+```text
+AuthRec = H_ds("HYPHEN_WES_AUTHORIZATION_V1",
+  Recover || cid || k || v || H(expired_record) || t || new_lease || R_state,t).
+```
+
+It proves history inclusion, current `(k,v,Expired)` status and matching
+archive index, owner authorization, `new_lease>t>=old_lease_end`, and successor
+body availability. Success creates `Live(k,v+1)` and appends
+
+```text
+E_rec=(cid,class,k,v,Recover,t,H(expired),H(live_successor)).
+```
+
+History append, successor insertion and latest update commit or roll back
+together. Consume uses a canonical lease sentinel, appends
+`E_con=(cid,class,k,v,Consume,t,H(expired),0^256)` and leaves no outgoing
+transition from Consumed.
+
+## 5. Security games
+
+Latest-only recoverability lets an attacker see all old bodies, membership
+proofs, authorizations and DA proofs, then wins only if recovery accepts while
+`Head_t(k)!=(v,Expired)`. Security reduces to history binding, latest-dictionary
+soundness and deterministic cross-field consistency.
+
+No-resurrection first commits `(k,v)` as Consumed. Replay can succeed only by
+forging the current latest proof or commitment binding. A recovered incarnation
+also cannot recover again because the head is already `Live(k,v+1)` or later.
+
+History accountability reduces a forged terminal event inclusion to MMR/hash
+binding. Recovery events bind the successor hash. This proves what closed and
+what successor was committed, not permanent availability of history bodies.
+
+These results require collision resistance; MMR and latest-dictionary
+binding/soundness; owner-policy EUF-CMA or knowledge soundness; atomic,
+deterministic transition; and one canonical pre-state root. Recoverability also
+requires a provider retaining the body and fresh proof. A commitment cannot
+recover data deleted by everyone.
+
+## 6. Time, storage and witness tradeoffs
+
+| Construction | Validator digest | External index | Owner updates | Recovery proof/data | Prover work |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Append archive + scan | `O(1)` | `O(N)` body | `O(1)` | `Theta(m)` | `Theta(m)` |
+| Dynamic client accumulator | `O(1)` | `O(N)` | related/global updates | scheme-specific | scheme-specific |
+| Versioned authenticated dictionary | `O(1)` root | `O(K)` | `O(1)` on-demand proof | `O(log K)` | `O(log K)` |
+| Archive-scan SNARK | `O(1)` | `O(N)` body | `O(1)` | constant/polylog | `Omega(m)` scan |
+| H-WES EAOM reference | five roots | `O(K+N)` | `O(1)` | `O(log K+log N)+body` | `O(log K+log N)` query |
+
+The last row is not storage-free. It moves bodies, tree nodes and proof serving
+to replaceable providers while validators authenticate roots. The persistent
+SMT is 256 levels, namespace-separated and stores only non-default nodes.
+Updates are fixed-depth for 256-bit keys, or `Theta(lambda)` when key length is
+the parameter. Long-term space and write-amplification benchmarks remain open.
+
+### 6.1 SMT opening binding
+
+Define domain-separated leaf, empty and node hashes:
+
+```text
+L_ns(k,v)=H_ds("HYPHEN_SMT_LEAF_V1",ns||k||v),
+E_ns=H_ds("HYPHEN_SMT_EMPTY_LEAF_V1",ns),
+N_ns,d(l,r)=H_ds("HYPHEN_SMT_NODE_V1",ns||d||l||r).
+```
+
+For fixed `(ns,k,R)`, two accepted openings to different values, including
+absence, imply either a leaf-domain collision or the first parent-level node
+collision along the fixed path. Thus collision resistance gives same-root
+opening binding. `□`
+
+The implementation computes an in-memory overlay, then one sled transaction
+checks that the old root is unchanged and writes all nodes plus the new root.
+A failed transaction writes nothing; a CAS conflict returns
+`ConcurrentUpdate`; success flushes before returning. Only the complete old or
+new state is persistently observable.
+
+### 6.2 Chunk proofs and the DA certificate boundary
+
+Object and chunk hashes bind object, position, count and length:
+
+```text
+O=H_ds("HYPHEN_PROOF_BLOB_V1",len(B)||B),
+C_i=H_ds("HYPHEN_PROOF_BLOB_CHUNK_V1",O||i||m||len(B_i)||B_i).
+```
+
+Merkle binding and final reassembly verification prevent cross-object,
+cross-position and truncated-chunk replay absent a hash collision or second
+preimage. An availability certificate binds chain, epoch, committee, retention
+and object metadata and requires `q=2f+1` distinct signatures. With at most `f`
+malicious seats, at least `f+1` honest signers fully held the blob when signing.
+This proves **retrievable-at-signing-time**, not continued retention. The
+certificate cannot recover a body later deleted by every signer.
+
+## 7. Covered object classes
+
+The model can represent leased UTXOs with permanent nullifiers, recoverable
+account authority, revocable credential incarnations, DA objects requiring a
+target-root certificate, and contract KV with an explicit code authorization
+relation. Shielded notes remain out of profile until a zero-knowledge circuit
+binds hidden owner/input/nullifier relations to EAOM transitions.
+
+## 8. Implementation mapping and open obligations
+
+`expiring_state.rs` implements canonical 159-byte records, a deterministic
+expiry queue, history MMR and latest proofs, action/height/lease/pre-state-bound
+authorization, atomic successor and terminal receipts, no-resurrection tests,
+and a roots-plus-witness pure verifier API. Supporting modules implement a
+persistent namespaced SMT with atomic root CAS, bounded content-addressed blob
+storage with chunk proofs, bounded typed P2P proof/chunk transport, and
+full-blob-before-signing `2f+1` availability certificates.
+
+The research profile now persists all five EAOM roots and applies public
+creation plus bounded expiry in the same atomic block/reorg transition as the
+current block root. Real owner policy, provider challenge/repair, shielded
+recovery/consume relations, benchmarks and independent audits remain
+incomplete. The mechanism must not be activated or called production-ready.
+
+## 9. Prior-art boundary
+
+Comparison is required against Utreexo/UTXO accumulators, stateless-client
+witness updates, Ethereum state expiry, versioned authenticated dictionaries,
+revocable-credential accumulators and historical KV authentication. Starting
+references are Utreexo (IACR ePrint 2019/611), Ethereum statelessness/state
+expiry, and *Practical Revocable Anonymous Credentials* (FC 2012). Until
+systematic literature/patent searches and independent peer review, H-WES may
+claim only this model, black-box lower bound and candidate tradeoff, not first
+resolution of state expiry or first recoverable state.
+
+---
+
+<!-- hyphen-bilingual-chinese -->
+
 # H-WES：从恢复下界到可过期认证对象
 
 状态：研究规范，未激活到任何 Hyphen 网络。本文固定问题、模型、定理和实现
@@ -381,9 +645,10 @@ shielded note 暂不在实现 profile：若 owner、真实输入和 nullifier �
 - `availability.rs`：完整 blob 验证后签名、`2f+1` distinct-seat certificate、上下文与
   retention 检查。
 
-这些模块尚未与 `expiring_state.rs` 的五根和当前 block state root 做一个统一原子
-transition；真实 owner policy、provider challenge/repair、reorg 接入、shielded
-relation、benchmark 和独立审计也未完成，所以不能激活到现有网络或称为生产协议。
+研究 profile 已将 `expiring_state.rs` 的五根、公开创建和有界过期与当前 block state
+root 放入同一个原子 block/reorg transition。真实 owner policy、provider
+challenge/repair、shielded recovery/consume relation、benchmark 和独立审计仍未完成，
+所以不能激活到生产网络或称为生产协议。
 
 ## 9. Prior-art 边界
 

@@ -18,6 +18,7 @@ members = [
     "crates/hyphen-rpc",
     "crates/hyphen-vm",
     "crates/hyphen-explorer",
+    "crates/hyphen-compute",
 ]
 exclude = ["crates/hyphen-fuzz"]
 resolver = "2"
@@ -49,6 +50,7 @@ hyphen-token = { path = "crates/hyphen-token" }
 hyphen-rpc = { path = "crates/hyphen-rpc" }
 hyphen-vm = { path = "crates/hyphen-vm" }
 hyphen-explorer = { path = "crates/hyphen-explorer" }
+hyphen-compute = { path = "crates/hyphen-compute" }
 
 # ── external crates ──
 # ── cryptography ──
@@ -78,7 +80,7 @@ wasmparser = "0.255.0"
 tokio = { version = "1.53.1", features = ["full"] }
 futures = "0.3.33"
 axum = "0.8.9"
-libp2p = { version = "0.56", default-features = false, features = [
+libp2p = { version = "0.56.0", default-features = false, features = [
     "tcp",
     "noise",
     "yamux",

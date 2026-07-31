@@ -2,8 +2,10 @@
 
 use std::collections::BTreeSet;
 
+use hyphen_compute::ComputeState;
 use hyphen_core::block::Block;
 use hyphen_crypto::{blake3_hash, Hash256};
+use hyphen_vm::VmLedger;
 use serde::{Deserialize, Serialize};
 use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
 use thiserror::Error;
@@ -11,8 +13,12 @@ use thiserror::Error;
 use crate::chain_state::{ChainState, ChainTip, EPOCH_SEED_PREFIX, TIP_KEY};
 use crate::commitment_tree::{PersistentCommitmentTree, TREE_STATE_KEY};
 use crate::compress::{compress, decompress};
+use crate::compute_state::{ComputeStateStore, COMPUTE_STATE_KEY};
 use crate::nullifier_set::NullifierSet;
 use crate::store::BlockStore;
+use crate::vm_state::{VmStateStore, VM_STATE_KEY};
+use crate::wes_state::{WesStateStore, WES_STATE_KEY};
+use crate::ReferenceExpiringState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedOutput {
@@ -30,6 +36,20 @@ pub struct AtomicBlockUpdate<'a> {
     pub coinbase: Option<Vec<u8>>,
     pub tip: ChainTip,
     pub next_epoch_seed: Option<(u64, Hash256)>,
+    pub compute_state: ComputeState,
+    pub vm_state: VmLedger,
+    pub wes_state: ReferenceExpiringState,
+}
+
+/// All canonical stores participating in one atomic block transition.
+pub struct AtomicStateStores<'a> {
+    pub blocks: &'a BlockStore,
+    pub chain_state: &'a ChainState,
+    pub nullifiers: &'a NullifierSet,
+    pub commitment_tree: &'a mut PersistentCommitmentTree,
+    pub compute_state: &'a mut ComputeStateStore,
+    pub vm_state: &'a mut VmStateStore,
+    pub wes_state: &'a mut WesStateStore,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,6 +58,9 @@ struct BlockUndo {
     height: u64,
     previous_tip: Option<ChainTip>,
     previous_commitment_tree: hyphen_crypto::merkle::MerkleTree,
+    previous_compute_state: ComputeState,
+    previous_vm_state: VmLedger,
+    previous_wes_state: ReferenceExpiringState,
     transaction_hashes: Vec<Hash256>,
     output_indices: Vec<u64>,
     nullifiers: Vec<[u8; 32]>,
@@ -90,16 +113,42 @@ enum AbortReason {
     ConcurrentStateChange,
 }
 
+pub fn consensus_state_root(compute_root: Hash256, vm_root: Hash256, wes_root: Hash256) -> Hash256 {
+    if compute_root == Hash256::ZERO && vm_root == Hash256::ZERO && wes_root == Hash256::ZERO {
+        return Hash256::ZERO;
+    }
+    hyphen_crypto::blake3_hash_many(&[
+        b"HYPHEN_CONSENSUS_STATE_ROOT_V1",
+        compute_root.as_bytes(),
+        vm_root.as_bytes(),
+        wes_root.as_bytes(),
+    ])
+}
+
+fn wes_consensus_root(state: &ReferenceExpiringState) -> Hash256 {
+    if state.is_empty() {
+        Hash256::ZERO
+    } else {
+        state.roots().combined()
+    }
+}
+
 /// Commits every persistent effect of a canonical block as one sled
 /// transaction. The in-memory commitment tree changes only after persistence
 /// succeeds.
 pub fn commit_block_update(
-    blocks: &BlockStore,
-    chain_state: &ChainState,
-    nullifiers: &NullifierSet,
-    commitment_tree: &mut PersistentCommitmentTree,
+    stores: AtomicStateStores<'_>,
     update: AtomicBlockUpdate<'_>,
 ) -> Result<(), AtomicStateError> {
+    let AtomicStateStores {
+        blocks,
+        chain_state,
+        nullifiers,
+        commitment_tree,
+        compute_state,
+        vm_state,
+        wes_state,
+    } = stores;
     let block_hash = update.block.hash();
     let expected_tip_state = chain_state
         .tree
@@ -116,6 +165,9 @@ pub fn commit_block_update(
         })
         .transpose()?;
     let previous_commitment_tree = commitment_tree.snapshot();
+    let previous_compute_state = compute_state.snapshot();
+    let previous_vm_state = vm_state.snapshot();
+    let previous_wes_state = wes_state.snapshot();
     validate_update(
         &update,
         block_hash,
@@ -134,6 +186,51 @@ pub fn commit_block_update(
     if expected_tree_state
         .as_deref()
         .is_some_and(|persisted| persisted != compressed_previous_tree.as_slice())
+    {
+        return Err(AtomicStateError::ConcurrentStateChange);
+    }
+    let previous_compute_bytes = hyphen_codec::serialize(&previous_compute_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_previous_compute = compress(&previous_compute_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let expected_compute_state = compute_state
+        .tree
+        .get_raw(COMPUTE_STATE_KEY)
+        .map_err(|error| AtomicStateError::Storage(error.to_string()))?
+        .map(|value| value.to_vec());
+    if expected_compute_state
+        .as_deref()
+        .is_some_and(|persisted| persisted != compressed_previous_compute.as_slice())
+    {
+        return Err(AtomicStateError::ConcurrentStateChange);
+    }
+    let previous_vm_bytes = hyphen_codec::serialize(&previous_vm_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_previous_vm = compress(&previous_vm_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let expected_vm_state = vm_state
+        .tree
+        .get_raw(VM_STATE_KEY)
+        .map_err(|error| AtomicStateError::Storage(error.to_string()))?
+        .map(|value| value.to_vec());
+    if expected_vm_state
+        .as_deref()
+        .is_some_and(|persisted| persisted != compressed_previous_vm.as_slice())
+    {
+        return Err(AtomicStateError::ConcurrentStateChange);
+    }
+    let previous_wes_bytes = hyphen_codec::serialize(&previous_wes_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_previous_wes = compress(&previous_wes_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let expected_wes_state = wes_state
+        .tree
+        .get_raw(WES_STATE_KEY)
+        .map_err(|error| AtomicStateError::Storage(error.to_string()))?
+        .map(|value| value.to_vec());
+    if expected_wes_state
+        .as_deref()
+        .is_some_and(|persisted| persisted != compressed_previous_wes.as_slice())
     {
         return Err(AtomicStateError::ConcurrentStateChange);
     }
@@ -182,6 +279,18 @@ pub fn commit_block_update(
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_tree =
         compress(&tree_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let compute_bytes = hyphen_codec::serialize(&update.compute_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_compute =
+        compress(&compute_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let vm_bytes = hyphen_codec::serialize(&update.vm_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_vm =
+        compress(&vm_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let wes_bytes = hyphen_codec::serialize(&update.wes_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_wes =
+        compress(&wes_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
     let compressed_epoch_seed = update
         .next_epoch_seed
         .map(|(_, seed)| compress(seed.as_bytes()))
@@ -204,6 +313,9 @@ pub fn commit_block_update(
         height: update.block.header.height,
         previous_tip,
         previous_commitment_tree,
+        previous_compute_state,
+        previous_vm_state,
+        previous_wes_state,
         transaction_hashes: transaction_locations
             .iter()
             .map(|(hash, _)| *hash)
@@ -232,6 +344,9 @@ pub fn commit_block_update(
         commitment_tree.tree_data.inner(),
         &nullifiers.tree,
         blocks.undo_index.inner(),
+        compute_state.tree.inner(),
+        vm_state.tree.inner(),
+        wes_state.tree.inner(),
     );
     let transaction_result: Result<(), TransactionError<AbortReason>> = trees.transaction(
         |(
@@ -244,10 +359,17 @@ pub fn commit_block_update(
             commitment_tree_data,
             nullifier_tree,
             undo_tree,
+            compute_tree,
+            vm_tree,
+            wes_tree,
         )| {
             if state_tree.get(TIP_KEY)?.as_deref() != expected_tip_state.as_deref()
                 || commitment_tree_data.get(TREE_STATE_KEY)?.as_deref()
                     != expected_tree_state.as_deref()
+                || compute_tree.get(COMPUTE_STATE_KEY)?.as_deref()
+                    != expected_compute_state.as_deref()
+                || vm_tree.get(VM_STATE_KEY)?.as_deref() != expected_vm_state.as_deref()
+                || wes_tree.get(WES_STATE_KEY)?.as_deref() != expected_wes_state.as_deref()
             {
                 return Err(ConflictableTransactionError::Abort(
                     AbortReason::ConcurrentStateChange,
@@ -347,6 +469,9 @@ pub fn commit_block_update(
                 state_tree.insert(key, seed.as_slice())?;
             }
             commitment_tree_data.insert(TREE_STATE_KEY, compressed_tree.as_slice())?;
+            compute_tree.insert(COMPUTE_STATE_KEY, compressed_compute.as_slice())?;
+            vm_tree.insert(VM_STATE_KEY, compressed_vm.as_slice())?;
+            wes_tree.insert(WES_STATE_KEY, compressed_wes.as_slice())?;
             if let Some(existing) = undo_tree.get(block_hash.as_bytes().as_slice())? {
                 if existing.as_ref() != compressed_undo.as_slice() {
                     return Err(ConflictableTransactionError::Abort(
@@ -363,6 +488,9 @@ pub fn commit_block_update(
     match transaction_result {
         Ok(()) => {
             commitment_tree.replace_committed(update.commitment_tree);
+            compute_state.replace_committed(update.compute_state);
+            vm_state.replace_committed(update.vm_state);
+            wes_state.replace_committed(update.wes_state);
             Ok(())
         }
         Err(TransactionError::Abort(reason)) => Err(match reason {
@@ -388,6 +516,17 @@ fn validate_update(
     previous_tip: Option<&ChainTip>,
     previous_tree: &hyphen_crypto::merkle::MerkleTree,
 ) -> Result<(), AtomicStateError> {
+    if update.block.header.state_root
+        != consensus_state_root(
+            update.compute_state.root(),
+            update.vm_state.root(),
+            wes_consensus_root(&update.wes_state),
+        )
+    {
+        return Err(AtomicStateError::InvalidTransition(
+            "block state root does not match the unified consensus post-state".into(),
+        ));
+    }
     if update.tip.hash != block_hash || update.tip.height != update.block.header.height {
         return Err(AtomicStateError::InvalidTransition(
             "tip identity does not match the block".into(),
@@ -468,12 +607,18 @@ fn validate_update(
 /// Reverts the current canonical tip in one sled transaction. The block body
 /// and undo journal remain archived so the branch can be applied again.
 pub fn revert_block_update(
-    blocks: &BlockStore,
-    chain_state: &ChainState,
-    nullifiers: &NullifierSet,
-    commitment_tree: &mut PersistentCommitmentTree,
+    stores: AtomicStateStores<'_>,
     block_hash: &Hash256,
 ) -> Result<(), AtomicStateError> {
+    let AtomicStateStores {
+        blocks,
+        chain_state,
+        nullifiers,
+        commitment_tree,
+        compute_state,
+        vm_state,
+        wes_state,
+    } = stores;
     let undo_bytes = blocks
         .undo_index
         .get(block_hash.as_bytes())
@@ -511,6 +656,30 @@ pub fn revert_block_update(
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_tree = compress(&previous_tree_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let current_compute_bytes = hyphen_codec::serialize(&compute_state.snapshot())
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_current_compute = compress(&current_compute_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let previous_compute_bytes = hyphen_codec::serialize(&undo.previous_compute_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_previous_compute = compress(&previous_compute_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let current_vm_bytes = hyphen_codec::serialize(&vm_state.snapshot())
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_current_vm = compress(&current_vm_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let previous_vm_bytes = hyphen_codec::serialize(&undo.previous_vm_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_previous_vm = compress(&previous_vm_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let current_wes_bytes = hyphen_codec::serialize(&wes_state.snapshot())
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_current_wes = compress(&current_wes_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let previous_wes_bytes = hyphen_codec::serialize(&undo.previous_wes_state)
+        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
+    let compressed_previous_wes = compress(&previous_wes_bytes)
+        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
     let compressed_previous_epoch_seed = undo
         .epoch_seed
         .as_ref()
@@ -527,6 +696,9 @@ pub fn revert_block_update(
         chain_state.tree.inner(),
         commitment_tree.tree_data.inner(),
         &nullifiers.tree,
+        compute_state.tree.inner(),
+        vm_state.tree.inner(),
+        wes_state.tree.inner(),
     );
     let transaction_result: Result<(), TransactionError<AbortReason>> = trees.transaction(
         |(
@@ -537,6 +709,9 @@ pub fn revert_block_update(
             state_tree,
             commitment_tree_data,
             nullifier_tree,
+            compute_tree,
+            vm_tree,
+            wes_tree,
         )| {
             let height_key = undo.height.to_be_bytes();
             match height_tree.get(height_key.as_slice())? {
@@ -552,6 +727,30 @@ pub fn revert_block_update(
                 _ => {
                     return Err(ConflictableTransactionError::Abort(
                         AbortReason::NotCanonicalTip,
+                    ));
+                }
+            }
+            match compute_tree.get(COMPUTE_STATE_KEY)? {
+                Some(snapshot) if snapshot.as_ref() == compressed_current_compute.as_slice() => {}
+                _ => {
+                    return Err(ConflictableTransactionError::Abort(
+                        AbortReason::ConcurrentStateChange,
+                    ));
+                }
+            }
+            match vm_tree.get(VM_STATE_KEY)? {
+                Some(snapshot) if snapshot.as_ref() == compressed_current_vm.as_slice() => {}
+                _ => {
+                    return Err(ConflictableTransactionError::Abort(
+                        AbortReason::ConcurrentStateChange,
+                    ));
+                }
+            }
+            match wes_tree.get(WES_STATE_KEY)? {
+                Some(snapshot) if snapshot.as_ref() == compressed_current_wes.as_slice() => {}
+                _ => {
+                    return Err(ConflictableTransactionError::Abort(
+                        AbortReason::ConcurrentStateChange,
                     ));
                 }
             }
@@ -629,6 +828,9 @@ pub fn revert_block_update(
                 }
             }
             commitment_tree_data.insert(TREE_STATE_KEY, compressed_previous_tree.as_slice())?;
+            compute_tree.insert(COMPUTE_STATE_KEY, compressed_previous_compute.as_slice())?;
+            vm_tree.insert(VM_STATE_KEY, compressed_previous_vm.as_slice())?;
+            wes_tree.insert(WES_STATE_KEY, compressed_previous_wes.as_slice())?;
             Ok(())
         },
     );
@@ -636,6 +838,9 @@ pub fn revert_block_update(
     match transaction_result {
         Ok(()) => {
             commitment_tree.replace_committed(undo.previous_commitment_tree);
+            compute_state.replace_committed(undo.previous_compute_state);
+            vm_state.replace_committed(undo.previous_vm_state);
+            wes_state.replace_committed(undo.previous_wes_state);
             Ok(())
         }
         Err(TransactionError::Abort(AbortReason::NotCanonicalTip)) => {
@@ -700,15 +905,23 @@ mod tests {
         let chain_state = ChainState::open(&db).unwrap();
         let nullifiers = NullifierSet::open(&db).unwrap();
         let mut commitments = PersistentCommitmentTree::open(&db).unwrap();
+        let mut compute = ComputeStateStore::open(&db).unwrap();
+        let mut vm = VmStateStore::open(&db).unwrap();
+        let mut wes = WesStateStore::open(&db, hash(1)).unwrap();
         let first = block(0, Hash256::ZERO, 10);
         let mut first_tree = commitments.snapshot();
         first_tree.append(hash(20));
         let repeated_nullifier = [30; 32];
         commit_block_update(
-            &blocks,
-            &chain_state,
-            &nullifiers,
-            &mut commitments,
+            AtomicStateStores {
+                blocks: &blocks,
+                chain_state: &chain_state,
+                nullifiers: &nullifiers,
+                commitment_tree: &mut commitments,
+                compute_state: &mut compute,
+                vm_state: &mut vm,
+                wes_state: &mut wes,
+            },
             AtomicBlockUpdate {
                 block: &first,
                 commitment_tree: first_tree,
@@ -727,6 +940,9 @@ mod tests {
                     total_outputs: 1,
                 },
                 next_epoch_seed: None,
+                compute_state: ComputeState::default(),
+                vm_state: VmLedger::default(),
+                wes_state: ReferenceExpiringState::new(hash(1), Hash256::ZERO),
             },
         )
         .unwrap();
@@ -736,10 +952,15 @@ mod tests {
         let mut second_tree = commitments.snapshot();
         second_tree.append(hash(21));
         let result = commit_block_update(
-            &blocks,
-            &chain_state,
-            &nullifiers,
-            &mut commitments,
+            AtomicStateStores {
+                blocks: &blocks,
+                chain_state: &chain_state,
+                nullifiers: &nullifiers,
+                commitment_tree: &mut commitments,
+                compute_state: &mut compute,
+                vm_state: &mut vm,
+                wes_state: &mut wes,
+            },
             AtomicBlockUpdate {
                 block: &second,
                 commitment_tree: second_tree,
@@ -758,6 +979,9 @@ mod tests {
                     total_outputs: 2,
                 },
                 next_epoch_seed: Some((1, hash(45))),
+                compute_state: ComputeState::default(),
+                vm_state: VmLedger::default(),
+                wes_state: ReferenceExpiringState::new(hash(1), Hash256::ZERO),
             },
         );
 
@@ -786,6 +1010,9 @@ mod tests {
         let chain_state = ChainState::open(&db).unwrap();
         let nullifiers = NullifierSet::open(&db).unwrap();
         let mut commitments = PersistentCommitmentTree::open(&db).unwrap();
+        let mut compute = ComputeStateStore::open(&db).unwrap();
+        let mut vm = VmStateStore::open(&db).unwrap();
+        let mut wes = WesStateStore::open(&db, hash(1)).unwrap();
 
         let first = block(0, Hash256::ZERO, 50);
         let mut first_tree = commitments.snapshot();
@@ -797,10 +1024,15 @@ mod tests {
             total_outputs: 1,
         };
         commit_block_update(
-            &blocks,
-            &chain_state,
-            &nullifiers,
-            &mut commitments,
+            AtomicStateStores {
+                blocks: &blocks,
+                chain_state: &chain_state,
+                nullifiers: &nullifiers,
+                commitment_tree: &mut commitments,
+                compute_state: &mut compute,
+                vm_state: &mut vm,
+                wes_state: &mut wes,
+            },
             AtomicBlockUpdate {
                 block: &first,
                 commitment_tree: first_tree,
@@ -814,6 +1046,9 @@ mod tests {
                 coinbase: None,
                 tip: first_tip.clone(),
                 next_epoch_seed: Some((7, hash(54))),
+                compute_state: ComputeState::default(),
+                vm_state: VmLedger::default(),
+                wes_state: ReferenceExpiringState::new(hash(1), Hash256::ZERO),
             },
         )
         .unwrap();
@@ -840,10 +1075,15 @@ mod tests {
         second_tree.append(hash(62));
         let second_root = second_tree.root();
         commit_block_update(
-            &blocks,
-            &chain_state,
-            &nullifiers,
-            &mut commitments,
+            AtomicStateStores {
+                blocks: &blocks,
+                chain_state: &chain_state,
+                nullifiers: &nullifiers,
+                commitment_tree: &mut commitments,
+                compute_state: &mut compute,
+                vm_state: &mut vm,
+                wes_state: &mut wes,
+            },
             AtomicBlockUpdate {
                 block: &second,
                 commitment_tree: second_tree,
@@ -852,6 +1092,9 @@ mod tests {
                 coinbase: Some(vec![63, 64]),
                 tip: second_tip.clone(),
                 next_epoch_seed: Some((7, hash(65))),
+                compute_state: ComputeState::default(),
+                vm_state: VmLedger::default(),
+                wes_state: ReferenceExpiringState::new(hash(1), Hash256::ZERO),
             },
         )
         .unwrap();
@@ -865,10 +1108,15 @@ mod tests {
         assert_eq!(commitments.root(), second_root);
 
         revert_block_update(
-            &blocks,
-            &chain_state,
-            &nullifiers,
-            &mut commitments,
+            AtomicStateStores {
+                blocks: &blocks,
+                chain_state: &chain_state,
+                nullifiers: &nullifiers,
+                commitment_tree: &mut commitments,
+                compute_state: &mut compute,
+                vm_state: &mut vm,
+                wes_state: &mut wes,
+            },
             &second_hash,
         )
         .unwrap();
@@ -900,10 +1148,15 @@ mod tests {
         let mut reapplied_tree = commitments.snapshot();
         reapplied_tree.append(hash(62));
         commit_block_update(
-            &blocks,
-            &chain_state,
-            &nullifiers,
-            &mut commitments,
+            AtomicStateStores {
+                blocks: &blocks,
+                chain_state: &chain_state,
+                nullifiers: &nullifiers,
+                commitment_tree: &mut commitments,
+                compute_state: &mut compute,
+                vm_state: &mut vm,
+                wes_state: &mut wes,
+            },
             AtomicBlockUpdate {
                 block: &second,
                 commitment_tree: reapplied_tree,
@@ -912,6 +1165,9 @@ mod tests {
                 coinbase: Some(vec![63, 64]),
                 tip: second_tip.clone(),
                 next_epoch_seed: Some((7, hash(65))),
+                compute_state: ComputeState::default(),
+                vm_state: VmLedger::default(),
+                wes_state: ReferenceExpiringState::new(hash(1), Hash256::ZERO),
             },
         )
         .unwrap();

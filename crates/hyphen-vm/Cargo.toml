@@ -7,7 +7,6 @@ description = "WASM smart contract execution engine for the Hyphen blockchain"
 [dependencies]
 hyphen-crypto.workspace = true
 hyphen-core.workspace   = true
-hyphen-state.workspace  = true
 hyphen-token.workspace  = true
 serde.workspace         = true
 hyphen-codec.workspace  = true
@@ -19,3 +18,4 @@ wasmer-middlewares.workspace = true
 wasmparser.workspace         = true
 hex.workspace           = true
 sled.workspace          = true
+zstd.workspace          = true

@@ -8,17 +8,17 @@ pub enum StateError {
     #[error("sled error: {0}")]
     Sled(#[from] sled::Error),
     #[error("compression: {0}")]
-    Compress(#[from] hyphen_state::compress::CompressError),
+    Compress(String),
 }
 
 pub struct ContractState {
-    tree: hyphen_state::CompressedTree,
+    tree: sled::Tree,
 }
 
 impl ContractState {
     pub fn open(db: &sled::Db) -> Result<Self, StateError> {
         Ok(Self {
-            tree: hyphen_state::CompressedTree::new(db.open_tree("contract_state")?),
+            tree: db.open_tree("contract_state")?,
         })
     }
 
@@ -35,7 +35,13 @@ impl ContractState {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, StateError> {
         let sk = Self::storage_key(contract, key);
-        Ok(self.tree.get(&sk)?.map(|iv| iv.to_vec()))
+        self.tree
+            .get(&sk)?
+            .map(|bytes| {
+                zstd::stream::decode_all(bytes.as_ref())
+                    .map_err(|error| StateError::Compress(error.to_string()))
+            })
+            .transpose()
     }
 
     pub fn set(
@@ -45,13 +51,15 @@ impl ContractState {
         value: &[u8],
     ) -> Result<(), StateError> {
         let sk = Self::storage_key(contract, key);
-        self.tree.insert(&sk, value)?;
+        let compressed = zstd::bulk::compress(value, 3)
+            .map_err(|error| StateError::Compress(error.to_string()))?;
+        self.tree.insert(&sk, compressed)?;
         Ok(())
     }
 
     pub fn delete(&self, contract: &ContractAddress, key: &[u8]) -> Result<(), StateError> {
         let sk = Self::storage_key(contract, key);
-        self.tree.inner().remove(&sk)?;
+        self.tree.remove(&sk)?;
         Ok(())
     }
 }
@@ -96,10 +104,12 @@ impl OverlayState {
         for (sk, value) in writes {
             match value {
                 Some(v) => {
-                    base.tree.insert(&sk, &v)?;
+                    let compressed = zstd::bulk::compress(&v, 3)
+                        .map_err(|error| StateError::Compress(error.to_string()))?;
+                    base.tree.insert(&sk, compressed)?;
                 }
                 None => {
-                    base.tree.inner().remove(&sk)?;
+                    base.tree.remove(&sk)?;
                 }
             }
         }

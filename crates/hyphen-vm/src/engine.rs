@@ -65,6 +65,10 @@ impl VmEngine {
         }
     }
 
+    pub fn with_storage(storage: HashMap<ContractAddress, HashMap<Vec<u8>, Vec<u8>>>) -> Self {
+        Self { storage }
+    }
+
     pub fn deploy(
         &mut self,
         params: &DeployParams,
