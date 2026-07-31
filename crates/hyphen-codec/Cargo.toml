@@ -1,0 +1,9 @@
+[package]
+name = "hyphen-codec"
+version.workspace = true
+edition.workspace = true
+description = "Bounded canonical binary codec for Hyphen protocol and storage objects"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

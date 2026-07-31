@@ -8,13 +8,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
+use hyphen_consensus::{InclusionReceiptVoteGossip, QuorumInclusionReceiptGossip};
+
 use crate::protocol::{
     NetworkMessage, SyncRequest, SyncResponse, MAX_GOSSIP_BLOCK_SIZE, MAX_GOSSIP_ENVELOPE_SIZE,
     MAX_GOSSIP_TRANSACTION_SIZE,
 };
-
-#[derive(Debug, Clone)]
-pub struct BincodeCodec;
 
 #[derive(NetworkBehaviour)]
 pub struct HyphenBehaviour {
@@ -29,6 +28,7 @@ pub struct HyphenNetwork {
     pub swarm: Swarm<HyphenBehaviour>,
     pub block_topic: gossipsub::IdentTopic,
     pub tx_topic: gossipsub::IdentTopic,
+    pub receipt_topic: gossipsub::IdentTopic,
 }
 
 impl HyphenNetwork {
@@ -104,9 +104,12 @@ impl HyphenNetwork {
 
         let block_topic = gossipsub::IdentTopic::new(format!("hyphen-{network_tag}-blocks-v2"));
         let tx_topic = gossipsub::IdentTopic::new(format!("hyphen-{network_tag}-txs-v2"));
+        let receipt_topic =
+            gossipsub::IdentTopic::new(format!("hyphen-{network_tag}-fair-receipts-v0"));
 
         swarm.behaviour_mut().gossipsub.subscribe(&block_topic)?;
         swarm.behaviour_mut().gossipsub.subscribe(&tx_topic)?;
+        swarm.behaviour_mut().gossipsub.subscribe(&receipt_topic)?;
 
         swarm.listen_on(listen_addr)?;
 
@@ -127,6 +130,7 @@ impl HyphenNetwork {
             swarm,
             block_topic,
             tx_topic,
+            receipt_topic,
         })
     }
 
@@ -137,7 +141,7 @@ impl HyphenNetwork {
         if tx_bytes.len() > MAX_GOSSIP_TRANSACTION_SIZE {
             return Err("transaction exceeds gossip limit".into());
         }
-        let msg = NetworkMessage::NewTransaction(tx_bytes).encode_proto();
+        let msg = NetworkMessage::NewTransaction(tx_bytes).encode_proto()?;
         self.swarm
             .behaviour_mut()
             .gossipsub
@@ -152,11 +156,35 @@ impl HyphenNetwork {
         if block_bytes.len() > MAX_GOSSIP_BLOCK_SIZE {
             return Err("block exceeds gossip limit".into());
         }
-        let msg = NetworkMessage::NewBlock(block_bytes).encode_proto();
+        let msg = NetworkMessage::NewBlock(block_bytes).encode_proto()?;
         self.swarm
             .behaviour_mut()
             .gossipsub
             .publish(self.block_topic.clone(), msg)?;
+        Ok(())
+    }
+
+    pub fn broadcast_receipt_vote(
+        &mut self,
+        receipt: InclusionReceiptVoteGossip,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let message = NetworkMessage::InclusionReceiptVote(receipt).encode_proto()?;
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(self.receipt_topic.clone(), message)?;
+        Ok(())
+    }
+
+    pub fn broadcast_quorum_receipt(
+        &mut self,
+        receipt: QuorumInclusionReceiptGossip,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let message = NetworkMessage::QuorumInclusionReceipt(receipt).encode_proto()?;
+        self.swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(self.receipt_topic.clone(), message)?;
         Ok(())
     }
 

@@ -1,7 +1,7 @@
+use crate::system_rng;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -130,12 +130,12 @@ pub fn clsag_sign(
     let w_image = mu_p * key_image + mu_c * commit_image;
     let prefix = round_prefix(msg, &w_image);
 
-    let alpha = Scalar::random(&mut OsRng);
+    let alpha = Scalar::random(&mut system_rng());
     let l_init = alpha * G;
     let r_init = alpha * hp_l;
 
     // s values
-    let mut s_values: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut OsRng)).collect();
+    let mut s_values: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut system_rng())).collect();
     let mut c_values: Vec<Scalar> = vec![Scalar::ZERO; n];
 
     // c_{l+1}
@@ -224,14 +224,14 @@ mod tests {
 
     #[test]
     fn sign_and_verify_ring_1() {
-        let sk = Scalar::random(&mut OsRng);
+        let sk = Scalar::random(&mut system_rng());
         let pk = sk * G;
 
-        let blind = Scalar::random(&mut OsRng);
+        let blind = Scalar::random(&mut system_rng());
         let gens = crate::pedersen::PedersenGens::default();
         let commit = gens.commit(Scalar::from(1000u64), blind);
 
-        let blind2 = Scalar::random(&mut OsRng);
+        let blind2 = Scalar::random(&mut system_rng());
         let pseudo = gens.commit(Scalar::from(1000u64), blind2);
 
         let sig = clsag_sign(
@@ -259,9 +259,9 @@ mod tests {
         let mut real_blind = Scalar::ZERO;
 
         for i in 0..4 {
-            let sk = Scalar::random(&mut OsRng);
+            let sk = Scalar::random(&mut system_rng());
             let pk = sk * G;
-            let b = Scalar::random(&mut OsRng);
+            let b = Scalar::random(&mut system_rng());
             let c = gens.commit(Scalar::from(500u64), b);
             ring_keys.push(pk);
             ring_commits.push(c);
@@ -271,7 +271,7 @@ mod tests {
             }
         }
 
-        let blind2 = Scalar::random(&mut OsRng);
+        let blind2 = Scalar::random(&mut system_rng());
         let pseudo = gens.commit(Scalar::from(500u64), blind2);
 
         let sig = clsag_sign(

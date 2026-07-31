@@ -1,6 +1,6 @@
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use rand::rngs::OsRng;
+use hyphen_crypto::system_rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
@@ -146,7 +146,7 @@ impl TransactionBuilder {
         let sum_out_blind: Scalar = out_blindings.iter().sum();
         let mut pseudo_blindings = Vec::with_capacity(self.inputs.len());
         for _i in 0..self.inputs.len() - 1 {
-            pseudo_blindings.push(Scalar::random(&mut OsRng));
+            pseudo_blindings.push(Scalar::random(&mut system_rng()));
         }
         let sum_pseudo_partial: Scalar = pseudo_blindings.iter().sum();
         pseudo_blindings.push(sum_out_blind - sum_pseudo_partial);

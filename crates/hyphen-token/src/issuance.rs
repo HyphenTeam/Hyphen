@@ -78,7 +78,6 @@ impl MintRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
 
     #[test]
     fn issuance_policy_fixed() {
@@ -96,7 +95,7 @@ mod tests {
 
     #[test]
     fn mint_record_commitment_verify() {
-        let blinding = Scalar::random(&mut OsRng);
+        let blinding = Scalar::random(&mut hyphen_crypto::rng::system_rng());
         let record = MintRecord::new(AssetId::NATIVE, 1000, blinding, vec![0u8; 64], 0, 0);
         assert!(record.verify_commitment());
     }

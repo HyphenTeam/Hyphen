@@ -149,7 +149,7 @@ cargo run -p hyphen-node --locked -- \
   --replay-history ./devnet-history-v1.bin
 ```
 
-Archive files are currently Rust/bincode implementation artifacts, capped at
+Archive files are currently Rust/`hyphen-codec` v1 implementation artifacts, capped at
 512 MiB by the CLI. A language-neutral canonical block/archive encoding and
 cross-implementation vectors remain required before production consensus.
 

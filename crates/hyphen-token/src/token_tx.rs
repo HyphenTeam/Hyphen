@@ -71,10 +71,9 @@ impl TokenTransfer {
 mod tests {
     use super::*;
     use curve25519_dalek::scalar::Scalar;
-    use rand::rngs::OsRng;
 
     fn make_commitment(value: u64) -> Commitment {
-        Commitment::create(value, Scalar::random(&mut OsRng))
+        Commitment::create(value, Scalar::random(&mut hyphen_crypto::rng::system_rng()))
     }
 
     #[test]

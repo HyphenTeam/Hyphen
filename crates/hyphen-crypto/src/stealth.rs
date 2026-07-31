@@ -1,7 +1,7 @@
+use crate::system_rng;
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT;
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
 use curve25519_dalek::scalar::Scalar;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -76,8 +76,8 @@ impl SpendKey {
 }
 
 pub fn generate_keys() -> (ViewKey, SpendKey, StealthAddress) {
-    let a = Scalar::random(&mut OsRng);
-    let b = Scalar::random(&mut OsRng);
+    let a = Scalar::random(&mut system_rng());
+    let b = Scalar::random(&mut system_rng());
     let view = ViewKey(a.to_bytes());
     let spend = SpendKey(b.to_bytes());
     let addr = StealthAddress {
@@ -99,7 +99,7 @@ pub fn derive_one_time_key(
     addr: &StealthAddress,
     output_index: u64,
 ) -> Result<(EphemeralKey, RistrettoPoint, Scalar), StealthError> {
-    let r = Scalar::random(&mut OsRng);
+    let r = Scalar::random(&mut system_rng());
     derive_one_time_key_with_scalar(addr, output_index, r)
 }
 

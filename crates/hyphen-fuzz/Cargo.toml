@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
+hyphen-codec = { path = "../hyphen-codec" }
 hyphen-network = { path = "../hyphen-network" }
 hyphen-rpc = { path = "../hyphen-rpc" }
 hyphen-tx = { path = "../hyphen-tx" }
@@ -31,6 +32,13 @@ bench = false
 [[bin]]
 name = "p2p_decode"
 path = "fuzz_targets/p2p_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codec_decode"
+path = "fuzz_targets/codec_decode.rs"
 test = false
 doc = false
 bench = false

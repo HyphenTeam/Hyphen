@@ -23,13 +23,19 @@ devnet consensus:
 
 | Mechanism | Code and vectors | What is actually established | Missing before activation |
 | --- | --- | --- | --- |
-| H-WES recoverable state expiry | Present | Deterministic transitions, archive inclusion, latest-version binding, monotone nullifiers | Concrete ownership/availability policy, persistent integration, benchmarks, audit |
+| H-WES recoverable state expiry | Present, inactive | Deterministic lifecycle, persistent namespaced SMT, authenticated blob serving, archive/latest binding, monotone nullifiers, availability-certificate verifier | Atomic integration with live chain state, shielded owner/nullifier circuit, provider protocol/incentives, benchmarks, audit |
 | H-BFM parallel block fusion | Present | Unique deterministic order for one agreed finite DAG | DAG set agreement, availability, conflict semantics, incentive and liveness proof |
-| H-FOC fast ordering certificates | Present | Signature checks and quorum-intersection safety under stated assumptions | Global latency evidence, committee capture analysis, view change, live-network integration |
-| H-SAC selective audit disclosure | Present | One-output amount opening and Schnorr ownership proof bound to an auditor/scope | Confidential delivery, provenance relation, aggregation, revocation semantics, audit |
+| H-FOC' fair finality | Present, inactive | Durable PREPARE/COMMIT locks, timeout certificates, lock-carrying view change, dual-committee handoff, receipt obligations and typed P2P receipt transport | Unbiasable beacon, live pacemaker/leader, finalized committee source, block-execution integration, WAN benchmarks, audit |
+| H-SAC selective audit disclosure | Present, inactive | One-output amount opening, scoped Schnorr ownership proof, and a leakage lower bound | Frozen compliance relation, confidential delivery, chain-provenance ZK circuit, proving/verifying integration, independent circuit audit |
 
 Useful-Work is disabled. The WASM engine is an isolated library and is not part
 of transaction or block execution. Neither feature may be described as active.
+
+Consensus and storage serialization now uses the in-repository
+[`hyphen-codec`](crates/hyphen-codec/README.md). It is bounded, canonical,
+trailing-byte rejecting, and contains no unsafe code. Published devnet v2 chain
+identity vectors remain unchanged. The crate is tested but not independently
+audited.
 
 ## Run a node
 
@@ -143,11 +149,15 @@ recompute its commitment and scan every suffix record. The actual lower bound
 needs a succinctness condition. In a membership-only authenticated-array model,
 if `m` cells follow the candidate and a verifier opens only `q<m`, an unqueried
 cell can contain either an unrelated record or a newer version of the same key.
-With miss probability at most `epsilon`, it must query
+With perfect completeness and miss probability at most `epsilon`, its expected
+number of authenticated queries `Q` must satisfy
 
 ```text
-q >= (1-epsilon)m.
+E[Q] >= (1-epsilon)m.
 ```
+
+With two-sided error at most `epsilon`, the corresponding bound is
+`E[Q] >= (1-2epsilon)m` for `epsilon < 1/2`.
 
 Secure recovery must therefore pay for authenticated latest state, continuing
 witness/index maintenance, or linear suffix data/prover work. H-WES chooses a
@@ -170,12 +180,35 @@ For spendable objects, the nullifier set is monotone:
 `N_t subseteq N_(t+1)`. If a nullifier `z` was inserted at height `i`, then
 `z in N_i` and hence `z in N_t` for every `t >= i`. A restoration transition
 that rejects membership in `N_t` cannot revive an already-spent object. The
-reference profile deliberately excludes shielded notes until the ownership and
-non-membership relation is specified as a real zero-knowledge circuit.
+reference profile deliberately excludes shielded notes until ownership,
+latest-state, and non-membership are constrained by a circuit soundly bound to
+the chain's Ristretto255/BLAKE3 commitments.
 
-Open obligations: data-availability certification, storage-provider incentives,
-state-rent policy, bounded expiry work, persistent atomic integration, and a
-complete privacy-preserving ownership relation.
+The persistent SMT stores only non-default nodes. For namespace `ns`, leaf
+`(k,v)` is `H_leaf(ns,k,v)` and every internal node commits to namespace, depth,
+left child, and right child. A 256-sibling membership or non-membership proof
+reconstructs exactly one root. Two different openings for one `(ns,k,root)`
+imply a first level at which equal parent hashes have different ordered child
+pairs, reducing binding to a collision in the domain-separated node/leaf hash.
+All changed leaves, ancestors, and the root are committed by one optimistic
+sled transaction and flushed before success is returned.
+
+The proof store commits each bounded blob by content hash and each chunk by
+`H_chunk(object,index,count,len,bytes)`, then commits chunk leaves in a Merkle
+root. A valid chunk proof binds position, count, length, object identity, and
+bytes. Full reconstruction checks the complete blob hash. P2P sync serves typed
+SMT proofs, blob metadata, and chunk proofs under strict response limits.
+
+An availability certificate means that `2f+1` distinct committee seats signed
+after validating the complete blob and exact chain/epoch/retention context. At
+least `f+1` signers are honest under the seat fault bound, so honest signers had
+the blob at signing time. It does **not** prove that any copy remains available
+later; durable retention still needs an enforceable provider/slashing or
+erasure-coded availability protocol.
+
+Open obligations: live H-WES root integration, provider incentives and repair,
+state-rent policy, bounded expiry work, reorg integration, a complete shielded
+relation, benchmarks, and independent review.
 
 ### H-BFM: a necessary fusion mechanism, not a novelty claim
 
@@ -216,6 +249,15 @@ The implementation therefore emits strongly connected components as fair
 batches. Hidden amounts, parties, and semantics never enter the ordering
 function and receive no fairness claim.
 
+For an inclusion receipt and proposal certificate, both signer sets have size
+`q=2f+1` in `n=3f+1`, hence intersect in at least `f+1` seats. The durable
+`HonestReceiptVoter` records the transaction obligation and flushes it before
+returning a seat-bound signature. Therefore the intersection contains an honest
+seat that refuses an order omitting that transaction. This proves omission
+resistance only when the same active committee and honest-voter APIs are
+mandatory. P2P transports typed vote/quorum receipts, but the node does not
+activate them because no finalized committee profile is wired in.
+
 ### H-FOC: quorum safety, not unconditional 100 ms finality
 
 For a committee of `n = 3f + 1` seats, a certificate contains `q = 2f + 1`
@@ -249,9 +291,19 @@ P_bad = sum_(i=f+1)^n C(n,i) alpha^i (1-alpha)^(n-i).
 ```
 
 Grinding over `g` candidate seeds raises the union-bound estimate to at most
-`min(1,gP_bad)`. Fixed-committee intersection does not prove cross-epoch safety;
-H-FOC' additionally needs old/new committee handoff QCs over one finalized PoW
-checkpoint and lock-preserving view change. Those phases are not implemented.
+`min(1,gP_bad)`. Fixed-committee intersection does not by itself prove
+cross-epoch safety. The inactive H-FOC' state machine now implements durable
+PREPARE/COMMIT locks, timeout votes carrying the highest prepare QC,
+lock-preserving view-change proposal checks, and old/new committee handoff QCs
+bound to one finalized checkpoint. Safety tests include crash/restart
+anti-equivocation and handoff context replay rejection. It still has no live
+pacemaker, leader election, committee beacon, or block-execution path.
+
+The current chain seed is `BLAKE3(last epoch block hash)` and is grindable. It
+must not be substituted into the independent-seed probability model as if it
+were unbiasable. Acceptable activation routes and the Circom field-bridge
+obstruction are stated in
+[`cryptographic-activation-gates.md`](docs/security/cryptographic-activation-gates.md).
 
 ### H-SAC: amount opening and scoped ownership
 
@@ -312,6 +364,11 @@ fair ordering and H-FOC'](docs/research/private-visible-fair-ordering.md),
 [H-SAC leakage lower bound](docs/research/h-sac-leakage-lower-bound.md), and the
 [research ledger](docs/research/four-core-innovations.md).
 
+No shielded H-WES or H-SAC Circom circuit is claimed. The live transaction
+relations use Ristretto255 and BLAKE3 while ordinary Circom artifacts operate
+over BN254; a sound bit-level/group bridge or a versioned commitment migration
+is required. No independent circuit audit has been commissioned or supplied.
+
 ## Verification
 
 Run the same base-chain gates used by CI:
@@ -322,11 +379,21 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
 cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
 cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
+cargo audit --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
+cargo audit --file crates/hyphen-fuzz/Cargo.lock --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
 ```
 
-Nightly CI runs bounded transaction, RPC, and P2P decoder fuzzing. Passing these
+Nightly CI runs bounded transaction, RPC, P2P, and canonical-codec decoder
+fuzzing. Passing these
 checks establishes reproducibility for the tested revision; it is not a formal
 proof or an external security review.
+
+The two audit exceptions are optional `hickory-proto` dependencies retained in
+libp2p's lock graph. Hyphen disables libp2p default features, DNS, and mDNS, so
+those crates are not in the built runtime graph; boot nodes must currently use
+IP multiaddresses. Any new non-ignored RustSec vulnerability fails CI.
+Informational unmaintained/unsound transitive warnings remain tracked and are
+not presented as resolved.
 
 ## CI and automated releases
 

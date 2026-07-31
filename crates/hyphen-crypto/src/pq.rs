@@ -77,12 +77,10 @@ pub struct WotsSignature {
 
 impl WotsSecretKey {
     pub fn generate() -> Self {
-        use rand::RngCore;
-        let mut rng = rand::rngs::OsRng;
         let mut seed = [0u8; 32];
         let mut addr_seed = [0u8; 32];
-        rng.fill_bytes(&mut seed);
-        rng.fill_bytes(&mut addr_seed);
+        crate::fill_system_random(&mut seed);
+        crate::fill_system_random(&mut addr_seed);
         Self { seed, addr_seed }
     }
 

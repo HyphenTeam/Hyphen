@@ -1,5 +1,5 @@
+use crate::system_rng;
 use ed25519_dalek::{Signature as Ed25519Sig, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -14,7 +14,7 @@ pub enum KeyError {
     VerificationFailed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PublicKey(pub [u8; 32]);
 
 impl PublicKey {
@@ -51,7 +51,7 @@ pub struct SecretKey(pub [u8; 32]);
 
 impl SecretKey {
     pub fn generate() -> Self {
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut system_rng());
         Self(sk.to_bytes())
     }
 

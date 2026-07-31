@@ -15,9 +15,17 @@ Hyphen 是一条用 Rust 编写、面向隐私交易和 CPU 优先工作量证�
 | 基础 PoW 主链 | 已接入区块验证与状态提交 | 未证明长期经济安全或主网安全 |
 | 隐私交易库 | 有承诺、范围证明、CLSAG、隐身输出与测试 | 未经过外部密码学审计 |
 | 分支切换 | 后端可验证候选分支、原子切换、失败恢复 | P2P 自动收集分支和全系统 reorg 对账仍未贯通 |
-| H-WES / H-BFM / H-FOC / H-SAC | 有不激活的参考实现和测试向量 | 不能写成已进入 devnet 共识或已完整形式化证明 |
+| H-WES | 已有生命周期模型、持久命名空间 SMT、认证 blob/proof serving、DA 证书验证器 | 尚未原子接入主链状态根，缺 shielded 电路、provider 激励和外审 |
+| H-BFM | 对一个已一致的有限 DAG 给出唯一规范拓扑序 | 尚未解决 DAG 集合一致、缺数、冲突执行、激励与活性 |
+| H-FOC' | 已有持久 PREPARE/COMMIT lock、timeout/view-change、双委员会 handoff、receipt obligation 和 P2P receipt 类型 | 缺不可偏置 beacon、在线 pacemaker/leader、已最终委员会来源、区块执行接线和 WAN 基准 |
+| H-SAC | 已有单输出 opening、绑定 auditor/scope 的 Schnorr 所有权证明和泄漏下界 | 缺冻结的合规关系、provenance ZK 电路、证明器/验证器接线和独立电路审计 |
 | Useful-Work | 只有研究规范，功能关闭 | 不能写成 AI 挖矿或已提供安全收益 |
 | WASM VM | 独立库可测试 | 没有合约交易、区块执行、状态根、回执和 RPC 接线 |
+
+共识与持久状态序列化已切换到仓库内自研的
+[`hyphen-codec`](crates/hyphen-codec/README.md)。其格式固定宽度、有限长、拒绝尾随字节、
+map 输出规范化，并以 `forbid(unsafe_code)` 禁止不安全代码。公开 devnet v2 链身份向量
+保持不变；该 crate 有对抗测试，但没有经过独立审计。
 
 ## 构建与启动
 
@@ -104,11 +112,14 @@ MapVerify(root(V_t), x, V_t[x], pi_latest) = 1.
 
 这也解释了为什么 MMR inclusion proof 不够：MMR 只能证明“某条记录曾被追加”，不能证明“这是这个键目前最新的记录”。归档证明和最新版证明缺一不可。
 
-但“只靠 append-only archive 一定不可能安全恢复”这个原始说法也过强：恢复者可以在一轮中发送完整 archive，验证者重算 commitment 并线性扫描，因此仍满足常数轮，只是付出 `Theta(N)` 通信和计算。严格下界必须加入 succinctness。对 membership-only 黑盒 archive，候选记录后还有 `m` 个 cell；若 verifier 最多认证查询 `q<m` 个位置，总存在一个未查询位置可分别放置“无关记录”或“同 key 的更新版本”，而 verifier 的已见 transcript 相同。允许漏检概率 `epsilon` 时必须满足：
+但“只靠 append-only archive 一定不可能安全恢复”这个原始说法也过强：恢复者可以在一轮中发送完整 archive，验证者重算 commitment 并线性扫描，因此仍满足常数轮，只是付出 `Theta(N)` 通信和计算。严格下界必须加入 succinctness。对 membership-only 黑盒 archive，候选记录后还有 `m` 个 cell；若 verifier 没有查询其中位置 `j`，那么“无关记录”和“同 key 更新版本”两个世界的已见 transcript 相同。在完美完备性、漏检概率至多 `epsilon` 时，期望认证查询数 `Q` 必须满足：
 
 ```text
-q >= (1-epsilon)m.
+E[Q] >= (1-epsilon)m.
 ```
+
+若完备性和健全性都允许至多 `epsilon` 的错误，则 coupling 论证给出的严格界是
+`E[Q] >= (1-2epsilon)m`，其中 `epsilon < 1/2`。
 
 所以安全恢复至少承担一项成本：认证 latest state、持续 witness/index 更新，或线性后缀数据/prover 工作。H-WES 选择保留 fixed-size latest root，把 `O(K+N)` tree/body 存储交给可替换 provider，并由恢复交易携带 `O(log K+log N)` 新鲜证明；它没有违反下界。
 
@@ -119,7 +130,7 @@ Live(x,v) -> Expired(x,v) -> Recovered(x,v; successor=v+1)
                               \-> Consumed(x,v).
 ```
 
-恢复在同一个线性化点追加终态历史事件并创建 `Live(x,v+1)`；消费没有后继。授权摘要绑定 action、高度、新租期和 pre-state root，旧授权不能被改成另一动作或租期。当前 reference model 已覆盖恢复回执、消费终态和 no-resurrection 负向测试，但仍未接持久 SMT、真实授权、DA、reorg 和 shielded 电路。
+恢复在同一个线性化点追加终态历史事件并创建 `Live(x,v+1)`；消费没有后继。授权摘要绑定 action、高度、新租期和 pre-state root，旧授权不能被改成另一动作或租期。当前 reference model 已覆盖恢复回执、消费终态和 no-resurrection 负向测试；持久 SMT、认证 blob store、P2P proof serving 和 DA 证书验证器也已有独立实现，但尚未把这些根原子接入当前区块状态转换。
 
 对可花费对象，nullifier 集满足单调性：
 
@@ -129,7 +140,11 @@ N_t subseteq N_(t+1).
 
 若 `z` 在高度 `i` 已被花费，则 `z in N_i`，所以对所有 `t >= i` 都有 `z in N_t`。恢复转换在当前 `N_t` 中检查并拒绝 `z`，已经花费的对象就不能因过期再生。当前参考配置明确排除 shielded note，因为它还缺少把所有权与 nullifier 非成员证明绑定起来的隐私电路。
 
-**仍未完成：** 数据可用性证书、存储层去中心化激励、状态租金参数、每块过期工作上限、持久化原子接线、隐私所有权电路和长期空间基准。
+持久 SMT 对 namespace、depth、左右子节点做域分离承诺。成员或非成员证明都固定包含 256 个 sibling。若同一 `(namespace,key,root)` 能打开为两个不同值，沿两条重算路径自叶向根取第一个发生差异但父哈希相等的位置，就得到 leaf hash 或 node hash 的碰撞。因此在哈希抗碰撞假设下 opening 具有 binding 性。叶、全部受影响祖先和新根在同一个 sled 乐观事务中提交，并在返回成功前 flush；失败或 root CAS 冲突不会留下半个状态。
+
+认证 blob store 对完整对象计算 content hash，并对每个 chunk 计算 `H(object,index,count,len,bytes)` 后建立 Merkle root。chunk proof 同时绑定对象、位置、总块数、长度和内容；完整重组还会再次核对 content hash。DA 证书要求 `2f+1` 个不同 seat 在签名前验证完整 blob，所以最多 `f` 个恶意 seat 时，至少 `f+1` 个诚实 signer 在签名时持有该 blob。这个结论不等于“未来永久可用”；如果之后所有副本都删除，任何 commitment 都不能恢复信息。
+
+**仍未完成：** 主链状态根/reorg 原子接线、存储 provider 激励与修复、状态租金参数、每块过期工作上限、shielded 所有权/nullifier 电路、长期空间与恢复基准、独立审计。
 
 ### 二、H-BFM：必要的规范融合机制，不作为新颖性声明
 
@@ -159,7 +174,9 @@ seat `i` 签名本地接收序列 `seq_i`。对 `n=3f+1,q=2f+1`，定义
 x <_E y iff |{i : pos_i(x)<pos_i(y)}| >= q.
 ```
 
-两个相反方向不可能同时成立，因为需要 `2q=4f+2>3f+1=n` 个 seat 方向贡献；但长度至少 4 的强多数 cycle 仍可能存在，所以实现把 strongly connected component 作为一个 fair batch，只对 component 间顺序给保证。隐藏金额、地址和语义不进入排序函数，因此也不对它们声称公平。当前参考实现验证 seat 签名、quorum visibility、SCC batch、cutoff 后随机 tie-break 和 CPU 工作上限，尚未接入 mempool、P2P 或区块执行。
+两个相反方向不可能同时成立，因为需要 `2q=4f+2>3f+1=n` 个 seat 方向贡献；但长度至少 4 的强多数 cycle 仍可能存在，所以实现把 strongly connected component 作为一个 fair batch，只对 component 间顺序给保证。隐藏金额、地址和语义不进入排序函数，因此也不对它们声称公平。当前参考实现验证 seat 签名、quorum visibility、SCC batch、cutoff 后随机 tie-break 和 CPU 工作上限；P2P 已能传输有大小界的 typed receipt vote/quorum receipt，但尚未接入 mempool 和区块执行。
+
+receipt 强制纳入依赖另一个 quorum 交集：receipt signer 集与 proposal QC signer 集均为 `q=2f+1`，交集至少 `f+1`，其中至少一个诚实 seat。`HonestReceiptVoter` 在返回 seat-bound 签名前先把纳入义务写入 sled 并 flush，崩溃重启后仍拒绝遗漏。因此，只要生产网络强制同一委员会通过该 API 投票，遗漏已形成 quorum receipt 的交易就无法取得 proposal QC。当前节点没有已最终委员会 profile，所以只解析并拒绝激活这些消息，不能声称线上已经抗审查。
 
 ### 三、H-FOC：快速排序证书的安全边界
 
@@ -186,9 +203,11 @@ PoW 委员会从前一 finalized epoch 按工作量有放回抽取 seat。攻击
 P_bad = sum_(i=f+1)^n C(n,i) alpha^i (1-alpha)^(n-i).
 ```
 
-若矿工可在 `g` 个 seed 中 grinding，只能给出 `P_bad_grind <= min(1,gP_bad)`。固定委员会的 quorum 交集不能自动证明跨 epoch 安全；H-FOC' 还要求旧、新委员会分别对同一 finalized PoW checkpoint 形成 handoff QC，并要求 view change 继承 lock。当前代码没有完整 prepare/commit/view-change/handoff，所以证书仍是非最终 preorder。
+若矿工可在 `g` 个 seed 中 grinding，只能给出 `P_bad_grind <= min(1,gP_bad)`。固定委员会的 quorum 交集不能自动证明跨 epoch 安全。当前不激活的 H-FOC' 状态机已经实现 PREPARE/COMMIT QC、commit lock、携带最高 prepare QC 的 timeout/view-change、lock downgrade 拒绝、旧/新委员会分别签署同一 finalized checkpoint 的 handoff，以及签名前持久化的 crash anti-equivocation。
 
-**仍未完成：** 委员会捕获概率与工作量分布实测、DoS、view change、超时证书、时钟偏差、跨洲基准、慢路径最终性结合和主链接线。
+当前 epoch seed 实际为 `BLAKE3(上一 epoch 末块哈希)`，矿工可通过 nonce、extra nonce、交易集和 withholding grinding，因此它不是不可偏置 seed。不能把上述独立二项分布直接套到当前链。严格的 threshold-VRF/unique threshold signature + DKG 或 VDF 激活条件见 [`docs/security/cryptographic-activation-gates.md`](docs/security/cryptographic-activation-gates.md)。
+
+**仍未完成：** 不可偏置 beacon、在线 pacemaker/leader、已最终委员会来源、receipt 聚合服务、时钟/DoS 策略、跨洲原始基准、慢路径最终性结合和主链接线。
 
 ### 四、H-SAC：可控披露到底证明了什么
 
@@ -251,6 +270,8 @@ I(X;V | P) >= H(Y|P)-h_2(epsilon)-epsilon log_2(M-1).
 
 完整证明与边界分别见 [H-WES 下界与对象模型](docs/research/h-wes-theorem-and-object-model.md)、[隐私可见域公平排序与 H-FOC'](docs/research/private-visible-fair-ordering.md)、[H-SAC 最小泄漏下界](docs/research/h-sac-leakage-lower-bound.md) 以及总台账 [`docs/research/four-core-innovations.md`](docs/research/four-core-innovations.md)。
 
+仓库目前没有可声称为 shielded H-WES 或 H-SAC 的 Circom 电路。链上关系使用 Ristretto255 与 BLAKE3，普通 Circom/R1CS 位于 BN254 标量域；直接把 256-bit digest 取模放入 field 会产生非单射映射，不能证明原始 digest 相等。必须实现并审查 bit-level BLAKE3、Ristretto 编码/群关系，或采用带严格 binding bridge 的版本化 field-friendly commitment。也没有任何外部机构出具电路审计报告，因此 README 不使用“已审计”表述。
+
 ## 测试与 CI 门禁
 
 本地执行与 CI 相同的主链门禁：
@@ -261,9 +282,13 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --all-targets --locked
 cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
 cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
+cargo audit --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
+cargo audit --file crates/hyphen-fuzz/Cargo.lock --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
 ```
 
-Nightly workflow 会对交易、RPC、P2P 解码器执行有时间上限的真实 fuzz。绿色 CI 证明的是“这个提交通过了这些可重复检查”，不是外部审计或完整形式化验证。
+Nightly workflow 会对交易、RPC、P2P 和规范 codec 解码器执行有时间上限的真实 fuzz。绿色 CI 证明的是“这个提交通过了这些可重复检查”，不是外部审计或完整形式化验证。
+
+两个 RustSec 例外来自 libp2p 锁图中可选的 `hickory-proto`。本项目关闭 libp2p 默认 feature、DNS 和 mDNS，构建运行图不包含它们，boot node 当前必须使用 IP multiaddress；CI 对除此之外的新 vulnerability 直接失败。审计输出中的 unmaintained/unsound 传递依赖 warning 仍在跟踪，不能写成已全部消除。
 
 ## 自动 Release
 

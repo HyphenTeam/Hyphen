@@ -46,6 +46,35 @@ jobs:
         run: cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins --locked
       - name: Verify published chain identity vectors
         run: cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implementation --locked
+      - name: Reject bincode dependency reintroduction
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n --include='Cargo.toml' --include='Cargo.lock' bincode Cargo.toml Cargo.lock crates; then
+            echo 'bincode must not re-enter the Hyphen base-chain dependency graph' >&2
+            exit 1
+          fi
+      - name: Verify excluded DNS resolver is not in the runtime graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree --locked -e normal | grep -q 'hickory-'; then
+            echo 'hickory unexpectedly entered the built dependency graph' >&2
+            exit 1
+          fi
+          if cargo tree --manifest-path crates/hyphen-fuzz/Cargo.toml --locked -e normal | grep -q 'hickory-'; then
+            echo 'hickory unexpectedly entered the fuzz dependency graph' >&2
+            exit 1
+          fi
+      - name: Install RustSec audit tool
+        run: cargo install cargo-audit --locked --version 0.22.0
+      - name: Reject new RustSec vulnerabilities
+        # libp2p 0.56 retains optional hickory packages in Cargo.lock even with
+        # default features disabled and without DNS/mDNS. The previous step proves
+        # they are absent from the runtime graph.
+        run: |
+          cargo audit --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
+          cargo audit --file crates/hyphen-fuzz/Cargo.lock --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
 
   windows-node-smoke:
     runs-on: windows-2022

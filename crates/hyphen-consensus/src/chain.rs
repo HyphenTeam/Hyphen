@@ -15,8 +15,9 @@ use hyphen_state::commitment_tree::PersistentCommitmentTree;
 use hyphen_state::nullifier_set::NullifierSet;
 use hyphen_state::store::BlockStore;
 use hyphen_state::{
-    commit_block_update, revert_block_update, AtomicBlockUpdate, BranchBlockArchive, IndexedOutput,
-    ReorgBackend, ReorgCoordinator, ReorgOutcome, ReorgPlan,
+    commit_block_update, revert_block_update, AtomicBlockUpdate, AuthenticatedBlobStore,
+    BranchBlockArchive, IndexedOutput, PersistentSparseMerkleTree, ReorgBackend, ReorgCoordinator,
+    ReorgOutcome, ReorgPlan,
 };
 use hyphen_tx::builder::build_coinbase_tx;
 use hyphen_tx::transaction::Transaction;
@@ -32,6 +33,10 @@ pub struct Blockchain {
     pub nullifiers: NullifierSet,
     pub commitment_tree: RwLock<PersistentCommitmentTree>,
     pub branch_blocks: BranchBlockArchive,
+    /// Inactive H-WES latest-state tree exposed by the bounded proof service.
+    pub wes_latest: PersistentSparseMerkleTree,
+    /// Content-addressed storage used by the proof/blob request protocol.
+    pub proof_blobs: AuthenticatedBlobStore,
     pub reorg: ReorgCoordinator,
     transition: Mutex<()>,
     arena: RwLock<Option<Arc<EpochArena>>>,
@@ -52,6 +57,18 @@ impl Blockchain {
         let branch_blocks =
             BranchBlockArchive::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
         let reorg = ReorgCoordinator::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
+        let chain_namespace = Hash256::from_bytes(cfg.consensus_params_hash());
+        let wes_namespace = hyphen_crypto::blake3_hash(
+            &[
+                b"HYPHEN_WES_LATEST_NAMESPACE_V1".as_slice(),
+                chain_namespace.as_bytes(),
+            ]
+            .concat(),
+        );
+        let wes_latest = PersistentSparseMerkleTree::open(&db, "wes_latest_smt_v1", wes_namespace)
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+        let proof_blobs =
+            AuthenticatedBlobStore::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
 
         // ── Genesis config immutability check ──────────────────────
         let meta_tree = db
@@ -84,6 +101,8 @@ impl Blockchain {
             nullifiers,
             commitment_tree: RwLock::new(commitment_tree),
             branch_blocks,
+            wes_latest,
+            proof_blobs,
             reorg,
             transition: Mutex::new(()),
             arena: RwLock::new(None),
@@ -372,7 +391,7 @@ impl Blockchain {
         }
 
         let block_bytes =
-            bincode::serialize(block).map_err(|e| CoreError::Serialisation(e.to_string()))?;
+            hyphen_codec::serialize(block).map_err(|e| CoreError::Serialisation(e.to_string()))?;
         if block_bytes.len() > self.cfg.max_block_size {
             return Err(CoreError::BlockTooLarge);
         }
@@ -730,7 +749,7 @@ mod tests {
             header,
             transactions: Vec::new(),
             uncle_headers: Vec::new(),
-            block_authorization: bincode::serialize(&authorization).unwrap(),
+            block_authorization: hyphen_codec::serialize(&authorization).unwrap(),
         }
     }
 

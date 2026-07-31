@@ -1,8 +1,8 @@
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
+use hyphen_crypto::system_rng;
 use merlin::Transcript;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -110,12 +110,12 @@ impl RangeProof {
         let a_r: Vec<Scalar> = a_l.iter().map(|a| a - Scalar::ONE).collect();
 
         // Blinding vectors
-        let s_l: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut OsRng)).collect();
-        let s_r: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut OsRng)).collect();
+        let s_l: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut system_rng())).collect();
+        let s_r: Vec<Scalar> = (0..n).map(|_| Scalar::random(&mut system_rng())).collect();
 
         // Commitments
-        let alpha = Scalar::random(&mut OsRng);
-        let rho = Scalar::random(&mut OsRng);
+        let alpha = Scalar::random(&mut system_rng());
+        let rho = Scalar::random(&mut system_rng());
 
         let a_point = alpha * g_blind
             + RistrettoPoint::multiscalar_mul(
@@ -158,8 +158,8 @@ impl RangeProof {
             t2 += l1 * r1;
         }
 
-        let tau_1 = Scalar::random(&mut OsRng);
-        let tau_2 = Scalar::random(&mut OsRng);
+        let tau_1 = Scalar::random(&mut system_rng());
+        let tau_2 = Scalar::random(&mut system_rng());
         let t1_point = t1 * h_gen() + tau_1 * g_blind;
         let t2_point = t2 * h_gen() + tau_2 * g_blind;
 
@@ -371,11 +371,11 @@ impl AggregatedRangeProof {
             }
         }
 
-        let s_l: Vec<Scalar> = (0..nm).map(|_| Scalar::random(&mut OsRng)).collect();
-        let s_r: Vec<Scalar> = (0..nm).map(|_| Scalar::random(&mut OsRng)).collect();
+        let s_l: Vec<Scalar> = (0..nm).map(|_| Scalar::random(&mut system_rng())).collect();
+        let s_r: Vec<Scalar> = (0..nm).map(|_| Scalar::random(&mut system_rng())).collect();
 
-        let alpha = Scalar::random(&mut OsRng);
-        let rho = Scalar::random(&mut OsRng);
+        let alpha = Scalar::random(&mut system_rng());
+        let rho = Scalar::random(&mut system_rng());
 
         let a_point = alpha * g_blind
             + RistrettoPoint::multiscalar_mul(
@@ -416,8 +416,8 @@ impl AggregatedRangeProof {
             }
         }
 
-        let tau_1 = Scalar::random(&mut OsRng);
-        let tau_2 = Scalar::random(&mut OsRng);
+        let tau_1 = Scalar::random(&mut system_rng());
+        let tau_2 = Scalar::random(&mut system_rng());
         let t1_point = t1 * h_gen() + tau_1 * g_blind;
         let t2_point = t2 * h_gen() + tau_2 * g_blind;
 
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn single_range_proof_round_trip() {
         let v = 42u64;
-        let gamma = Scalar::random(&mut OsRng);
+        let gamma = Scalar::random(&mut system_rng());
         let (proof, commitment) = RangeProof::prove(v, &gamma).unwrap();
         proof.verify(&commitment).unwrap();
     }
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn aggregated_range_proof_round_trip() {
         let values = [100u64, 200u64];
-        let blindings: Vec<Scalar> = (0..2).map(|_| Scalar::random(&mut OsRng)).collect();
+        let blindings: Vec<Scalar> = (0..2).map(|_| Scalar::random(&mut system_rng())).collect();
         let (proof, commitments) = AggregatedRangeProof::prove(&values, &blindings).unwrap();
         proof.verify(&commitments).unwrap();
     }

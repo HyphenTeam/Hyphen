@@ -149,6 +149,13 @@ P_bad_grind <= min(1, g * P_bad).
 
 实际抽样相关、自适应腐化和矿池身份集中会破坏简单二项模型，必须另行测量。
 
+当前链的 epoch seed 是上一 epoch 末块哈希的 BLAKE3，矿工可 grinding；它不满足
+本节“不可偏置”前提。若 `g` 个候选在随机预言机模型下独立且事件单次概率为 `p`，
+攻击者择优后事件概率为 `1-(1-p)^g`；相关候选不满足该等式，只能按联合分布分析，
+并有 union bound 上界 `min(1,gp)`。哈希后处理不能消除选择通道。激活 H-FOC'
+必须先满足 [`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md)
+中的 unique threshold beacon 或 VDF 门槛。
+
 ## 6. H-FOC' 证书阶段
 
 每个 slot 的候选协议至少包含：
@@ -160,8 +167,11 @@ P_bad_grind <= min(1, g * P_bad).
    `(cid,e,committee,view,slot,parent,R_M,R_E,R_order)` 的 statement 投票；
 5. `HANDOFF`：epoch 边界把新委员会身份绑定到 finalized PoW checkpoint。
 
-当前 `fast_ordering.rs` 只有单 statement QC 和本地防双签 guard，不包含完整
-prepare/commit locking、view change 或 handoff，因此仍是 preorder safety kernel。
+`fast_ordering.rs` 保留单 statement preorder kernel；`fair_finality.rs` 另行实现
+PREPARE/COMMIT QC、commit lock、timeout certificate、最高 prepare 继承、view-change
+proposal 检查和双委员会 handoff。诚实 voter 在返回 phase/timeout/handoff 签名前以
+CAS 写入 sled 并 flush，重启后仍执行相同 lock 与 anti-equivocation 规则。它仍是
+不激活状态机：没有在线 pacemaker、leader、已最终委员会来源或 block execution。
 
 ### 定理 FOC-S1：固定委员会 QC 交集
 
@@ -177,6 +187,26 @@ prepare/commit locking、view change 或 handoff，因此仍是 preorder safety 
 注意：这不是完整 HotStuff/PBFT safety proof；跨 view 安全还需要 lock carry-over
 规则，跨 epoch 安全还需要 handoff。
 
+### 定理 FOC-S1b：跨 view commit safety
+
+设值 `X` 在 view `v` 形成 COMMIT QC。其 signer 先验证同 view 的 PREPARE QC 并锁定
+`(v,X)`。假设存在冲突值 `Y` 在更高 view 取得 PREPARE QC，取其 view `w>v` 最小。
+view `w` proposal 必须携带 view `w-1` 的 timeout certificate `TC`。`TC` 的 `q` 个
+signer 与 `X` 的 COMMIT QC signer 相交至少 `f+1`，故至少一个诚实 signer 已锁 `X`，
+并在 timeout vote 中携带其最高 PREPARE QC，其 view 至少为 `v`。
+
+令 `TC` 中最高 PREPARE QC 为 `Q_h`，view 为 `h>=v`。实现要求新 proposal 的 value
+等于 `Q_h.value`：
+
+- 若 `h=v`，固定 view 的 PREPARE QC 交集定理使 `Q_h.value=X`；
+- 若 `v<h<w` 且 `Q_h.value` 与 `X` 冲突，则 `Q_h` 是比 `w` 更早的冲突 PREPARE QC，
+  与 `w` 的最小性矛盾；
+- 若 `v<h<w` 且 `Q_h.value=X`，proposal 仍只能提议 `X`。
+
+三种情况都不能在 `w` 为 `Y` 形成 PREPARE QC，矛盾。因此不存在与已 commit 值
+冲突的更高 view commit。该证明依赖 timeout vote 不隐瞒本地最高 prepare、proposal
+强制采用 `Q_h`、诚实 lock 持久且最多 `f` 个恶意 seat。`□`
+
 ### 定理 FOC-S2：双委员会 handoff 的归纳安全
 
 令 epoch `e` 的最终 handoff statement 同时需要旧委员会 `C_e` 和新委员会
@@ -187,6 +217,13 @@ handoff 为基例可对 epoch 归纳。`□`
 
 如果任一委员会失陷、PoW checkpoint 未最终、密钥可即时自适应腐化或 view-change
 不保留 lock，该定理前提不成立。
+
+归纳基例必须是配置中唯一承认的 genesis checkpoint。归纳步把 epoch `e` 已唯一
+finalized checkpoint 作为 handoff statement 的 `previous_handoff`/checkpoint 输入；
+旧、新委员会各自的 quorum 交集排除同一 role 的冲突 handoff，两个 role 又签同一
+statement digest，因此 epoch `e+1` 只能继承一个 checkpoint。代码验证 chain、epoch、
+committee ID、role、previous handoff 和 finalized checkpoint，不能把单委员会 QC
+重放成双委员会 handoff。
 
 ## 7. 活性与性能式
 
@@ -213,9 +250,21 @@ T_final <= r*Delta + T_sig + T_fair(s,m) + T_queue
 - 输入排列不变、伪签名/重复 seat 拒绝、四节点强证据 cycle 测试；
 - pairwise CPU 工作预算。
 
-它没有接入 mempool、P2P、fusion、block execution 或 H-FOC QC，不构成生产公平
-共识。尤其没有可信 receive timestamp，也没有强制聚合者纳入全部及时 receipt 的
-可用性/可追责广播层；签名 sequence 只是可追责声明。
+`fairness_receipts.rs` 现在提供：每个 vote 自带并签署 `observed_at`；cutoff 后 vote
+拒绝；quorum receipt 做 distinct-seat/signature/context/metadata 校验；
+`HonestReceiptVoter` 在释放签名前持久化 transaction obligation，支持幂等重传、
+冲突拒绝、每 slot 容量界和重启恢复；finality prepare 会拒绝遗漏 obligation 的
+order。P2P 有独立 receipt topic 和 512 KiB 上限，传输 typed vote/quorum receipt。
+
+**纳入定理。** receipt quorum `Q_r` 与任一 proposal quorum `Q_p` 都有 `2f+1`
+seat，故交集至少 `f+1`，其中至少一个诚实 seat。诚实 receipt signer 在签名前已经
+持久化义务，因而不会为遗漏该交易的 order 投 prepare vote；该 proposal 至多取得
+`2f` 票，不能形成 QC。`□`
+
+该定理只在生产 profile 强制所有诚实 seat 使用 voter API、receipt 与 proposal 属于
+同一 active committee、metadata/slot/cutoff 一致且交易本身有效可用时成立。当前节点
+没有已最终委员会来源，收到 receipt 后明确不激活 obligation；也没有可信 receive
+timestamp、聚合服务、mempool/fusion/block execution 接线，因此仍不构成生产公平共识。
 
 ## 9. Prior art
 

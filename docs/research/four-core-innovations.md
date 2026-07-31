@@ -79,8 +79,10 @@ nullifier 和分叉 ring 状态。端到端后端测试覆盖较重三块分支�
 | `C(v,r)` | Pedersen commitment `v*G_v + r*G_r` |
 | `pi` | 与上下文对应的密码学证明；不同关系不得复用同一域 |
 
-所有共识对象必须使用规范化、语言无关、长度有界的编码。Rust `bincode`
-只能作为当前实现工件，不能作为四项机制的最终跨实现共识编码。
+所有共识对象必须使用规范化、语言无关、长度有界的编码。当前 Rust 实现已改用
+仓库内的 `hyphen-codec` v1；其固定宽度格式、资源上限和 schema-relative
+canonicality 论证见 `crates/hyphen-codec/README.md`。该实现尚未经过独立审计，
+跨语言实现也必须以固定测试向量验证，不能仅凭 Rust round-trip 宣称兼容。
 
 ## 3. 候选贡献一：H-WES 可恢复过期状态与见证携带执行
 
@@ -151,8 +153,8 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 证明草图：假设旧版本恢复成功。验证通过意味着旧版本与 `V_t[x]` 承诺的
 最新版本相等，或攻击者构造了另一条对同一根有效的路径。前者与“旧于最新”
 矛盾，后者给出 `H` 碰撞。因此在假设下成功概率可忽略。状态：规范树编码、
-纯 verifier 和旧版本负向测试已完成；持久认证字典、共识原子接线和独立密码学
-评审尚未完成。
+纯 verifier、旧版本负向测试和独立的持久 SMT 已完成；SMT 尚未与 EAOM 五根及
+主链状态做统一原子接线，独立密码学评审也尚未完成。
 
 **H-WES-S2（nullifier 单调安全）**：如果 `N_t subseteq N_{t+1}` 且每次花费
 在状态提交前检查并插入 nullifier，则状态过期不会使已花费 Note 再次有效。
@@ -179,9 +181,10 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 向量位于 `test-vectors/h-wes-v0.json`。它已经固定 159 字节记录编码、确定性
 到期顺序、MMR 包含证明、最新版证明、恢复/消费终态和原子恢复转换，并覆盖
 旧版本、终态复活、篡改证明、授权上下文替换与重复 nullifier 的负向测试。
-它尚未实现持久化、rollback、数据可用性
-协议或 shielded Note 的零知识恢复，因此当前状态仍是“可执行参考模型”，
-不是已激活共识。
+生命周期状态机本身尚未与持久主链状态和 rollback 原子接线。配套的持久命名空间
+SMT、认证 blob/chunk proof store、P2P proof serving 以及 DA 证书验证器已经实现，
+但 DA 证书只证明诚实签名者在签名时取得完整 blob，不证明未来持续保存。shielded
+Note 的零知识恢复关系仍不存在。因此当前状态仍是“可执行参考模型”，不是已激活共识。
 
 原始“四条件不可能性”缺少 succinctness，完整 archive 单轮扫描是反例。补强
 后的 membership-only 黑盒后缀查询下界、EAOM 生命周期、线性化点、授权关系、
@@ -427,8 +430,8 @@ nonce 和非规范响应标量，避免把公开的零标量误写成排他所�
 `G_r` 间的离散对数关系。
 
 这不是零知识 provenance 证明：金额和 blinding 会明文披露，包本身不加密，
-审计者泄露后任何持包者都可读取。当前交易哈希仍继承现有 bincode 编码，链上
-包含性和 `global_index` 必须由区块/状态证明另行验证。它只证明“该用户拥有并
+审计者泄露后任何持包者都可读取。当前交易哈希使用 `hyphen-codec` v1 的固定
+schema 编码；链上包含性和 `global_index` 仍必须由区块/状态证明另行验证。它只证明“该用户拥有并
 正确打开这个输出”，不证明现实资金来源合法，也不披露 ring 中真实输入。
 完整 H-SAC 仍需经审计的通用证明系统、policy credential 语义、正式电路和
 独立审查。

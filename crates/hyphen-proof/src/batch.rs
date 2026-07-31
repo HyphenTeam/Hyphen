@@ -6,7 +6,7 @@ use curve25519_dalek::scalar::Scalar;
 use curve25519_dalek::traits::MultiscalarMul;
 use hyphen_crypto::pedersen::{G_BLIND, G_VALUE};
 use merlin::Transcript;
-use rand_core::{CryptoRng, RngCore};
+use rand_core::CryptoRng;
 
 fn h_gen() -> RistrettoPoint {
     *G_VALUE
@@ -70,7 +70,7 @@ pub fn batch_verify_mixed(
 }
 
 #[allow(clippy::needless_range_loop)]
-pub fn prove_multiple_with_rng<R: RngCore + CryptoRng>(
+pub fn prove_multiple_with_rng<R: CryptoRng>(
     values: &[u64],
     blindings: &[Scalar],
     rng: &mut R,
@@ -213,39 +213,39 @@ pub fn prove_multiple_with_rng<R: RngCore + CryptoRng>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
+    use hyphen_crypto::system_rng;
 
     #[test]
     fn batch_prove_multiple_with_rng_roundtrip() {
         let values = [100u64, 200u64, 300u64, 400u64];
-        let blindings: Vec<Scalar> = (0..4).map(|_| Scalar::random(&mut OsRng)).collect();
+        let blindings: Vec<Scalar> = (0..4).map(|_| Scalar::random(&mut system_rng())).collect();
         let (proof, commitments) =
-            prove_multiple_with_rng(&values, &blindings, &mut OsRng).unwrap();
+            prove_multiple_with_rng(&values, &blindings, &mut system_rng()).unwrap();
         proof.verify(&commitments).unwrap();
     }
 
     #[test]
     fn batch_prove_single_value() {
         let values = [42u64];
-        let blindings = [Scalar::random(&mut OsRng)];
+        let blindings = [Scalar::random(&mut system_rng())];
         let (proof, commitments) =
-            prove_multiple_with_rng(&values, &blindings, &mut OsRng).unwrap();
+            prove_multiple_with_rng(&values, &blindings, &mut system_rng()).unwrap();
         proof.verify(&commitments).unwrap();
     }
 
     #[test]
     fn batch_prove_max_aggregation() {
         let values: Vec<u64> = (1..=16).map(|i| i * 1000).collect();
-        let blindings: Vec<Scalar> = (0..16).map(|_| Scalar::random(&mut OsRng)).collect();
+        let blindings: Vec<Scalar> = (0..16).map(|_| Scalar::random(&mut system_rng())).collect();
         let (proof, commitments) =
-            prove_multiple_with_rng(&values, &blindings, &mut OsRng).unwrap();
+            prove_multiple_with_rng(&values, &blindings, &mut system_rng()).unwrap();
         proof.verify(&commitments).unwrap();
     }
 
     #[test]
     fn batch_prove_too_many_fails() {
         let values: Vec<u64> = (0..17).collect();
-        let blindings: Vec<Scalar> = (0..17).map(|_| Scalar::random(&mut OsRng)).collect();
-        assert!(prove_multiple_with_rng(&values, &blindings, &mut OsRng).is_err());
+        let blindings: Vec<Scalar> = (0..17).map(|_| Scalar::random(&mut system_rng())).collect();
+        assert!(prove_multiple_with_rng(&values, &blindings, &mut system_rng()).is_err());
     }
 }

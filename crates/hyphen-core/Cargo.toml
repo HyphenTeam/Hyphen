@@ -7,7 +7,7 @@ description = "Core types and configuration for the Hyphen blockchain"
 [dependencies]
 hyphen-crypto.workspace = true
 serde.workspace         = true
-bincode.workspace       = true
+hyphen-codec.workspace  = true
 chrono.workspace        = true
 thiserror.workspace     = true
 hex.workspace           = true

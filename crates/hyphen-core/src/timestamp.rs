@@ -1,4 +1,4 @@
-use std::net::UdpSocket;
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,20 @@ const TRUSTED_POLL_MS: u64 = 30_000;
 const UNTRUSTED_POLL_MS: u64 = 5_000;
 const DEFAULT_POLL_MS: u64 = 10_000;
 const MIN_NTP_RESPONSES: usize = 3;
+
+struct NtpSocket(UdpSocket);
+
+impl sntpc::NtpUdpSocket for NtpSocket {
+    async fn send_to(&self, buffer: &[u8], address: SocketAddr) -> sntpc::Result<usize> {
+        self.0
+            .send_to(buffer, address)
+            .map_err(|_| sntpc::Error::Network)
+    }
+
+    async fn recv_from(&self, buffer: &mut [u8]) -> sntpc::Result<(usize, SocketAddr)> {
+        self.0.recv_from(buffer).map_err(|_| sntpc::Error::Network)
+    }
+}
 
 struct NtpState {
     offset_ms: AtomicI64,
@@ -51,18 +65,15 @@ fn query_ntp_server(server: &str, timeout: Duration) -> Option<i64> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.set_read_timeout(Some(timeout)).ok()?;
     socket.set_write_timeout(Some(timeout)).ok()?;
+    let address = server.to_socket_addrs().ok()?.find(SocketAddr::is_ipv4)?;
+    let context = sntpc::NtpContext::new(sntpc::StdTimestampGen::default());
+    let time = sntpc::sync::get_time(address, &NtpSocket(socket), context).ok()?;
 
-    let result = sntpc::simple_get_time(server, &socket);
-    match result {
-        Ok(time) => {
-            let offset_secs = time.sec() as i64 - chrono::Utc::now().timestamp();
-            let offset_ms = offset_secs * 1000
-                + (time.sec_fraction() as f64 / u32::MAX as f64 * 1000.0) as i64
-                - chrono::Utc::now().timestamp_subsec_millis() as i64;
-            Some(offset_ms)
-        }
-        Err(_) => None,
+    if time.stratum() == 0 || time.stratum() >= 16 || time.leap_indicator() == 3 {
+        return None;
     }
+
+    Some(time.offset() / 1_000)
 }
 
 fn median(values: &mut [i64]) -> i64 {
@@ -162,7 +173,10 @@ pub fn sync_ntp() {
 pub fn ntp_adjusted_timestamp_ms() -> u64 {
     let local_ms = chrono::Utc::now().timestamp_millis();
     let offset = NTP_STATE.offset_ms.load(Ordering::Acquire);
-    (local_ms + offset) as u64
+    local_ms
+        .checked_add(offset)
+        .and_then(|adjusted| u64::try_from(adjusted).ok())
+        .unwrap_or(0)
 }
 
 pub fn ntp_adjusted_timestamp_secs() -> u64 {

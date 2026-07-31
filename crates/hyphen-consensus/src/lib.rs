@@ -1,4 +1,7 @@
+pub mod availability;
 pub mod chain;
+pub mod fair_finality;
+pub mod fairness_receipts;
 pub mod fast_ordering;
 pub mod fusion;
 pub mod genesis;
@@ -6,7 +9,22 @@ pub mod private_fair_ordering;
 pub mod replay;
 pub mod validator;
 
+pub use availability::{
+    AvailabilityCertificate, AvailabilityError, AvailabilityStatement, AvailabilityVote,
+    HonestAvailabilityVoter,
+};
 pub use chain::Blockchain;
+pub use fair_finality::{
+    verify_phase_certificate, verify_proposal, verify_timeout_certificate, DualHandoffCertificate,
+    FairFinalityError, FairFinalityProposal, FairFinalityValue, FinalityPhase, HandoffRole,
+    HandoffStatement, HandoffVote, HonestFinalityVoter, HonestHandoffVoter, PhaseCertificate,
+    PhaseVote, PhaseVoteStatement, TimeoutCertificate, TimeoutStatement, TimeoutVote,
+};
+pub use fairness_receipts::{
+    HonestReceiptVoter, InclusionReceiptError, InclusionReceiptStatement, InclusionReceiptVote,
+    InclusionReceiptVoteGossip, QuorumInclusionReceipt, QuorumInclusionReceiptGossip,
+    ReceiptObligationSet, MAX_RECEIPT_VOTES,
+};
 pub use fast_ordering::{
     committee_capture_probability, Committee, CommitteeSeat, FastOrderingError, HonestVoter,
     OrderingCertificate, OrderingStatement, OrderingVote, WorkContribution,

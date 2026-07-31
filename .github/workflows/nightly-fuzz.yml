@@ -23,6 +23,7 @@ jobs:
           - transaction_decode
           - rpc_decode
           - p2p_decode
+          - codec_decode
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install pinned nightly toolchain

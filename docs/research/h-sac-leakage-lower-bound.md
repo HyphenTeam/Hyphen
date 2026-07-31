@@ -200,7 +200,8 @@ nonce, commitment, one-time public key, amount, blinding, Schnorr proof.
 ## 9. 为什么此时不接入一个新 ZK crate
 
 通用 proof system 的选择会固定 field、curve、trusted setup、proof recursion、
-电路审计和长期兼容性。现有交易 canonical encoding 及 provenance policy 尚未固定。
+电路审计和长期兼容性。主链已有 `hyphen-codec` v1，但 H-SAC 关系的公开输入 schema、
+版本迁移规则及 provenance policy 尚未固定。
 在这些输入不稳定时接入任意 proving library，只会产生不能证明目标关系的代码。
 
 生产接入前至少需要：
@@ -211,6 +212,17 @@ nonce, commitment, one-time public key, amount, blinding, Schnorr proof.
 4. 发布正负向跨实现 vectors；
 5. 做 soundness、zero-knowledge、side-channel 和 malformed-proof 审查；
 6. 再接交易、区块验证、状态根和 RPC。
+
+当前 `circom 2.2.3` 可执行文件只证明开发环境能编译 Circom 源码，不代表已经定义
+正确关系。现有链使用 Ristretto255/BLAKE3，普通 Circom 位于 BN254 标量域；把
+256-bit digest 直接取模为一个 signal 不是单射，无法证明原始 digest 相等。必须
+约束完整 bit decomposition、BLAKE3 和 Ristretto 编码/群等式，或引入一个与现有
+commitment 有严格 binding proof 的版本化 field-friendly relation。详细门槛见
+[`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md)。
+
+仓库当前没有 H-SAC Circom 源、R1CS、proving/verifying key、Rust verifier 或正负向
+跨实现向量，也没有外部审计报告。因此“经过审计的 H-SAC ZK 电路”这一项当前明确
+是未完成，而不是通过文档或单元测试可以内部宣告完成的事项。
 
 ## 10. Prior-art 边界
 

@@ -43,7 +43,7 @@ impl BlockStore {
 
     pub fn insert_block(&self, block: &Block) -> Result<()> {
         let hash = block.hash();
-        let data = bincode::serialize(block).map_err(|e| StoreError::Serde(e.to_string()))?;
+        let data = hyphen_codec::serialize(block).map_err(|e| StoreError::Serde(e.to_string()))?;
 
         self.blocks.insert(hash.as_bytes(), &data)?;
         self.height_index
@@ -65,7 +65,7 @@ impl BlockStore {
             .blocks
             .get(hash.as_bytes())?
             .ok_or_else(|| StoreError::NotFound(hash.to_string()))?;
-        bincode::deserialize(&data).map_err(|e| StoreError::Serde(e.to_string()))
+        hyphen_codec::deserialize(&data).map_err(|e| StoreError::Serde(e.to_string()))
     }
 
     pub fn get_block_by_height(&self, height: u64) -> Result<Block> {
@@ -207,17 +207,17 @@ impl BlockStore {
     /// Get `count` random outputs below `ceiling` global index.
     /// Returns (one_time_pubkey, commitment, global_index, block_height) tuples.
     pub fn get_random_outputs(&self, count: usize, ceiling: u64) -> Result<Vec<OutputRecord>> {
-        use rand::Rng;
+        use rand::RngExt;
         if ceiling == 0 {
             return Ok(Vec::new());
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut result = Vec::with_capacity(count);
         let mut attempts = 0;
         let max_attempts = count * 10;
         while result.len() < count && attempts < max_attempts {
             attempts += 1;
-            let idx: u64 = rng.gen_range(0..ceiling);
+            let idx: u64 = rng.random_range(0..ceiling);
             if let Some(val) = self.output_index.get(idx.to_be_bytes())? {
                 let mut pk = [0u8; 32];
                 let mut cm = [0u8; 32];

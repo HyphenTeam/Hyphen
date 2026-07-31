@@ -32,7 +32,7 @@ pub struct BlockHeader {
 
 impl BlockHeader {
     pub fn serialise_for_hash(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("header serialisation infallible")
+        hyphen_codec::serialize(self).expect("header serialisation infallible")
     }
 
     pub fn hash(&self) -> Hash256 {
@@ -73,23 +73,12 @@ impl Block {
         if self.block_authorization.len() > 256 {
             return Err("block authorization exceeds 256 bytes".into());
         }
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(256)
-            .reject_trailing_bytes()
-            .deserialize(&self.block_authorization)
+        hyphen_codec::deserialize_with_limit(&self.block_authorization, 256)
             .map_err(|error| format!("block authorization decode failed: {error}"))
     }
 
-    pub fn deserialise_limited(data: &[u8], max_size: usize) -> Result<Self, bincode::Error> {
-        if data.len() > max_size {
-            return Err(Box::new(bincode::ErrorKind::SizeLimit));
-        }
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(max_size as u64)
-            .reject_trailing_bytes()
-            .deserialize(data)
+    pub fn deserialise_limited(data: &[u8], max_size: usize) -> Result<Self, hyphen_codec::Error> {
+        hyphen_codec::deserialize_with_limit(data, max_size)
     }
 }
 
@@ -127,7 +116,7 @@ pub struct TransactionReceipt {
 
 impl TransactionReceipt {
     pub fn hash(&self) -> Hash256 {
-        let data = bincode::serialize(self).expect("receipt serialisation infallible");
+        let data = hyphen_codec::serialize(self).expect("receipt serialisation infallible");
         hyphen_crypto::blake3_hash(&data)
     }
 }
@@ -143,4 +132,3 @@ pub fn compute_receipt_root(receipts: &[TransactionReceipt]) -> Hash256 {
     let hashes: Vec<Hash256> = receipts.iter().map(|r| r.hash()).collect();
     merkle_root(&hashes)
 }
-use bincode::Options;

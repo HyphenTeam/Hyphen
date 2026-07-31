@@ -13,8 +13,6 @@ use curve25519_dalek::traits::IsIdentity;
 use hyphen_crypto::{Hash256, PublicKey};
 use hyphen_tx::note::OwnedNote;
 use hyphen_tx::transaction::Transaction;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -194,7 +192,7 @@ pub fn generate_disclosure(
     }
 
     let mut disclosure_nonce = [0u8; 32];
-    OsRng.fill_bytes(&mut disclosure_nonce);
+    hyphen_crypto::rng::fill_system_random(&mut disclosure_nonce);
     let mut disclosure = SelectiveDisclosure {
         version: SELECTIVE_DISCLOSURE_VERSION,
         chain_id,
@@ -216,7 +214,7 @@ pub fn generate_disclosure(
         },
     };
     loop {
-        let nonce = Scalar::random(&mut OsRng);
+        let nonce = Scalar::random(&mut hyphen_crypto::rng::system_rng());
         if nonce == Scalar::ZERO {
             continue;
         }

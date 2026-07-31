@@ -1,4 +1,3 @@
-use bincode::Options;
 use hyphen_crypto::clsag::ClsagSignature;
 use hyphen_crypto::pedersen::Commitment;
 use hyphen_crypto::Hash256;
@@ -96,15 +95,8 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub fn deserialise_limited(data: &[u8]) -> Result<Self, bincode::Error> {
-        if data.len() > MAX_TRANSACTION_SIZE {
-            return Err(Box::new(bincode::ErrorKind::SizeLimit));
-        }
-        bincode::DefaultOptions::new()
-            .with_fixint_encoding()
-            .with_limit(MAX_TRANSACTION_SIZE as u64)
-            .reject_trailing_bytes()
-            .deserialize(data)
+    pub fn deserialise_limited(data: &[u8]) -> Result<Self, hyphen_codec::Error> {
+        hyphen_codec::deserialize_with_limit(data, MAX_TRANSACTION_SIZE)
     }
 
     pub fn is_coinbase(&self) -> bool {
@@ -112,7 +104,7 @@ impl Transaction {
     }
 
     pub fn serialise(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("tx serialization infallible")
+        hyphen_codec::serialize(self).expect("tx serialization infallible")
     }
 
     pub fn hash(&self) -> Hash256 {
@@ -123,10 +115,10 @@ impl Transaction {
         let mut data = Vec::new();
         data.push(self.version);
         for inp in &self.inputs {
-            data.extend_from_slice(&bincode::serialize(inp).unwrap());
+            data.extend_from_slice(&hyphen_codec::serialize(inp).unwrap());
         }
         for out in &self.outputs {
-            data.extend_from_slice(&bincode::serialize(out).unwrap());
+            data.extend_from_slice(&hyphen_codec::serialize(out).unwrap());
         }
         data.extend_from_slice(&self.fee.to_le_bytes());
         data.extend_from_slice(&self.extra);

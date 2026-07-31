@@ -4,6 +4,7 @@ pub mod keys;
 pub mod merkle;
 pub mod pedersen;
 pub mod pq;
+pub mod rng;
 pub mod stealth;
 
 pub use clsag::{clsag_sign, clsag_verify, ClsagSignature};
@@ -14,4 +15,5 @@ pub use pedersen::{Commitment, PedersenGens};
 pub use pq::{
     HybridPublicKey, HybridSecretKey, HybridSignature, WotsPublicKey, WotsSecretKey, WotsSignature,
 };
+pub use rng::{fill_system_random, system_rng, SystemRng};
 pub use stealth::{EphemeralKey, SpendKey, StealthAddress, ViewKey};

@@ -355,21 +355,21 @@ pub fn binding_from_genesis(network_magic: [u8; 4], genesis_hash: Hash256) -> Ne
 mod tests {
     use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
     use curve25519_dalek::scalar::Scalar;
-    use rand::rngs::OsRng;
 
     use super::*;
 
     #[test]
     fn request_is_network_bound_and_response_is_verified() {
-        let spend = Scalar::random(&mut OsRng);
-        let decoy = Scalar::random(&mut OsRng) * G;
+        let mut rng = hyphen_crypto::rng::system_rng();
+        let spend = Scalar::random(&mut rng);
+        let decoy = Scalar::random(&mut rng) * G;
         let ring_keys = vec![spend * G, decoy];
         let gens = hyphen_crypto::pedersen::PedersenGens::default();
-        let real_blind = Scalar::random(&mut OsRng);
-        let pseudo_blind = Scalar::random(&mut OsRng);
+        let real_blind = Scalar::random(&mut rng);
+        let pseudo_blind = Scalar::random(&mut rng);
         let ring_commitments = vec![
             gens.commit(Scalar::from(11u64), real_blind),
-            gens.commit(Scalar::from(17u64), Scalar::random(&mut OsRng)),
+            gens.commit(Scalar::from(17u64), Scalar::random(&mut rng)),
         ];
         let pseudo = gens.commit(Scalar::from(11u64), pseudo_blind);
         let message = [7u8; 32];

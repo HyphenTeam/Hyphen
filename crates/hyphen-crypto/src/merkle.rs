@@ -80,33 +80,22 @@ impl MerkleTree {
         let mut pos = idx;
 
         for level in 0..MERKLE_DEPTH {
-            // Store node for proof sibling lookups
             self.filled.insert((level, pos), cur);
-
+            let sibling_pos = pos ^ 1;
+            let sibling = self
+                .filled
+                .get(&(level, sibling_pos))
+                .copied()
+                .unwrap_or(empties[level]);
             if pos & 1 == 0 {
-                // left child waiting at this level
                 self.frontier[level] = Some(cur);
-                cur = blake3_hash_many(&[cur.as_bytes(), empties[level].as_bytes()]);
-                pos >>= 1;
-                // root path update
-                for ll in (level + 1)..MERKLE_DEPTH {
-                    cur = if (pos & 1) == 0 {
-                        blake3_hash_many(&[cur.as_bytes(), empties[ll].as_bytes()])
-                    } else {
-                        let left = self.frontier[ll].unwrap_or(empties[ll]);
-                        blake3_hash_many(&[left.as_bytes(), cur.as_bytes()])
-                    };
-                    pos >>= 1;
-                }
-                self.root = cur;
-                return idx;
+                cur = blake3_hash_many(&[cur.as_bytes(), sibling.as_bytes()]);
             } else {
-                // right child: complete level
-                let left = self.frontier[level].unwrap_or(empties[level]);
-                cur = blake3_hash_many(&[left.as_bytes(), cur.as_bytes()]);
+                cur = blake3_hash_many(&[sibling.as_bytes(), cur.as_bytes()]);
                 self.frontier[level] = None;
-                pos >>= 1;
             }
+            pos >>= 1;
+            self.filled.insert((level + 1, pos), cur);
         }
         self.root = cur;
         idx
@@ -167,6 +156,20 @@ mod tests {
                 proof.verify(leaf, &tree.root()),
                 "proof failed for leaf {i}"
             );
+        }
+    }
+
+    #[test]
+    fn proof_round_trip_for_non_power_of_two_leaf_count() {
+        let mut tree = MerkleTree::new();
+        let leaves = (0u64..20)
+            .map(|index| blake3_hash_many(&[&index.to_be_bytes()]))
+            .collect::<Vec<_>>();
+        for leaf in &leaves {
+            tree.append(*leaf);
+        }
+        for (index, leaf) in leaves.iter().enumerate() {
+            assert!(tree.prove(index as u64).unwrap().verify(leaf, &tree.root()));
         }
     }
 }

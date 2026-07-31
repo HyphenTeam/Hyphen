@@ -77,8 +77,8 @@ impl RpcHandler {
             .get_block_by_hash(&hash)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
-        let header_data =
-            bincode::serialize(&block.header).map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let header_data = hyphen_codec::serialize(&block.header)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
         if let Ok(coinbase_blob) = self.chain.store().get_coinbase(block.header.height) {
@@ -103,8 +103,8 @@ impl RpcHandler {
             .get_block_by_height(req.height)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
-        let header_data =
-            bincode::serialize(&block.header).map_err(|e| HandlerError::Internal(e.to_string()))?;
+        let header_data = hyphen_codec::serialize(&block.header)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
         // Append coinbase transaction if one was generated for this block

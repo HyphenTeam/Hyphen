@@ -9,8 +9,9 @@ fn balance_check_manual() {
     let fee: u64 = 100_000_000;
     let change = v_in - v_out - fee;
 
-    let b_out1 = Scalar::random(&mut rand::rngs::OsRng);
-    let b_out2 = Scalar::random(&mut rand::rngs::OsRng);
+    let mut rng = hyphen_crypto::rng::system_rng();
+    let b_out1 = Scalar::random(&mut rng);
+    let b_out2 = Scalar::random(&mut rng);
     let b_pseudo = b_out1 + b_out2;
 
     let pseudo = gens.commit(Scalar::from(v_in), b_pseudo);
@@ -31,7 +32,7 @@ fn balance_check_via_check_balance() {
     let fee: u64 = 10;
     let v_out = v_in - fee;
 
-    let b_out = Scalar::random(&mut rand::rngs::OsRng);
+    let b_out = Scalar::random(&mut hyphen_crypto::rng::system_rng());
     let b_pseudo = b_out;
 
     let pseudo_commit = gens.commit(Scalar::from(v_in), b_pseudo);

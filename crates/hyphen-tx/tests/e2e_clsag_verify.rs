@@ -1,6 +1,6 @@
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::scalar::Scalar;
-use rand::rngs::OsRng;
+use hyphen_crypto::rng::system_rng;
 
 use hyphen_crypto::clsag;
 use hyphen_crypto::pedersen::{Commitment, PedersenGens};
@@ -15,10 +15,10 @@ fn e2e_build_serialize_verify() {
     let ring_size = 4usize;
 
     // Generate a "real" owned output (as if from a previous TX or coinbase)
-    let real_sk = Scalar::random(&mut OsRng);
+    let real_sk = Scalar::random(&mut system_rng());
     let real_pk = real_sk * G;
     let real_value: u64 = 1_000_000;
-    let real_blind = Scalar::random(&mut OsRng);
+    let real_blind = Scalar::random(&mut system_rng());
     let real_commit = gens.commit(Scalar::from(real_value), real_blind);
 
     let owned = OwnedNote {
@@ -38,8 +38,8 @@ fn e2e_build_serialize_verify() {
     // Generate decoys
     let mut decoys = Vec::new();
     for offset in 0..(ring_size - 1) {
-        let dk = Scalar::random(&mut OsRng) * G;
-        let db = Scalar::random(&mut OsRng);
+        let dk = Scalar::random(&mut system_rng()) * G;
+        let db = Scalar::random(&mut system_rng());
         let dc = gens.commit(Scalar::from(500u64), db);
         decoys.push((dk, dc, 100 + offset as u64));
     }
@@ -146,9 +146,9 @@ fn e2e_build_verify_with_known_decoys() {
 
     let mut fake_outputs: Vec<FakeOutput> = Vec::new();
     for gi in 0..20u64 {
-        let sk = Scalar::random(&mut OsRng);
+        let sk = Scalar::random(&mut system_rng());
         let pk = sk * G;
-        let b = Scalar::random(&mut OsRng);
+        let b = Scalar::random(&mut system_rng());
         let c = gens.commit(Scalar::from(1000u64 + gi), b);
         fake_outputs.push(FakeOutput {
             pk,
@@ -159,10 +159,10 @@ fn e2e_build_verify_with_known_decoys() {
 
     // Pick output 5 as the "real" output to spend
     let real_idx_in_chain = 5usize;
-    let real_sk = Scalar::random(&mut OsRng);
+    let real_sk = Scalar::random(&mut system_rng());
     let real_pk = real_sk * G;
     let real_value = 10_000u64;
-    let real_blind = Scalar::random(&mut OsRng);
+    let real_blind = Scalar::random(&mut system_rng());
     let real_commit = gens.commit(Scalar::from(real_value), real_blind);
     fake_outputs[real_idx_in_chain] = FakeOutput {
         pk: real_pk,
@@ -344,8 +344,8 @@ fn e2e_wallet_hex_roundtrip_verify() {
         u64,
     )> = (0..3)
         .map(|_| {
-            let dk = Scalar::random(&mut OsRng) * G;
-            let db = Scalar::random(&mut OsRng);
+            let dk = Scalar::random(&mut system_rng()) * G;
+            let db = Scalar::random(&mut system_rng());
             let dc = gens.commit(Scalar::from(999u64), db);
             (dk, dc, rand::random::<u64>() % 1000 + 200)
         })
@@ -372,7 +372,7 @@ fn e2e_wallet_hex_roundtrip_verify() {
     // Step 4: Serialize/Deserialize round-trip (like RPC transmission)
     let tx_bytes = tx.serialise();
     let tx2: hyphen_tx::transaction::Transaction =
-        bincode::deserialize(&tx_bytes).expect("deserialize must succeed");
+        hyphen_codec::deserialize(&tx_bytes).expect("deserialize must succeed");
 
     // Step 5: Verify CLSAG on the deserialized transaction
     let msg = tx2.prefix_hash();

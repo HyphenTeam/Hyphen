@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(path) = &cli.export_history {
         let archive = export_archive(&blockchain)?;
-        let encoded = bincode::serialize(&archive)?;
+        let encoded = hyphen_codec::serialize(&archive)?;
         std::fs::write(path, encoded)?;
         println!(
             "exported_blocks={} final_height={} path={}",
@@ -276,7 +276,10 @@ fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::E
         return Err("chain archive exceeds the 512 MiB CLI limit".into());
     }
     let encoded = std::fs::read(path)?;
-    Ok(bincode::deserialize(&encoded)?)
+    Ok(hyphen_codec::deserialize_with_limit(
+        &encoded,
+        512 * 1024 * 1024,
+    )?)
 }
 
 fn parse_boot_nodes(
@@ -494,6 +497,24 @@ fn handle_behaviour_event(
                             }
                         }
                     }
+                    hyphen_network::NetworkMessage::InclusionReceiptVote(receipt) => {
+                        warn!(
+                            target: "hyphen::fairness",
+                            "Ignoring structurally valid receipt vote for slot {} transaction {} from {} because no active finalized committee profile is configured",
+                            receipt.statement.slot,
+                            receipt.statement.transaction_id,
+                            propagation_source
+                        );
+                    }
+                    hyphen_network::NetworkMessage::QuorumInclusionReceipt(receipt) => {
+                        warn!(
+                            target: "hyphen::fairness",
+                            "Ignoring structurally valid quorum receipt for slot {} transaction {} from {} because no active finalized committee profile is configured",
+                            receipt.receipt.statement.slot,
+                            receipt.receipt.statement.transaction_id,
+                            propagation_source
+                        );
+                    }
                 }
             }
         }
@@ -534,6 +555,9 @@ fn handle_sync_request(
     blockchain: &Arc<Blockchain>,
 ) -> hyphen_network::SyncResponse {
     use hyphen_network::{SyncRequest, SyncResponse};
+    if let Err(error) = request.validate() {
+        return SyncResponse::Error(error.to_string());
+    }
     match request {
         SyncRequest::GetTip => match blockchain.tip() {
             Ok(tip) => SyncResponse::Tip {
@@ -548,10 +572,13 @@ fn handle_sync_request(
             count,
         } => {
             let mut blocks = Vec::new();
-            for h in *start_height..(*start_height + *count as u64) {
+            let Some(end_height) = start_height.checked_add(*count as u64) else {
+                return SyncResponse::Error("requested height range overflows".into());
+            };
+            for h in *start_height..end_height {
                 match blockchain.blocks.get_block_by_height(h) {
                     Ok(block) => {
-                        if let Ok(data) = bincode::serialize(&block) {
+                        if let Ok(data) = hyphen_codec::serialize(&block) {
                             blocks.push(data);
                         }
                     }
@@ -563,11 +590,50 @@ fn handle_sync_request(
         SyncRequest::GetBlock { hash } => {
             let h = hyphen_crypto::Hash256::from_bytes(*hash);
             match blockchain.blocks.get_block_by_hash(&h) {
-                Ok(block) => match bincode::serialize(&block) {
+                Ok(block) => match hyphen_codec::serialize(&block) {
                     Ok(data) => SyncResponse::Block(data),
                     Err(e) => SyncResponse::Error(e.to_string()),
                 },
                 Err(e) => SyncResponse::Error(e.to_string()),
+            }
+        }
+        SyncRequest::GetStateProof {
+            namespace,
+            root,
+            key,
+        } => {
+            let namespace = hyphen_crypto::Hash256::from_bytes(*namespace);
+            let root = hyphen_crypto::Hash256::from_bytes(*root);
+            if namespace != blockchain.wes_latest.namespace() {
+                return SyncResponse::Error("unknown state-proof namespace".into());
+            }
+            match blockchain
+                .wes_latest
+                .prove_at_root(hyphen_crypto::Hash256::from_bytes(*key), root)
+            {
+                Ok(proof) => SyncResponse::StateProof {
+                    root: *root.as_bytes(),
+                    proof,
+                },
+                Err(error) => SyncResponse::Error(error.to_string()),
+            }
+        }
+        SyncRequest::GetBlobMetadata { object_hash } => {
+            match blockchain
+                .proof_blobs
+                .metadata(hyphen_crypto::Hash256::from_bytes(*object_hash))
+            {
+                Ok(metadata) => SyncResponse::BlobMetadata(metadata),
+                Err(error) => SyncResponse::Error(error.to_string()),
+            }
+        }
+        SyncRequest::GetBlobChunk { object_hash, index } => {
+            match blockchain
+                .proof_blobs
+                .chunk_proof(hyphen_crypto::Hash256::from_bytes(*object_hash), *index)
+            {
+                Ok(proof) => SyncResponse::BlobChunk(proof),
+                Err(error) => SyncResponse::Error(error.to_string()),
             }
         }
     }
@@ -580,6 +646,10 @@ fn handle_sync_response(
     network: &mut hyphen_network::HyphenNetwork,
 ) {
     use hyphen_network::SyncResponse;
+    if let Err(error) = response.validate() {
+        warn!("Invalid sync response from {peer}: {error}");
+        return;
+    }
     match response {
         SyncResponse::Blocks(blocks) => {
             let count = blocks.len();
@@ -639,6 +709,30 @@ fn handle_sync_response(
                     local_tip.height
                 );
             }
+        }
+        SyncResponse::StateProof { root, proof } => {
+            info!(
+                "State proof from {peer}: namespace={} root={} key={} present={}",
+                proof.namespace,
+                hyphen_crypto::Hash256::from_bytes(root),
+                proof.key,
+                proof.value.is_some()
+            );
+        }
+        SyncResponse::BlobMetadata(metadata) => {
+            info!(
+                "Blob metadata from {peer}: object={} bytes={} chunks={} root={}",
+                metadata.object_hash, metadata.byte_len, metadata.chunk_count, metadata.chunk_root
+            );
+        }
+        SyncResponse::BlobChunk(proof) => {
+            info!(
+                "Blob chunk from {peer}: object={} index={}/{} bytes={}",
+                proof.metadata.object_hash,
+                proof.chunk_index,
+                proof.metadata.chunk_count,
+                proof.chunk.len()
+            );
         }
         SyncResponse::Error(e) => {
             warn!("Sync error from {peer}: {e}");
@@ -897,7 +991,7 @@ fn build_template(
         let pool = mempool.read();
         pool.get_block_candidates(cfg.max_block_size)
             .iter()
-            .filter_map(|tx| bincode::serialize(tx).ok())
+            .filter_map(|tx| hyphen_codec::serialize(tx).ok())
             .collect()
     };
     tx_blobs.sort_unstable_by_key(|transaction| hyphen_crypto::blake3_hash(transaction));
@@ -946,7 +1040,7 @@ fn build_template(
         block_size: 0,
     };
 
-    let header_data = bincode::serialize(&header)?;
+    let header_data = hyphen_codec::serialize(&header)?;
     let template_id = hyphen_crypto::blake3_hash_many(&[
         &next_height.to_le_bytes(),
         &difficulty.to_le_bytes(),
@@ -1059,7 +1153,7 @@ fn handle_job_declaration(
     }
 
     let mut header: hyphen_core::BlockHeader =
-        match bincode::deserialize(&base_template.header_data) {
+        match hyphen_codec::deserialize_with_limit(&base_template.header_data, 4096) {
             Ok(header) => header,
             Err(error) => return reject(format!("base header: {error}")),
         };
@@ -1085,7 +1179,7 @@ fn handle_job_declaration(
         header.tx_root.as_bytes(),
         &total_fee.to_le_bytes(),
     ]);
-    let header_data = match bincode::serialize(&header) {
+    let header_data = match hyphen_codec::serialize(&header) {
         Ok(data) => data,
         Err(error) => return reject(format!("header serialisation: {error}")),
     };

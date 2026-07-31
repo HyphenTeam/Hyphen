@@ -9,7 +9,6 @@
 use curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT as G;
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
@@ -42,7 +41,7 @@ impl Drop for DerivedKeys {
 impl MasterKey {
     pub fn generate() -> Self {
         let mut seed = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut OsRng, &mut seed);
+        hyphen_crypto::rng::fill_system_random(&mut seed);
         Self { seed }
     }
 

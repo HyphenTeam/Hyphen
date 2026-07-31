@@ -173,7 +173,7 @@ mod tests {
             header,
             transactions: Vec::new(),
             uncle_headers: Vec::new(),
-            block_authorization: bincode::serialize(&authorization).unwrap(),
+            block_authorization: hyphen_codec::serialize(&authorization).unwrap(),
         }
     }
 
