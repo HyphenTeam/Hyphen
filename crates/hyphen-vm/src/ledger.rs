@@ -75,7 +75,8 @@ pub enum VmTransaction {
 
 impl VmTransaction {
     pub fn encode(&self) -> Result<Vec<u8>, VmLedgerError> {
-        let payload = hyphen_codec::serialize_with_limit(self, MAX_VM_TRANSACTION_BYTES)
+        let payload = crate::wire_config(MAX_VM_TRANSACTION_BYTES)
+            .serialize(self)
             .map_err(|error| VmLedgerError::Encoding(error.to_string()))?;
         let mut bytes = Vec::with_capacity(VM_ENVELOPE_MAGIC.len() + payload.len());
         bytes.extend_from_slice(VM_ENVELOPE_MAGIC);
@@ -90,12 +91,10 @@ impl VmTransaction {
         if bytes.len() > MAX_VM_TRANSACTION_BYTES {
             return Err(VmLedgerError::TransactionTooLarge);
         }
-        hyphen_codec::deserialize_with_limit(
-            &bytes[VM_ENVELOPE_MAGIC.len()..],
-            MAX_VM_TRANSACTION_BYTES - VM_ENVELOPE_MAGIC.len(),
-        )
-        .map(Some)
-        .map_err(|error| VmLedgerError::Encoding(error.to_string()))
+        crate::wire_config(MAX_VM_TRANSACTION_BYTES - VM_ENVELOPE_MAGIC.len())
+            .deserialize(&bytes[VM_ENVELOPE_MAGIC.len()..])
+            .map(Some)
+            .map_err(|error| VmLedgerError::Encoding(error.to_string()))
     }
 }
 
@@ -121,7 +120,9 @@ impl VmLedger {
         if self.contracts.is_empty() && self.storage.is_empty() && self.next_nonce.is_empty() {
             return Hash256::ZERO;
         }
-        let encoded = hyphen_codec::serialize(self).expect("VM ledger serialization is infallible");
+        let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(self)
+            .expect("VM ledger serialization is infallible");
         hash(D_ROOT, &encoded)
     }
 
@@ -266,12 +267,16 @@ pub enum VmLedgerError {
 }
 
 fn deploy_digest(chain_id: Hash256, params: &DeployParams) -> Hash256 {
-    let bytes = hyphen_codec::serialize(params).expect("deploy serialization is infallible");
+    let bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(params)
+        .expect("deploy serialization is infallible");
     hash_many(D_DEPLOY, &[chain_id.as_bytes(), &bytes])
 }
 
 fn call_digest(chain_id: Hash256, nonce: u64, call: &ContractCall) -> Hash256 {
-    let bytes = hyphen_codec::serialize(call).expect("call serialization is infallible");
+    let bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(call)
+        .expect("call serialization is infallible");
     hash_many(D_CALL, &[chain_id.as_bytes(), &nonce.to_be_bytes(), &bytes])
 }
 

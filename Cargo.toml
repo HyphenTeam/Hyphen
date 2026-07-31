@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/hyphen-codec",
     "crates/hyphen-crypto",
     "crates/hyphen-core",
     "crates/hyphen-pow",
@@ -33,7 +32,6 @@ description = "Hyphen – a privacy-focused, CPU-first PoW blockchain"
 [workspace.dependencies]
 # ── internal crates ──
 hyphen-crypto = { path = "crates/hyphen-crypto" }
-hyphen-codec = { path = "crates/hyphen-codec" }
 hyphen-core = { path = "crates/hyphen-core" }
 hyphen-pow = { path = "crates/hyphen-pow" }
 hyphen-proof = { path = "crates/hyphen-proof" }
@@ -117,9 +115,10 @@ parking_lot = "0.12.5"
 byteorder = "1"
 clap = { version = "4.6.4", features = ["derive"] }
 once_cell = "1"
-zeroize = { version = "1.9.0", features = ["derive"] }
+rustbinary = { version = "0.1.2", features = ["derive"] }
 unsigned-varint = "0.8"
 sntpc = { version = "0.11.0", features = ["std", "sync"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
 
 [package]
 name = "hyphen"

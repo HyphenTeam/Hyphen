@@ -427,7 +427,9 @@ impl HonestFinalityVoter {
             key.1,
         );
         let state = match storage.get(storage_key).map_err(storage_error)? {
-            Some(bytes) => hyphen_codec::deserialize(&bytes).map_err(storage_error)?,
+            Some(bytes) => crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize(&bytes)
+                .map_err(storage_error)?,
             None => SlotState::default(),
         };
         self.slots.insert(key, state.clone());
@@ -454,9 +456,15 @@ impl HonestFinalityVoter {
             let expected = if previous.revision == 0 {
                 None
             } else {
-                Some(hyphen_codec::serialize(previous).map_err(storage_error)?)
+                Some(
+                    crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                        .serialize(previous)
+                        .map_err(storage_error)?,
+                )
             };
-            let encoded = hyphen_codec::serialize(next).map_err(storage_error)?;
+            let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .serialize(next)
+                .map_err(storage_error)?;
             storage
                 .compare_and_swap(storage_key, expected.as_deref(), Some(encoded))
                 .map_err(storage_error)?

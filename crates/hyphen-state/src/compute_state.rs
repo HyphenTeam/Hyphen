@@ -30,7 +30,8 @@ impl ComputeStateStore {
             .get(COMPUTE_STATE_KEY)
             .map_err(|error| ComputeStateStoreError::Storage(error.to_string()))?
         {
-            Some(bytes) => hyphen_codec::deserialize(&bytes)
+            Some(bytes) => crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize(&bytes)
                 .map_err(|error| ComputeStateStoreError::Encoding(error.to_string()))?,
             None => ComputeState::default(),
         };

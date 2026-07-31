@@ -37,7 +37,7 @@ pub enum NetworkDecodeError {
     #[error("protobuf decode failed: {0}")]
     Protobuf(#[from] prost::DecodeError),
     #[error("canonical payload decode failed: {0}")]
-    Codec(#[from] hyphen_codec::Error),
+    Codec(#[from] rustbinary::Error),
 }
 
 #[derive(Clone, prost::Message)]
@@ -159,7 +159,7 @@ impl NetworkMessage {
             2 => {
                 let payload = decode_receipt_payload(&data[1..])?;
                 let receipt: InclusionReceiptVoteGossip =
-                    hyphen_codec::deserialize_with_limit(&payload, MAX_GOSSIP_RECEIPT_SIZE)?;
+                    crate::wire_config(MAX_GOSSIP_RECEIPT_SIZE).deserialize(&payload)?;
                 receipt
                     .validate_shape()
                     .map_err(|_| NetworkDecodeError::InvalidReceipt)?;
@@ -168,7 +168,7 @@ impl NetworkMessage {
             3 => {
                 let payload = decode_receipt_payload(&data[1..])?;
                 let receipt: QuorumInclusionReceiptGossip =
-                    hyphen_codec::deserialize_with_limit(&payload, MAX_GOSSIP_RECEIPT_SIZE)?;
+                    crate::wire_config(MAX_GOSSIP_RECEIPT_SIZE).deserialize(&payload)?;
                 receipt
                     .validate_shape()
                     .map_err(|_| NetworkDecodeError::InvalidReceipt)?;
@@ -181,7 +181,7 @@ impl NetworkMessage {
 
 fn encode_receipt_payload<T: Serialize>(tag: u8, value: &T) -> Result<Vec<u8>, NetworkDecodeError> {
     use prost::Message;
-    let data = hyphen_codec::serialize_with_limit(value, MAX_GOSSIP_RECEIPT_SIZE)?;
+    let data = crate::wire_config(MAX_GOSSIP_RECEIPT_SIZE).serialize(value)?;
     let mut encoded = vec![tag];
     encoded.extend_from_slice(&ProtoTransaction { data }.encode_to_vec());
     Ok(encoded)

@@ -183,7 +183,8 @@ impl BranchStore {
             }
         }
         metadata.validation = BranchValidation::StateValidated;
-        let encoded = hyphen_codec::serialize(&metadata)
+        let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&metadata)
             .map_err(|error| BranchStoreError::Serde(error.to_string()))?;
         let compressed = compress(&encoded)?;
         let result: Result<(), TransactionError<AbortReason>> =
@@ -208,7 +209,8 @@ impl BranchStore {
             .metadata
             .get(hash.as_bytes())?
             .ok_or(BranchStoreError::NotFound(*hash))?;
-        hyphen_codec::deserialize(&encoded)
+        crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .deserialize(&encoded)
             .map_err(|error| BranchStoreError::Serde(error.to_string()))
     }
 
@@ -316,7 +318,8 @@ impl BranchStore {
         metadata: BranchMetadata,
         expected_parent: Option<(Hash256, Vec<u8>)>,
     ) -> Result<(), BranchStoreError> {
-        let encoded = hyphen_codec::serialize(&metadata)
+        let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&metadata)
             .map_err(|error| BranchStoreError::Serde(error.to_string()))?;
         let compressed = compress(&encoded)?;
         let child_key = metadata.parent.map(|parent| {

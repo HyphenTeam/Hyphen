@@ -13,6 +13,18 @@ use hyphen_crypto::{blake3_hash_many, Hash256, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+const DEFAULT_WIRE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WIRE_COLLECTION_ITEMS: usize = 1_000_000;
+
+fn wire_config(max_bytes: usize) -> rustbinary::Config {
+    rustbinary::legacy_options()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .with_limit(max_bytes as u64)
+        .with_collection_limit(max_bytes.min(MAX_WIRE_COLLECTION_ITEMS) as u64)
+        .reject_trailing_bytes()
+}
+
 pub const ENVELOPE_MAGIC: &[u8; 8] = b"AETHWRK1";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_PROOF_BYTES: usize = 768 * 1024;
@@ -327,7 +339,8 @@ pub enum ComputeTransaction {
 
 impl ComputeTransaction {
     pub fn encode(&self) -> Result<Vec<u8>, ComputeError> {
-        let payload = hyphen_codec::serialize_with_limit(self, MAX_ENVELOPE_BYTES)
+        let payload = wire_config(MAX_ENVELOPE_BYTES)
+            .serialize(self)
             .map_err(|error| ComputeError::Encoding(error.to_string()))?;
         let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + payload.len());
         bytes.extend_from_slice(ENVELOPE_MAGIC);
@@ -342,11 +355,9 @@ impl ComputeTransaction {
         if bytes.len() > MAX_ENVELOPE_BYTES {
             return Err(ComputeError::EnvelopeTooLarge);
         }
-        let value = hyphen_codec::deserialize_with_limit(
-            &bytes[ENVELOPE_MAGIC.len()..],
-            MAX_ENVELOPE_BYTES - ENVELOPE_MAGIC.len(),
-        )
-        .map_err(|error| ComputeError::Encoding(error.to_string()))?;
+        let value = wire_config(MAX_ENVELOPE_BYTES - ENVELOPE_MAGIC.len())
+            .deserialize(&bytes[ENVELOPE_MAGIC.len()..])
+            .map_err(|error| ComputeError::Encoding(error.to_string()))?;
         Ok(Some(value))
     }
 }
@@ -470,7 +481,8 @@ impl ComputeState {
             .tasks
             .iter()
             .map(|(id, record)| {
-                let encoded = hyphen_codec::serialize(record)
+                let encoded = wire_config(DEFAULT_WIRE_BYTES)
+                    .serialize(record)
                     .expect("bounded in-memory task records always serialize");
                 hash_many(D_STATE_LEAF, &[id.as_bytes(), &encoded])
             })

@@ -43,7 +43,8 @@ impl ChainState {
     pub fn get_tip(&self) -> Result<Option<ChainTip>> {
         match self.tree.get(TIP_KEY)? {
             Some(data) => {
-                let tip: ChainTip = hyphen_codec::deserialize(&data)
+                let tip: ChainTip = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                    .deserialize(&data)
                     .map_err(|e| StateError::Serde(e.to_string()))?;
                 Ok(Some(tip))
             }
@@ -52,7 +53,9 @@ impl ChainState {
     }
 
     pub fn set_tip(&self, tip: &ChainTip) -> Result<()> {
-        let data = hyphen_codec::serialize(tip).map_err(|e| StateError::Serde(e.to_string()))?;
+        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(tip)
+            .map_err(|e| StateError::Serde(e.to_string()))?;
         self.tree.insert(TIP_KEY, &data)?;
         Ok(())
     }

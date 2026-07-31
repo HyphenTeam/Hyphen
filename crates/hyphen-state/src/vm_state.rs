@@ -28,7 +28,8 @@ impl VmStateStore {
             .get(VM_STATE_KEY)
             .map_err(|error| VmStateStoreError::Storage(error.to_string()))?
         {
-            Some(bytes) => hyphen_codec::deserialize(&bytes)
+            Some(bytes) => crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize(&bytes)
                 .map_err(|error| VmStateStoreError::Encoding(error.to_string()))?,
             None => VmLedger::default(),
         };

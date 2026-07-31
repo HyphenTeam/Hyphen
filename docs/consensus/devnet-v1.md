@@ -277,7 +277,7 @@ cargo run -p hyphen-node --locked -- \
   --replay-history ./devnet-history-v1.bin
 ```
 
-Archive 文件目前是 Rust/`hyphen-codec` v1 实现产物，CLI 上限为 512 MiB。生产共识前仍需语言无关的规范 block/archive 编码和跨实现向量。
+Archive 文件目前使用 RustBinary 0.1.2 的固定宽度、小端 legacy profile，严格拒绝尾随字节，CLI 上限为 512 MiB。生产共识前仍需语言无关的规范 block/archive 编码和跨实现向量。
 
 ## 变更政策
 

@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use hyphen_codec::{deserialize_with_limits, Limits};
 use libfuzzer_sys::fuzz_target;
 
 type NestedCorpus = (
@@ -14,6 +13,11 @@ type NestedCorpus = (
 );
 
 fuzz_target!(|data: &[u8]| {
-    let limits = Limits::new(1024 * 1024, 4096, 32);
-    let _ = deserialize_with_limits::<NestedCorpus>(data, limits);
+    let _ = rustbinary::legacy_options()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .with_limit(1024 * 1024)
+        .with_collection_limit(4096)
+        .reject_trailing_bytes()
+        .deserialize::<NestedCorpus>(data);
 });

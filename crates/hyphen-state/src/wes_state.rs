@@ -41,7 +41,8 @@ pub enum WesTransaction {
 
 impl WesTransaction {
     pub fn encode(&self) -> Result<Vec<u8>, WesTransactionError> {
-        let payload = hyphen_codec::serialize_with_limit(self, MAX_WES_TRANSACTION_BYTES)
+        let payload = crate::wire_config(MAX_WES_TRANSACTION_BYTES)
+            .serialize(self)
             .map_err(|error| WesTransactionError::Encoding(error.to_string()))?;
         let mut bytes = Vec::with_capacity(WES_ENVELOPE_MAGIC.len() + payload.len());
         bytes.extend_from_slice(WES_ENVELOPE_MAGIC);
@@ -56,12 +57,10 @@ impl WesTransaction {
         if bytes.len() > MAX_WES_TRANSACTION_BYTES {
             return Err(WesTransactionError::TransactionTooLarge);
         }
-        hyphen_codec::deserialize_with_limit(
-            &bytes[WES_ENVELOPE_MAGIC.len()..],
-            MAX_WES_TRANSACTION_BYTES - WES_ENVELOPE_MAGIC.len(),
-        )
-        .map(Some)
-        .map_err(|error| WesTransactionError::Encoding(error.to_string()))
+        crate::wire_config(MAX_WES_TRANSACTION_BYTES - WES_ENVELOPE_MAGIC.len())
+            .deserialize(&bytes[WES_ENVELOPE_MAGIC.len()..])
+            .map(Some)
+            .map_err(|error| WesTransactionError::Encoding(error.to_string()))
     }
 
     pub fn apply(
@@ -137,7 +136,8 @@ impl WesStateStore {
             .get(WES_STATE_KEY)
             .map_err(|error| WesStateStoreError::Storage(error.to_string()))?
         {
-            Some(bytes) => hyphen_codec::deserialize(&bytes)
+            Some(bytes) => crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize(&bytes)
                 .map_err(|error| WesStateStoreError::Encoding(error.to_string()))?,
             None => ReferenceExpiringState::new(chain_id, Hash256::ZERO),
         };

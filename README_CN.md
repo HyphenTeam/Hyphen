@@ -31,10 +31,10 @@ Hyphen 是一条用 Rust 编写、面向隐私交易和 CPU 优先工作量证�
 | AetherCompute | 已接入任务/结果/挑战/续存/结算状态机、RPC/P2P、mempool 和状态根 | 默认证明验证器拒绝结算，需激活真实电路/VK 后端 |
 | WASM VM | 研究链已接入签名部署/调用、nonce、gas、状态根和原子回滚 | 仍需经济收费、回执 RPC 与外审 |
 
-共识与持久状态序列化已切换到仓库内自研的
-[`hyphen-codec`](crates/hyphen-codec/README.md)。其格式固定宽度、有限长、拒绝尾随字节、
-map 输出规范化，并以 `forbid(unsafe_code)` 禁止不安全代码。公开 devnet v2 链身份向量
-保持不变；该 crate 有对抗测试，但没有经过独立审计。
+共识与持久状态序列化使用 RustBinary 0.1.2，并显式选择固定宽度、小端 legacy profile。
+每个调用都设置字节与集合元素上限并拒绝尾随字节。由于该二进制编码保留 map 的迭代
+顺序，共识 map 必须使用有序容器。公开 devnet v2 链身份向量保持不变；RustBinary 尚未
+针对 Hyphen 经过独立审计。
 
 ## 构建与启动
 
@@ -315,4 +315,4 @@ Release 标签绑定到 CI run、attempt 和提交，不会把 PR 代码发布�
 
 ## 许可证
 
-Hyphen 使用 GNU Affero General Public License v3.0，完整条款见 [LICENSE](LICENSE)。
+Hyphen 使用 PolyForm Strict License 1.0.0，完整条款见 [LICENSE](LICENSE)。

@@ -82,7 +82,8 @@ impl RpcHandler {
             .get_block_by_hash(&hash)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
-        let header_data = hyphen_codec::serialize(&block.header)
+        let header_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&block.header)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
@@ -108,7 +109,8 @@ impl RpcHandler {
             .get_block_by_height(req.height)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
 
-        let header_data = hyphen_codec::serialize(&block.header)
+        let header_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&block.header)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
@@ -203,7 +205,8 @@ impl RpcHandler {
             .encode_to_vec());
         };
         let (status, challenge_deadline, retain_until_height) = task_status_fields(&record.status);
-        let record_data = hyphen_codec::serialize(&record)
+        let record_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&record)
             .map_err(|error| HandlerError::Internal(error.to_string()))?;
         Ok(ComputeTaskResponse {
             found: true,
@@ -232,7 +235,8 @@ impl RpcHandler {
             .map(|(task_id, record)| {
                 let (status, challenge_deadline, retain_until_height) =
                     task_status_fields(&record.status);
-                let record_data = hyphen_codec::serialize(&record)
+                let record_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                    .serialize(&record)
                     .map_err(|error| HandlerError::Internal(error.to_string()))?;
                 Ok(ComputeTaskItem {
                     task_id: task_id.to_vec(),

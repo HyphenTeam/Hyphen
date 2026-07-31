@@ -235,8 +235,9 @@ impl Wallet {
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<(), WalletError> {
-        let data =
-            hyphen_codec::serialize(self).map_err(|e| WalletError::Serialize(e.to_string()))?;
+        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(self)
+            .map_err(|e| WalletError::Serialize(e.to_string()))?;
         std::fs::write(path, &data)?;
         Ok(())
     }
@@ -246,8 +247,9 @@ impl Wallet {
         path: &std::path::Path,
         password: &[u8],
     ) -> Result<(), WalletError> {
-        let data =
-            hyphen_codec::serialize(self).map_err(|e| WalletError::Serialize(e.to_string()))?;
+        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(self)
+            .map_err(|e| WalletError::Serialize(e.to_string()))?;
         let mut salt = [0u8; 32];
         hyphen_crypto::rng::fill_system_random(&mut salt);
         let key = derive_wallet_key(password, &salt);
@@ -263,8 +265,9 @@ impl Wallet {
 
     pub fn load(path: &std::path::Path) -> Result<Self, WalletError> {
         let data = std::fs::read(path)?;
-        let w: Self =
-            hyphen_codec::deserialize(&data).map_err(|e| WalletError::Serialize(e.to_string()))?;
+        let w: Self = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .deserialize(&data)
+            .map_err(|e| WalletError::Serialize(e.to_string()))?;
         Ok(w)
     }
 
@@ -284,7 +287,8 @@ impl Wallet {
             ));
         }
         let plaintext = xof_encrypt(&key, ciphertext);
-        let w: Self = hyphen_codec::deserialize(&plaintext)
+        let w: Self = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .deserialize(&plaintext)
             .map_err(|e| WalletError::Serialize(e.to_string()))?;
         Ok(w)
     }

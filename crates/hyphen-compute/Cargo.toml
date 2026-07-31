@@ -5,8 +5,7 @@ edition.workspace = true
 description = "Consensus protocol for verified scientific state updates"
 
 [dependencies]
-hyphen-codec.workspace = true
+rustbinary.workspace = true
 hyphen-crypto.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-

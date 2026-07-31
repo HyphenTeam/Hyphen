@@ -530,18 +530,22 @@ impl HonestReceiptVoter {
             statement_digest: statement.digest(),
             observed_at,
         };
-        let proposed_bytes = hyphen_codec::serialize(&proposed).map_err(receipt_storage_error)?;
+        let proposed_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&proposed)
+            .map_err(receipt_storage_error)?;
         let limit = self.max_obligations_per_slot;
 
         let result: Result<PersistedReceiptVote, TransactionError<VoteStorageAbort>> =
             self.votes.transaction(|tree| {
                 if let Some(bytes) = tree.get(key.as_slice())? {
-                    let existing: PersistedReceiptVote = hyphen_codec::deserialize(&bytes)
-                        .map_err(|error| {
-                            ConflictableTransactionError::Abort(VoteStorageAbort::Malformed(
-                                error.to_string(),
-                            ))
-                        })?;
+                    let existing: PersistedReceiptVote =
+                        crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                            .deserialize(&bytes)
+                            .map_err(|error| {
+                                ConflictableTransactionError::Abort(VoteStorageAbort::Malformed(
+                                    error.to_string(),
+                                ))
+                            })?;
                     if existing.statement_digest != proposed.statement_digest {
                         return Err(ConflictableTransactionError::Abort(
                             VoteStorageAbort::Conflict,

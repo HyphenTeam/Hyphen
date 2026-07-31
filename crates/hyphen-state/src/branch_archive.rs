@@ -38,7 +38,8 @@ impl BranchBlockArchive {
     /// Archive untrusted block bytes by their content hash without making the
     /// block canonical or implying any validation status.
     pub fn archive(&self, block: &Block, max_size: usize) -> Result<Hash256, BranchArchiveError> {
-        let encoded = hyphen_codec::serialize(block)
+        let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(block)
             .map_err(|error| BranchArchiveError::Serialize(error.to_string()))?;
         enforce_size(encoded.len(), max_size)?;
         let hash = block.hash();

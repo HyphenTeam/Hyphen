@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(path) = &cli.export_history {
         let archive = export_archive(&blockchain)?;
-        let encoded = hyphen_codec::serialize(&archive)?;
+        let encoded = wire_config(DEFAULT_WIRE_BYTES).serialize(&archive)?;
         std::fs::write(path, encoded)?;
         println!(
             "exported_blocks={} final_height={} path={}",
@@ -276,10 +276,7 @@ fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::E
         return Err("chain archive exceeds the 512 MiB CLI limit".into());
     }
     let encoded = std::fs::read(path)?;
-    Ok(hyphen_codec::deserialize_with_limit(
-        &encoded,
-        512 * 1024 * 1024,
-    )?)
+    Ok(wire_config(512 * 1024 * 1024).deserialize(&encoded)?)
 }
 
 fn parse_boot_nodes(
@@ -696,7 +693,7 @@ fn handle_sync_request(
             for h in *start_height..end_height {
                 match blockchain.blocks.get_block_by_height(h) {
                     Ok(block) => {
-                        if let Ok(data) = hyphen_codec::serialize(&block) {
+                        if let Ok(data) = wire_config(DEFAULT_WIRE_BYTES).serialize(&block) {
                             blocks.push(data);
                         }
                     }
@@ -708,7 +705,7 @@ fn handle_sync_request(
         SyncRequest::GetBlock { hash } => {
             let h = hyphen_crypto::Hash256::from_bytes(*hash);
             match blockchain.blocks.get_block_by_hash(&h) {
-                Ok(block) => match hyphen_codec::serialize(&block) {
+                Ok(block) => match wire_config(DEFAULT_WIRE_BYTES).serialize(&block) {
                     Ok(data) => SyncResponse::Block(data),
                     Err(e) => SyncResponse::Error(e.to_string()),
                 },
@@ -1156,7 +1153,7 @@ fn build_template(
         block_size: 0,
     };
 
-    let header_data = hyphen_codec::serialize(&header)?;
+    let header_data = wire_config(DEFAULT_WIRE_BYTES).serialize(&header)?;
     let template_id = hyphen_crypto::blake3_hash_many(&[
         &next_height.to_le_bytes(),
         &difficulty.to_le_bytes(),
@@ -1289,7 +1286,7 @@ fn handle_job_declaration(
     }
 
     let mut header: hyphen_core::BlockHeader =
-        match hyphen_codec::deserialize_with_limit(&base_template.header_data, 4096) {
+        match wire_config(4096).deserialize(&base_template.header_data) {
             Ok(header) => header,
             Err(error) => return reject(format!("base header: {error}")),
         };
@@ -1319,7 +1316,7 @@ fn handle_job_declaration(
         header.tx_root.as_bytes(),
         &total_fee.to_le_bytes(),
     ]);
-    let header_data = match hyphen_codec::serialize(&header) {
+    let header_data = match wire_config(DEFAULT_WIRE_BYTES).serialize(&header) {
         Ok(data) => data,
         Err(error) => return reject(format!("header serialisation: {error}")),
     };
@@ -1330,4 +1327,15 @@ fn handle_job_declaration(
         error: String::new(),
         updated_header: header_data,
     }
+}
+const DEFAULT_WIRE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WIRE_COLLECTION_ITEMS: usize = 1_000_000;
+
+fn wire_config(max_bytes: usize) -> rustbinary::Config {
+    rustbinary::legacy_options()
+        .with_little_endian()
+        .with_fixint_encoding()
+        .with_limit(max_bytes as u64)
+        .with_collection_limit(max_bytes.min(MAX_WIRE_COLLECTION_ITEMS) as u64)
+        .reject_trailing_bytes()
 }

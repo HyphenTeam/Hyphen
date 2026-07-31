@@ -160,7 +160,8 @@ pub fn commit_block_update(
         .map(|compressed| {
             let bytes = decompress(compressed)
                 .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-            hyphen_codec::deserialize(&bytes)
+            crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize(&bytes)
                 .map_err(|error| AtomicStateError::Serialize(error.to_string()))
         })
         .transpose()?;
@@ -174,7 +175,8 @@ pub fn commit_block_update(
         previous_tip.as_ref(),
         &previous_commitment_tree,
     )?;
-    let previous_tree_bytes = hyphen_codec::serialize(&previous_commitment_tree)
+    let previous_tree_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&previous_commitment_tree)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_tree = compress(&previous_tree_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
@@ -189,7 +191,8 @@ pub fn commit_block_update(
     {
         return Err(AtomicStateError::ConcurrentStateChange);
     }
-    let previous_compute_bytes = hyphen_codec::serialize(&previous_compute_state)
+    let previous_compute_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&previous_compute_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_compute = compress(&previous_compute_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
@@ -204,7 +207,8 @@ pub fn commit_block_update(
     {
         return Err(AtomicStateError::ConcurrentStateChange);
     }
-    let previous_vm_bytes = hyphen_codec::serialize(&previous_vm_state)
+    let previous_vm_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&previous_vm_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_vm = compress(&previous_vm_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
@@ -219,7 +223,8 @@ pub fn commit_block_update(
     {
         return Err(AtomicStateError::ConcurrentStateChange);
     }
-    let previous_wes_bytes = hyphen_codec::serialize(&previous_wes_state)
+    let previous_wes_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&previous_wes_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_wes = compress(&previous_wes_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
@@ -267,27 +272,33 @@ pub fn commit_block_update(
             Ok((epoch, seed))
         })
         .transpose()?;
-    let block_bytes = hyphen_codec::serialize(update.block)
+    let block_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(update.block)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_block =
         compress(&block_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let tip_bytes = hyphen_codec::serialize(&update.tip)
+    let tip_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&update.tip)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_tip =
         compress(&tip_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let tree_bytes = hyphen_codec::serialize(&update.commitment_tree)
+    let tree_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&update.commitment_tree)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_tree =
         compress(&tree_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let compute_bytes = hyphen_codec::serialize(&update.compute_state)
+    let compute_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&update.compute_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_compute =
         compress(&compute_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let vm_bytes = hyphen_codec::serialize(&update.vm_state)
+    let vm_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&update.vm_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_vm =
         compress(&vm_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let wes_bytes = hyphen_codec::serialize(&update.wes_state)
+    let wes_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&update.wes_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_wes =
         compress(&wes_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
@@ -329,7 +340,8 @@ pub fn commit_block_update(
         had_coinbase: update.coinbase.is_some(),
         epoch_seed: previous_epoch_seed,
     };
-    let undo_bytes = hyphen_codec::serialize(&undo)
+    let undo_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&undo)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_undo =
         compress(&undo_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
@@ -624,7 +636,8 @@ pub fn revert_block_update(
         .get(block_hash.as_bytes())
         .map_err(|error| AtomicStateError::Storage(error.to_string()))?
         .ok_or(AtomicStateError::MissingUndo(*block_hash))?;
-    let undo: BlockUndo = hyphen_codec::deserialize(&undo_bytes)
+    let undo: BlockUndo = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .deserialize(&undo_bytes)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     if undo.block_hash != *block_hash {
         return Err(AtomicStateError::UndoMismatch(
@@ -639,44 +652,52 @@ pub fn revert_block_update(
     if current_tip.hash != *block_hash || current_tip.height != undo.height {
         return Err(AtomicStateError::NotCanonicalTip);
     }
-    let current_tip_bytes = hyphen_codec::serialize(&current_tip)
+    let current_tip_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&current_tip)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_current_tip = compress(&current_tip_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
     let compressed_previous_tip = undo
         .previous_tip
         .as_ref()
-        .map(hyphen_codec::serialize)
+        .map(|tip| crate::wire_config(crate::DEFAULT_WIRE_BYTES).serialize(tip))
         .transpose()
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?
         .map(|bytes| compress(&bytes))
         .transpose()
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let previous_tree_bytes = hyphen_codec::serialize(&undo.previous_commitment_tree)
+    let previous_tree_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&undo.previous_commitment_tree)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_tree = compress(&previous_tree_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let current_compute_bytes = hyphen_codec::serialize(&compute_state.snapshot())
+    let current_compute_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&compute_state.snapshot())
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_current_compute = compress(&current_compute_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let previous_compute_bytes = hyphen_codec::serialize(&undo.previous_compute_state)
+    let previous_compute_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&undo.previous_compute_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_compute = compress(&previous_compute_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let current_vm_bytes = hyphen_codec::serialize(&vm_state.snapshot())
+    let current_vm_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&vm_state.snapshot())
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_current_vm = compress(&current_vm_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let previous_vm_bytes = hyphen_codec::serialize(&undo.previous_vm_state)
+    let previous_vm_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&undo.previous_vm_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_vm = compress(&previous_vm_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let current_wes_bytes = hyphen_codec::serialize(&wes_state.snapshot())
+    let current_wes_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&wes_state.snapshot())
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_current_wes = compress(&current_wes_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let previous_wes_bytes = hyphen_codec::serialize(&undo.previous_wes_state)
+    let previous_wes_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(&undo.previous_wes_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_previous_wes = compress(&previous_wes_bytes)
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;

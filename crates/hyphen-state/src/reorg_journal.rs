@@ -285,12 +285,14 @@ impl ReorgCoordinator {
 }
 
 fn encode(journal: &ReorgJournal) -> Result<Vec<u8>, ReorgCoordinatorError> {
-    hyphen_codec::serialize(journal)
+    crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(journal)
         .map_err(|error| ReorgCoordinatorError::Serde(error.to_string()))
 }
 
 fn decode_and_validate(bytes: &[u8]) -> Result<ReorgJournal, ReorgCoordinatorError> {
-    let journal: ReorgJournal = hyphen_codec::deserialize(bytes)
+    let journal: ReorgJournal = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .deserialize(bytes)
         .map_err(|error| ReorgCoordinatorError::Serde(error.to_string()))?;
     validate_journal(&journal)?;
     Ok(journal)

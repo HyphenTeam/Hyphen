@@ -27,7 +27,8 @@ impl PersistentCommitmentTree {
     pub fn open(db: &sled::Db) -> Result<Self> {
         let tree_data = CompressedTree::new(db.open_tree("commitment_tree")?);
         let inner = match tree_data.get(TREE_STATE_KEY)? {
-            Some(data) => hyphen_codec::deserialize(&data)
+            Some(data) => crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize(&data)
                 .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?,
             None => MerkleTree::new(),
         };
@@ -61,7 +62,8 @@ impl PersistentCommitmentTree {
     }
 
     fn persist(&self) -> Result<()> {
-        let data = hyphen_codec::serialize(&self.inner)
+        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&self.inner)
             .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?;
         self.tree_data.insert(TREE_STATE_KEY, &data)?;
         Ok(())

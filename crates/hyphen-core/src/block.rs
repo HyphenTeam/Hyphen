@@ -32,7 +32,9 @@ pub struct BlockHeader {
 
 impl BlockHeader {
     pub fn serialise_for_hash(&self) -> Vec<u8> {
-        hyphen_codec::serialize(self).expect("header serialisation infallible")
+        crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(self)
+            .expect("header serialisation infallible")
     }
 
     pub fn hash(&self) -> Hash256 {
@@ -73,12 +75,13 @@ impl Block {
         if self.block_authorization.len() > 256 {
             return Err("block authorization exceeds 256 bytes".into());
         }
-        hyphen_codec::deserialize_with_limit(&self.block_authorization, 256)
+        crate::wire_config(256)
+            .deserialize(&self.block_authorization)
             .map_err(|error| format!("block authorization decode failed: {error}"))
     }
 
-    pub fn deserialise_limited(data: &[u8], max_size: usize) -> Result<Self, hyphen_codec::Error> {
-        hyphen_codec::deserialize_with_limit(data, max_size)
+    pub fn deserialise_limited(data: &[u8], max_size: usize) -> Result<Self, rustbinary::Error> {
+        crate::wire_config(max_size).deserialize(data)
     }
 }
 
@@ -116,7 +119,9 @@ pub struct TransactionReceipt {
 
 impl TransactionReceipt {
     pub fn hash(&self) -> Hash256 {
-        let data = hyphen_codec::serialize(self).expect("receipt serialisation infallible");
+        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(self)
+            .expect("receipt serialisation infallible");
         hyphen_crypto::blake3_hash(&data)
     }
 }

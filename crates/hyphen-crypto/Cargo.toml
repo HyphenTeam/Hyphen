@@ -10,7 +10,6 @@ curve25519-dalek.workspace = true
 ed25519-dalek.workspace    = true
 merlin.workspace           = true
 serde.workspace            = true
-hyphen-codec.workspace     = true
 bs58.workspace             = true
 rand.workspace             = true
 rand_core.workspace        = true

@@ -1355,7 +1355,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1963,19 +1963,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyphen-codec"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "hyphen-compute"
 version = "0.1.0"
 dependencies = [
- "hyphen-codec",
  "hyphen-crypto",
+ "rustbinary",
  "serde",
  "thiserror 2.0.19",
 ]
@@ -1987,7 +1979,6 @@ dependencies = [
  "chrono",
  "curve25519-dalek 5.0.0",
  "hex",
- "hyphen-codec",
  "hyphen-compute",
  "hyphen-core",
  "hyphen-crypto",
@@ -1999,6 +1990,7 @@ dependencies = [
  "hyphen-vm",
  "log",
  "parking_lot 0.12.5",
+ "rustbinary",
  "serde",
  "serde_json",
  "sled",
@@ -2013,11 +2005,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "hex",
- "hyphen-codec",
  "hyphen-crypto",
  "once_cell",
  "parking_lot 0.12.5",
  "rand 0.10.2",
+ "rustbinary",
  "serde",
  "sntpc",
  "thiserror 2.0.19",
@@ -2034,7 +2026,6 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "ed25519-dalek 3.0.0",
  "hex",
- "hyphen-codec",
  "merlin",
  "once_cell",
  "rand 0.10.2",
@@ -2096,7 +2087,6 @@ dependencies = [
  "async-trait",
  "futures",
  "hex",
- "hyphen-codec",
  "hyphen-consensus",
  "hyphen-core",
  "hyphen-crypto",
@@ -2107,6 +2097,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "prost",
  "rand 0.10.2",
+ "rustbinary",
  "serde",
  "thiserror 2.0.19",
  "tokio",
@@ -2121,7 +2112,6 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
- "hyphen-codec",
  "hyphen-compute",
  "hyphen-consensus",
  "hyphen-core",
@@ -2141,6 +2131,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "prost",
  "rand 0.10.2",
+ "rustbinary",
  "serde",
  "tokio",
  "tracing",
@@ -2169,7 +2160,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "curve25519-dalek 5.0.0",
- "hyphen-codec",
  "hyphen-crypto",
  "merlin",
  "once_cell",
@@ -2184,7 +2174,6 @@ name = "hyphen-rpc"
 version = "0.1.0"
 dependencies = [
  "hex",
- "hyphen-codec",
  "hyphen-compute",
  "hyphen-consensus",
  "hyphen-core",
@@ -2197,6 +2186,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "prost",
  "prost-types",
+ "rustbinary",
  "serde",
  "thiserror 2.0.19",
  "tokio",
@@ -2210,7 +2200,6 @@ dependencies = [
  "blake3",
  "curve25519-dalek 5.0.0",
  "hex",
- "hyphen-codec",
  "hyphen-compute",
  "hyphen-core",
  "hyphen-crypto",
@@ -2219,6 +2208,7 @@ dependencies = [
  "log",
  "parking_lot 0.12.5",
  "rand 0.10.2",
+ "rustbinary",
  "serde",
  "serde_json",
  "sled",
@@ -2233,7 +2223,6 @@ dependencies = [
  "blake3",
  "curve25519-dalek 5.0.0",
  "hex",
- "hyphen-codec",
  "hyphen-core",
  "hyphen-crypto",
  "hyphen-proof",
@@ -2260,12 +2249,12 @@ version = "0.1.0"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "hex",
- "hyphen-codec",
  "hyphen-crypto",
  "hyphen-proof",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "rand_core 0.10.1",
+ "rustbinary",
  "serde",
  "thiserror 2.0.19",
  "zeroize",
@@ -2277,10 +2266,10 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "hex",
- "hyphen-codec",
  "hyphen-core",
  "hyphen-crypto",
  "hyphen-token",
+ "rustbinary",
  "serde",
  "sled",
  "thiserror 2.0.19",
@@ -2300,13 +2289,13 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "getrandom 0.4.3",
  "hex",
- "hyphen-codec",
  "hyphen-crypto",
  "hyphen-proof",
  "hyphen-tx",
  "once_cell",
  "rand 0.10.2",
  "rand_core 0.10.1",
+ "rustbinary",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -3514,7 +3503,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4311,6 +4300,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustbinary"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b658eb55cca5a717eaa999d09ba641dc079d3213a5f36258ee272e29033135fc"
+dependencies = [
+ "rustbinary-derive",
+ "serde",
+]
+
+[[package]]
+name = "rustbinary-derive"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21d5213a446a0842c329fb2161d81b67f0447f6043b3c8dc294028398d1b1b2c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4350,7 +4360,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4839,7 +4849,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

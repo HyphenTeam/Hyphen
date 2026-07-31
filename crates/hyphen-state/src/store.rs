@@ -43,7 +43,9 @@ impl BlockStore {
 
     pub fn insert_block(&self, block: &Block) -> Result<()> {
         let hash = block.hash();
-        let data = hyphen_codec::serialize(block).map_err(|e| StoreError::Serde(e.to_string()))?;
+        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(block)
+            .map_err(|e| StoreError::Serde(e.to_string()))?;
 
         self.blocks.insert(hash.as_bytes(), &data)?;
         self.height_index
@@ -65,7 +67,9 @@ impl BlockStore {
             .blocks
             .get(hash.as_bytes())?
             .ok_or_else(|| StoreError::NotFound(hash.to_string()))?;
-        hyphen_codec::deserialize(&data).map_err(|e| StoreError::Serde(e.to_string()))
+        crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .deserialize(&data)
+            .map_err(|e| StoreError::Serde(e.to_string()))
     }
 
     pub fn get_block_by_height(&self, height: u64) -> Result<Block> {

@@ -95,8 +95,8 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub fn deserialise_limited(data: &[u8]) -> Result<Self, hyphen_codec::Error> {
-        hyphen_codec::deserialize_with_limit(data, MAX_TRANSACTION_SIZE)
+    pub fn deserialise_limited(data: &[u8]) -> Result<Self, rustbinary::Error> {
+        crate::wire_config(MAX_TRANSACTION_SIZE).deserialize(data)
     }
 
     pub fn is_coinbase(&self) -> bool {
@@ -104,7 +104,9 @@ impl Transaction {
     }
 
     pub fn serialise(&self) -> Vec<u8> {
-        hyphen_codec::serialize(self).expect("tx serialization infallible")
+        crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(self)
+            .expect("tx serialization infallible")
     }
 
     pub fn hash(&self) -> Hash256 {
@@ -115,10 +117,18 @@ impl Transaction {
         let mut data = Vec::new();
         data.push(self.version);
         for inp in &self.inputs {
-            data.extend_from_slice(&hyphen_codec::serialize(inp).unwrap());
+            data.extend_from_slice(
+                &crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                    .serialize(inp)
+                    .unwrap(),
+            );
         }
         for out in &self.outputs {
-            data.extend_from_slice(&hyphen_codec::serialize(out).unwrap());
+            data.extend_from_slice(
+                &crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                    .serialize(out)
+                    .unwrap(),
+            );
         }
         data.extend_from_slice(&self.fee.to_le_bytes());
         data.extend_from_slice(&self.extra);

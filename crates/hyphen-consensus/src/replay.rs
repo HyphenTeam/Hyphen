@@ -173,7 +173,9 @@ mod tests {
             header,
             transactions: Vec::new(),
             uncle_headers: Vec::new(),
-            block_authorization: hyphen_codec::serialize(&authorization).unwrap(),
+            block_authorization: crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .serialize(&authorization)
+                .unwrap(),
         }
     }
 

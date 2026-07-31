@@ -521,8 +521,9 @@ impl Blockchain {
             )));
         }
 
-        let block_bytes =
-            hyphen_codec::serialize(block).map_err(|e| CoreError::Serialisation(e.to_string()))?;
+        let block_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(block)
+            .map_err(|e| CoreError::Serialisation(e.to_string()))?;
         if block_bytes.len() > self.cfg.max_block_size {
             return Err(CoreError::BlockTooLarge);
         }
@@ -1011,7 +1012,9 @@ mod tests {
             &miner,
         )
         .unwrap();
-        block.block_authorization = hyphen_codec::serialize(&authorization).unwrap();
+        block.block_authorization = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&authorization)
+            .unwrap();
     }
 
     fn child(cfg: &ChainConfig, parent: &Block, marker: u8, timestamp_offset: u64) -> Block {
@@ -1064,7 +1067,9 @@ mod tests {
             header,
             transactions: Vec::new(),
             uncle_headers: Vec::new(),
-            block_authorization: hyphen_codec::serialize(&authorization).unwrap(),
+            block_authorization: crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .serialize(&authorization)
+                .unwrap(),
         }
     }
 
