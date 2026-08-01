@@ -341,46 +341,6 @@ pub fn next_difficulty_lwma(timestamps: &[u64], difficulties: &[u64], cfg: &Chai
     base.max(min_diff.max(1)).min(max_diff.max(1))
 }
 
-pub fn difficulty_to_target(difficulty: u64) -> [u8; 32] {
-    if difficulty <= 1 {
-        return [0xFF; 32];
-    }
-
-    let diff = difficulty as u128;
-    let high = u128::MAX;
-    let low = u128::MAX;
-
-    let quot_high = high / diff;
-    let rem_high = high % diff;
-    let (quot_low, _) = div_wide(rem_high, low, diff);
-
-    let mut target = [0u8; 32];
-    let qh_bytes = quot_high.to_be_bytes();
-    let ql_bytes = quot_low.to_be_bytes();
-    target[..16].copy_from_slice(&qh_bytes);
-    target[16..].copy_from_slice(&ql_bytes);
-    target
-}
-
-fn div_wide(high: u128, low: u128, divisor: u128) -> (u128, u128) {
-    if high == 0 {
-        return (low / divisor, low % divisor);
-    }
-    let mut rem = high % divisor;
-    let mut quot: u128 = 0;
-    for bit in (0..128).rev() {
-        rem = rem.checked_shl(1).unwrap_or(0);
-        if (low >> bit) & 1 == 1 {
-            rem += 1;
-        }
-        if rem >= divisor {
-            rem -= divisor;
-            quot |= 1u128 << bit;
-        }
-    }
-    (quot, rem)
-}
-
 // --- Ablation Experiment Framework ---
 //
 // Variants: Full | NoSprt | NoMomentum | NoDampener | PureLwma
@@ -721,14 +681,6 @@ mod tests {
             next >= 1000,
             "anti-51% dampening should prevent drop, got {next}"
         );
-    }
-
-    #[test]
-    fn difficulty_to_target_basic() {
-        let t1 = difficulty_to_target(1);
-        assert_eq!(t1, [0xFF; 32]);
-        let t2 = difficulty_to_target(2);
-        assert!(t2[0] == 0x7F);
     }
 
     // ─── SPRT unit tests ───

@@ -167,7 +167,7 @@ impl ChainConfig {
     /// will be detected and rejected.
     pub fn consensus_params_hash(&self) -> [u8; 32] {
         let mut buf = Vec::with_capacity(256);
-        buf.extend_from_slice(b"HyphenConsensusParams/v5-deterministic-coinbase");
+        buf.extend_from_slice(b"HyphenConsensusParams/v6-scientific-pouw-v1");
         buf.extend_from_slice(&STATE_TRANSITION_VERSION.to_le_bytes());
         buf.extend_from_slice(&FROZEN_BLOCK_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.network_magic);
@@ -230,7 +230,8 @@ impl ChainConfig {
             merkle_depth: 32,
             ring_size: 16,
             difficulty_window: 60,
-            genesis_difficulty: 1_000_000,
+            // PoUW v1 difficulty is the exact number of Q12 diffusion steps.
+            genesis_difficulty: 384,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
             tail_emission: 600_000_000_000,
@@ -278,7 +279,7 @@ impl ChainConfig {
             merkle_depth: 32,
             ring_size: 4,
             difficulty_window: 30,
-            genesis_difficulty: 1000,
+            genesis_difficulty: 192,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
             tail_emission: 600_000_000_000,
@@ -330,7 +331,7 @@ impl ChainConfig {
             merkle_depth: 32,
             ring_size: 4,
             difficulty_window: 30,
-            genesis_difficulty: 1_000,
+            genesis_difficulty: 64,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
             tail_emission: 600_000_000_000,

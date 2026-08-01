@@ -1,0 +1,14 @@
+[package]
+name = "hyphen-explorer-web"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Rust WebAssembly renderer for the Hyphen chain explorer"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

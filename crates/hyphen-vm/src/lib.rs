@@ -10,6 +10,7 @@ pub(crate) fn wire_config(max_bytes: usize) -> rustbinary::Config {
         .reject_trailing_bytes()
 }
 
+pub mod application;
 pub mod contract;
 pub mod engine;
 pub mod gas;
@@ -18,6 +19,7 @@ pub mod ledger;
 pub mod state;
 pub mod types;
 
+pub use application::{application_manifest, AppCategory, AppManifest, AppManifestError};
 pub use contract::Contract;
 pub use engine::VmEngine;
 pub use gas::GasMeter;

@@ -7,19 +7,22 @@ result, fraud and custody proofs, and no token reward transfer is implemented.
 
 ## Non-negotiable security rule
 
-Useful work may augment rewards, but it MUST NOT replace the base PoW security
-budget. A block remains eligible only when it satisfies ordinary HyphenPoW at
-the full consensus difficulty. If there are zero external tasks, the chain's
-eligibility rule and measurable PoW cost remain unchanged.
+Task-backed useful work may augment rewards, but it MUST NOT silently replace
+the block-level scientific computational-work rule. A block remains eligible
+only after the node recomputes the complete deterministic PDE at the declared
+consensus iteration count. If there are zero external tasks, this base rule and
+its measurable computation remain unchanged. This rule is itself a research
+prototype: every completed candidate is eligible and verification repeats the
+full PDE, so it is not a succinct or externally useful proof.
 
 For the first prototype, the safest accounting equation is:
 
 ```text
 miner_income = consensus_block_reward + transaction_fees + escrowed_task_bounty
-chain_weight  = verified_base_PoW_only
+chain_weight  = verified_base_scientific_work_only
 ```
 
-Task proofs MUST NOT increase chain weight, lower base difficulty, bypass PoW,
+Task proofs MUST NOT increase chain weight, lower base iterations, bypass the base work,
 or decide fork choice. Any future proposal to change that boundary is a new
 consensus design requiring a separate chain profile and audit.
 
@@ -63,7 +66,7 @@ and economic analysis.
 4. Bounded validation checks the proof and result commitment. Expensive task
    execution never occurs in every full node.
 5. A successful claim transfers only the requester's escrowed bounty. It does
-   not modify PoW target, block validity, chain weight, or base issuance.
+   not modify block-work eligibility, block validity, chain weight, or base issuance.
 
 The repository now commits this lifecycle to the unified research-profile
 state root. Publication is usable, but settlement stays fail-closed until a
@@ -83,7 +86,7 @@ Before proposing activation, publish reproducible results for:
 - reward volatility when external demand is zero or concentrated;
 - censorship of task claims and expiry/reorg behavior;
 - proof-system bugs, parameter compromise, and emergency disable behavior; and
-- base-PoW distribution with and without useful-work income.
+- base scientific-work distribution with and without task-bounty income.
 
 ## Activation gate
 
@@ -110,14 +113,14 @@ research, never as "AI mining" or a current source of chain security.
 
 ## 不可妥协的安全规则
 
-有用工作可以增加收入，但绝不能替代基础 PoW 安全预算。区块只有在完整共识难度下满足普通 HyphenPoW 才具备资格。外部任务为零时，链的资格规则与可测 PoW 成本保持不变。
+任务支撑的有用工作可以增加收入，但绝不能静默替代区块级科学计算工作规则。节点完整复算声明迭代数的确定性 PDE 后区块才具备资格；外部任务为零时，该基础规则和可测计算量保持不变。这个基础规则本身仍是研究原型：每个完成计算的候选都具备资格，验证还会重复完整 PDE，因此不是简洁证明，也不代表外部科学价值。
 
 ```text
 miner_income = consensus_block_reward + transaction_fees + escrowed_task_bounty
-chain_weight  = verified_base_PoW_only
+chain_weight  = verified_base_scientific_work_only
 ```
 
-任务证明不得增加链权重、降低基础难度、绕过 PoW 或决定 fork choice。未来任何改变该边界的提议都属于新的共识设计，需要独立链 profile 和审计。
+任务证明不得增加链权重、降低基础迭代数、绕过基础工作或决定 fork choice。未来任何改变该边界的提议都属于新的共识设计，需要独立链 profile 和审计。
 
 ## 明确排除
 
@@ -145,7 +148,7 @@ Hyphen 不得把通用 AI 训练或推理描述为挖矿。这类工作通常验
 2. 奖励激活前，challenge 必须来自任务出资时未知的不可偏置值，并绑定任务 ID 和 worker 公钥。当前 v1 execution statement 尚未携带该 challenge。
 3. Worker 计算结果和绑定 challenge 的简洁证明。
 4. 有界验证检查证明与结果 commitment。昂贵任务执行绝不在每个全节点中进行。
-5. 成功 claim 只转移请求方托管的 bounty，不改变 PoW target、区块有效性、链权重或基础发行。
+5. 成功 claim 只转移请求方托管的 bounty，不改变区块工作资格、区块有效性、链权重或基础发行。
 
 仓库现已将该生命周期承诺到统一研究 profile 状态根。任务发布可用，但在实现版本化 verifier 后端和请求方出资的 escrow 转移，并通过新链 profile 审查激活前，结算保持 fail-closed。
 
@@ -161,7 +164,7 @@ Hyphen 不得把通用 AI 训练或推理描述为挖矿。这类工作通常验
 - 外部需求为零或集中时的奖励波动；
 - 任务 claim 审查及过期/reorg 行为；
 - 证明系统缺陷、参数泄露和紧急禁用；
-- 有无有用工作收入时的基础 PoW 分布。
+- 有无任务 bounty 收入时的基础科学计算工作分布。
 
 ## 激活门槛
 

@@ -200,7 +200,7 @@ mod tests {
     fn published_chain_identity_vectors_match_the_implementation() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../test-vectors/chain-identity-v2.json"
+            "/../../test-vectors/chain-identity-v3.json"
         );
         let bytes = std::fs::read(path).expect("read published chain identity vectors");
         let vectors: Vec<ChainIdentityVector> =

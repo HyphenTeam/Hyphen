@@ -2,6 +2,7 @@
 name = "hyphen-wallet"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Wallet, address generation and key derivation for the Hyphen blockchain"
 
 [dependencies]

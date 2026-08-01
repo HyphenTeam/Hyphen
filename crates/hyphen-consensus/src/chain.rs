@@ -10,7 +10,6 @@ use hyphen_core::timestamp::ntp_adjusted_timestamp_ms;
 use hyphen_crypto::Hash256;
 use hyphen_pow::difficulty::next_difficulty;
 use hyphen_pow::solver::verify_pow;
-use hyphen_pow::EpochArena;
 use hyphen_state::chain_state::{ChainState, ChainTip};
 use hyphen_state::commitment_tree::PersistentCommitmentTree;
 use hyphen_state::nullifier_set::NullifierSet;
@@ -46,7 +45,6 @@ pub struct Blockchain {
     pub reorg: ReorgCoordinator,
     compute_verifier: Arc<dyn ProofVerifier>,
     transition: Mutex<()>,
-    arena: RwLock<Option<Arc<EpochArena>>>,
 }
 
 impl Blockchain {
@@ -139,7 +137,6 @@ impl Blockchain {
             reorg,
             compute_verifier,
             transition: Mutex::new(()),
-            arena: RwLock::new(None),
         };
 
         let expected_genesis = build_genesis_block(&bc.cfg);
@@ -226,6 +223,19 @@ impl Blockchain {
         self.vm_state.read().snapshot().contract(address).cloned()
     }
 
+    pub fn vm_contracts(&self, offset: usize, limit: usize) -> (Vec<Contract>, usize) {
+        let _transition = self.transition.lock();
+        let state = self.vm_state.read().snapshot();
+        (
+            state
+                .contracts_page(offset, limit)
+                .into_iter()
+                .cloned()
+                .collect(),
+            state.contract_count(),
+        )
+    }
+
     pub fn vm_storage(&self, address: ContractAddress, key: &[u8]) -> Option<Vec<u8>> {
         let _transition = self.transition.lock();
         self.vm_state
@@ -252,24 +262,6 @@ impl Blockchain {
 
     pub fn store(&self) -> &BlockStore {
         &self.blocks
-    }
-
-    pub fn arena_for_epoch(&self, epoch_seed: Hash256) -> Arc<EpochArena> {
-        {
-            let guard = self.arena.read();
-            if let Some(ref arena) = *guard {
-                if arena.params.epoch_seed == epoch_seed {
-                    return Arc::clone(arena);
-                }
-            }
-        }
-        let new_arena = Arc::new(EpochArena::generate(
-            epoch_seed,
-            self.cfg.arena_size,
-            self.cfg.page_size,
-        ));
-        *self.arena.write() = Some(Arc::clone(&new_arena));
-        new_arena
     }
 
     pub fn epoch_seed_for_height(&self, height: u64) -> Result<Hash256, CoreError> {
@@ -305,7 +297,8 @@ impl Blockchain {
             difficulties.push(block.header.difficulty);
         }
 
-        Ok(next_difficulty(&timestamps, &difficulties, &self.cfg))
+        Ok(next_difficulty(&timestamps, &difficulties, &self.cfg)
+            .min(hyphen_pow::MAX_POUW_ITERATIONS))
     }
 
     fn apply_block_unchecked(&self, block: &Block) -> Result<(), CoreError> {
@@ -506,8 +499,13 @@ impl Blockchain {
         }
 
         let epoch_seed = self.epoch_seed_for_height(block.header.height)?;
-        let arena = self.arena_for_epoch(epoch_seed);
-        if !verify_pow(&block.header, &arena, &self.cfg) {
+        if block.header.epoch_seed != epoch_seed {
+            return Err(CoreError::Validation(format!(
+                "epoch seed mismatch: expected {epoch_seed}, got {}",
+                block.header.epoch_seed
+            )));
+        }
+        if !verify_pow(&block.header) {
             return Err(CoreError::PowFailed);
         }
 
@@ -972,6 +970,7 @@ mod tests {
     };
     use hyphen_core::{BlockAuthorization, BlockHeader, FROZEN_BLOCK_VERSION};
     use hyphen_crypto::{SecretKey, SpendKey, ViewKey};
+    use hyphen_pow::EpochArena;
     use hyphen_vm::ledger::{SignedCall, SignedDeploy};
     use hyphen_vm::types::{ContractCall, DeployParams};
 
@@ -987,6 +986,22 @@ mod tests {
         cfg.difficulty_window = 2;
         cfg.epoch_length = 100;
         cfg
+    }
+
+    #[test]
+    fn legacy_consensus_database_is_rejected_before_genesis_mutation() {
+        let cfg = test_config();
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        db.open_tree("consensus_meta")
+            .unwrap()
+            .insert(b"params_hash", [0x42u8; 32].as_slice())
+            .unwrap();
+
+        assert!(matches!(
+            Blockchain::open_db(db, cfg),
+            Err(CoreError::Validation(message))
+                if message.contains("different rules") && message.contains("refusing to open")
+        ));
     }
 
     fn remine_and_authorize(cfg: &ChainConfig, block: &mut Block, marker: u8) {
@@ -1040,7 +1055,7 @@ mod tests {
             state_root: Hash256::ZERO,
             receipt_root: Hash256::ZERO,
             uncle_root: Hash256::ZERO,
-            pow_commitment: hyphen_crypto::blake3_hash(epoch_seed.as_bytes()),
+            pow_commitment: Hash256::ZERO,
             epoch_seed,
             difficulty: if height >= 3 { 3 } else { 1 },
             nonce: marker as u64,

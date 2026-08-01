@@ -2,6 +2,7 @@
 name = "hyphen-transport"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Template Provider protocol for Hyphen node-pool communication"
 
 [dependencies]

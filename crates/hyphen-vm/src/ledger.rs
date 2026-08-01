@@ -110,6 +110,14 @@ impl VmLedger {
         self.contracts.get(&address)
     }
 
+    pub fn contract_count(&self) -> usize {
+        self.contracts.len()
+    }
+
+    pub fn contracts_page(&self, offset: usize, limit: usize) -> Vec<&Contract> {
+        self.contracts.values().skip(offset).take(limit).collect()
+    }
+
     pub fn storage(&self, address: ContractAddress, key: &[u8]) -> Option<&[u8]> {
         self.storage
             .get(&(address, key.to_vec()))
@@ -132,10 +140,13 @@ impl VmLedger {
         height: u64,
         transaction: &VmTransaction,
     ) -> Result<u64, VmLedgerError> {
-        match transaction {
-            VmTransaction::Deploy(signed) => self.deploy(chain_id, height, signed),
-            VmTransaction::Call(signed) => self.call(chain_id, signed),
-        }
+        let mut pending = self.clone();
+        let gas_used = match transaction {
+            VmTransaction::Deploy(signed) => pending.deploy(chain_id, height, signed),
+            VmTransaction::Call(signed) => pending.call(chain_id, signed),
+        }?;
+        *self = pending;
+        Ok(gas_used)
     }
 
     fn deploy(
@@ -345,5 +356,105 @@ mod tests {
         ledger.apply(chain_id, 2, &call).unwrap();
         assert_ne!(ledger.root(), before);
         assert_eq!(ledger.storage(address, b"key"), Some(b"value".as_slice()));
+    }
+
+    #[test]
+    fn defi_and_game_application_abi_execute_on_the_signed_ledger() {
+        for (index, category) in ["defi", "game"].into_iter().enumerate() {
+            let chain_id = Hash256::from_bytes([11 + index as u8; 32]);
+            let owner = SecretKey([21 + index as u8; 32]);
+            let manifest = format!(
+                r#"{{\"abi\":1,\"category\":\"{category}\",\"name\":\"Production App\",\"version\":\"1.0.0\"}}"#
+            );
+            let code = wasm(&format!(
+                r#"(module
+                    (@custom "hyphen.app" "{manifest}")
+                    (import "env" "h_storage_write" (func $write (param i32 i32 i32 i32) (result i32)))
+                    (memory (export "memory") 1 1)
+                    (data (i32.const 0) "stateactive")
+                    (func (export "hyphen_execute")
+                        (drop (call $write (i32.const 0) (i32.const 5) (i32.const 5) (i32.const 6))))
+                    (func (export "hyphen_query")))"#
+            ));
+            let params = DeployParams {
+                deployer: *owner.public_key().as_bytes(),
+                code,
+                constructor_args: Vec::new(),
+                gas_limit: 1_000_000,
+                nonce: 0,
+            };
+            let deploy =
+                VmTransaction::Deploy(SignedDeploy::sign(chain_id, params, &owner).unwrap());
+            let mut ledger = VmLedger::default();
+            ledger.apply(chain_id, 1, &deploy).unwrap();
+            let address =
+                ContractAddress::from_deployer_and_nonce(owner.public_key().as_bytes(), 0);
+            let execute = ContractCall {
+                caller: *owner.public_key().as_bytes(),
+                contract: address,
+                function: crate::application::APP_EXECUTE_EXPORT.into(),
+                args: Vec::new(),
+                gas_limit: 100_000,
+                value: 0,
+            };
+            let execute =
+                VmTransaction::Call(SignedCall::sign(chain_id, 1, execute, &owner).unwrap());
+            ledger.apply(chain_id, 2, &execute).unwrap();
+            assert_eq!(
+                ledger.storage(address, b"state"),
+                Some(b"active".as_slice())
+            );
+            assert_eq!(
+                ledger
+                    .contract(address)
+                    .and_then(|contract| crate::application_manifest(&contract.code).ok())
+                    .flatten()
+                    .map(|manifest| manifest.category.to_string()),
+                Some(category.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn application_query_cannot_mutate_consensus_state() {
+        let chain_id = Hash256::from_bytes([31; 32]);
+        let owner = SecretKey([32; 32]);
+        let code = wasm(
+            r#"(module
+                (@custom "hyphen.app" "{\"abi\":1,\"category\":\"utility\",\"name\":\"Read Guard\",\"version\":\"1\"}")
+                (import "env" "h_storage_write" (func $write (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1 1)
+                (data (i32.const 0) "keyvalue")
+                (func (export "hyphen_execute"))
+                (func (export "hyphen_query")
+                    (drop (call $write (i32.const 0) (i32.const 3) (i32.const 3) (i32.const 5)))))"#,
+        );
+        let params = DeployParams {
+            deployer: *owner.public_key().as_bytes(),
+            code,
+            constructor_args: Vec::new(),
+            gas_limit: 1_000_000,
+            nonce: 0,
+        };
+        let deploy = VmTransaction::Deploy(SignedDeploy::sign(chain_id, params, &owner).unwrap());
+        let mut ledger = VmLedger::default();
+        ledger.apply(chain_id, 1, &deploy).unwrap();
+        let address = ContractAddress::from_deployer_and_nonce(owner.public_key().as_bytes(), 0);
+        let root_before = ledger.root();
+        let query = ContractCall {
+            caller: *owner.public_key().as_bytes(),
+            contract: address,
+            function: crate::application::APP_QUERY_EXPORT.into(),
+            args: Vec::new(),
+            gas_limit: 100_000,
+            value: 0,
+        };
+        let query = VmTransaction::Call(SignedCall::sign(chain_id, 1, query, &owner).unwrap());
+        assert_eq!(
+            ledger.apply(chain_id, 2, &query),
+            Err(VmLedgerError::Execution("hyphen_query is read-only".into()))
+        );
+        assert_eq!(ledger.root(), root_before);
+        assert_eq!(ledger.storage(address, b"key"), None);
     }
 }

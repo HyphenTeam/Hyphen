@@ -5,7 +5,8 @@ use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature};
 
 use crate::block::BlockHeader;
 
-pub const FROZEN_BLOCK_VERSION: u32 = 2;
+/// Block format 3 activates deterministic scientific-computation PoUW.
+pub const FROZEN_BLOCK_VERSION: u32 = 3;
 pub const BLOCK_AUTHORIZATION_VERSION: u16 = 1;
 const AUTHORIZATION_DOMAIN: &[u8] = b"Hyphen/NCAP/block-authorization/v1";
 

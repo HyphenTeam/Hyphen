@@ -2,6 +2,7 @@
 name = "hyphen-vm"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "WASM smart contract execution engine for the Hyphen blockchain"
 
 [dependencies]
@@ -9,6 +10,7 @@ hyphen-crypto.workspace = true
 hyphen-core.workspace   = true
 hyphen-token.workspace  = true
 serde.workspace         = true
+serde_json.workspace    = true
 rustbinary.workspace    = true
 thiserror.workspace     = true
 tracing.workspace       = true

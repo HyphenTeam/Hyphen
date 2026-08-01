@@ -2,6 +2,7 @@
 name = "hyphen-tx"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Shielded UTXO transaction model for the Hyphen blockchain"
 
 [dependencies]

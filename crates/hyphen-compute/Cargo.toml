@@ -2,6 +2,7 @@
 name = "hyphen-compute"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Consensus protocol for verified scientific state updates"
 
 [dependencies]

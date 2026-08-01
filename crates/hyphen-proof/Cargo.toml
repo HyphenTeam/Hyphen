@@ -2,6 +2,7 @@
 name = "hyphen-proof"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Bulletproofs range proofs and batch verification for the Hyphen blockchain"
 
 [dependencies]

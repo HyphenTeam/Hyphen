@@ -2,6 +2,7 @@
 name = "hyphen-rpc"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "RPC server for the Hyphen blockchain"
 
 [dependencies]
@@ -11,6 +12,7 @@ hyphen-state.workspace     = true
 hyphen-tx.workspace        = true
 hyphen-mempool.workspace   = true
 hyphen-consensus.workspace = true
+hyphen-pow.workspace       = true
 hyphen-compute.workspace   = true
 hyphen-vm.workspace        = true
 hyphen-token.workspace     = true

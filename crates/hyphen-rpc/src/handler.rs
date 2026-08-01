@@ -142,11 +142,21 @@ impl RpcHandler {
         let resp = ChainInfoResponse {
             height: tip.height,
             tip_hash: tip.hash.to_vec(),
-            difficulty: 0,
+            difficulty: self
+                .chain
+                .next_difficulty()
+                .map_err(|error| HandlerError::Internal(error.to_string()))?,
             cumulative_difficulty: tip.cumulative_difficulty.to_le_bytes().to_vec(),
             total_outputs: tip.total_outputs,
             network: self.chain.cfg.network_name.clone(),
             epoch_seed: epoch_seed.to_vec(),
+            network_magic: self.chain.cfg.network_magic.to_vec(),
+            consensus_params_hash: self.chain.cfg.consensus_params_hash().to_vec(),
+            genesis_hash: hyphen_consensus::genesis::build_genesis_block(&self.chain.cfg)
+                .hash()
+                .to_vec(),
+            block_version: hyphen_core::FROZEN_BLOCK_VERSION,
+            pouw_protocol_version: hyphen_pow::POUW_PROTOCOL_VERSION.into(),
         };
         Ok(resp.encode_to_vec())
     }

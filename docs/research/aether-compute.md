@@ -58,21 +58,25 @@ proof-system ID and current retention-provider count. Search accepts a task ID.
 The independent `HyphenMiner` repository contains a versioned C ABI for native
 CUDA, HIP, Intel OpenVINO NPU/GPU and Qualcomm QNN plugins. ABI loading,
 capability checks, bounded result ownership and error isolation stay in Rust.
-The v1 deterministic kernel is a Q12 periodic diffusion/PDE step with bounded
-non-negative `i32` cells. Every accepted device output is recomputed by the
+ABI v2 implements the consensus 64x64 Q12 periodic diffusion/PDE step with
+bounded non-negative `i32` cells. CUDA, HIP and OpenVINO use the same
+four-neighbour relation and seven-operation accounting as PoUW v1. Old ABI v1
+plugins are rejected. Every accepted device output is recomputed by the
 independent Rust implementation, checked byte-for-byte and committed with
 domain-separated BLAKE3 input/output hashes.
 
-On the current development host, the CUDA plugin was compiled with CUDA 13.2
-and passed device execution on an NVIDIA RTX A4000 Laptop GPU. HIP and OpenVINO
-remain unavailable because their SDK/runtime and target hardware are absent.
-The installed x86_64 Qualcomm SDK can initialize its HTP provider, but the QNN
-plugin advertises no kernel capability without a target-SoC deterministic graph
-package. Provider discovery is not treated as useful computation.
+The CUDA source compiles with CUDA 13.2 on the current development host. No
+compatible device execution was performed in this verification run, and HIP,
+OpenVINO and QNN were not built because their SDK/runtime and target hardware
+were unavailable. QNN advertises no kernel capability until a target-specific
+deterministic graph implements ABI v2. Provider discovery is not treated as
+useful computation.
 
-This execution ABI is not yet connected to Pool Protocol scientific-job
-transport or result-envelope submission. It supplies a verified native
-execution boundary; it does not replace the consensus `ProofVerifier`.
+The ABI v2 execution path is connected to block mining: verified devices run
+the exact header-derived consensus grid, while the default path falls back to
+Rust CPU execution. `--require-accelerator` makes device availability and
+successful execution mandatory. This boundary does not replace the consensus
+`ProofVerifier` and does not settle user-published AetherCompute tasks.
 
 ## Non-claims
 

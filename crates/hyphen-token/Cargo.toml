@@ -2,6 +2,7 @@
 name = "hyphen-token"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Token and asset management for the Hyphen blockchain"
 
 [dependencies]

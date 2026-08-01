@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 use hyphen_compute::{ArithmeticProfile, ScientificDomain, TaskRecord, TaskStatus};
@@ -17,6 +17,7 @@ use hyphen_core::block::{Block, BlockHeader};
 use hyphen_core::config::ChainConfig;
 use hyphen_crypto::Hash256;
 use hyphen_economics::{block_reward, total_supply_at_height};
+use hyphen_vm::{application_manifest, AppManifest, Contract, ContractAddress};
 
 pub struct ExplorerState {
     pub blockchain: Arc<Blockchain>,
@@ -25,6 +26,8 @@ pub struct ExplorerState {
 }
 
 const INDEX_HTML: &str = include_str!("index.html");
+const APP_JS: &str = include_str!("app.js");
+const EXPLORER_WASM: &[u8] = include_bytes!("hyphen_explorer_web.wasm");
 const ATOMIC_UNITS: u64 = 1_000_000_000_000;
 
 fn format_hpn(atomic: u64) -> String {
@@ -205,11 +208,11 @@ struct ScientificTaskResponse {
     input_object_hash: String,
     input_bytes: u64,
     input_chunk_root: String,
-    input_locator: String,
+    input_available: bool,
     output_object_hash: Option<String>,
     output_bytes: Option<u64>,
     output_chunk_root: Option<String>,
-    output_locator: Option<String>,
+    output_available: Option<bool>,
     worker: Option<String>,
     proof_system: Option<u16>,
     trace_root: Option<String>,
@@ -229,6 +232,78 @@ struct ScientificTasksResponse {
 struct ScientificTasksQuery {
     offset: Option<usize>,
     limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct ContractResponse {
+    address: String,
+    code_hash: String,
+    deployer: String,
+    deployed_height: u64,
+    code_bytes: usize,
+    application: Option<AppManifest>,
+}
+
+#[derive(Serialize)]
+struct ContractsResponse {
+    contracts: Vec<ContractResponse>,
+    total: usize,
+    offset: usize,
+    limit: usize,
+}
+
+#[derive(Deserialize)]
+struct ContractsQuery {
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
+fn contract_response(contract: Contract) -> ContractResponse {
+    let application = application_manifest(&contract.code).ok().flatten();
+    ContractResponse {
+        address: contract.address.to_string(),
+        code_hash: contract.code_hash.to_string(),
+        deployer: hex::encode(contract.deployer),
+        deployed_height: contract.deployed_height,
+        code_bytes: contract.code.len(),
+        application,
+    }
+}
+
+async fn get_contracts(
+    State(state): State<Arc<ExplorerState>>,
+    Query(params): Query<ContractsQuery>,
+) -> impl IntoResponse {
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let (contracts, total) = state.blockchain.vm_contracts(offset, limit);
+    (
+        StatusCode::OK,
+        Json(ContractsResponse {
+            contracts: contracts.into_iter().map(contract_response).collect(),
+            total,
+            offset,
+            limit,
+        }),
+    )
+}
+
+async fn get_contract(
+    State(state): State<Arc<ExplorerState>>,
+    Path(address): Path<String>,
+) -> impl IntoResponse {
+    let Some(hash) = parse_hash(&address) else {
+        return error_json(
+            StatusCode::BAD_REQUEST,
+            "contract address must be 64 hex characters",
+        )
+        .into_response();
+    };
+    let address = ContractAddress(*hash.as_bytes());
+    let Some(contract) = state.blockchain.vm_contract(address) else {
+        return error_json(StatusCode::NOT_FOUND, "WASM contract not found").into_response();
+    };
+    (StatusCode::OK, Json(contract_response(contract))).into_response()
 }
 
 #[derive(Default)]
@@ -458,11 +533,11 @@ fn scientific_task(task_id: Hash256, record: TaskRecord) -> ScientificTaskRespon
         input_object_hash: spec.input.object_hash.to_string(),
         input_bytes: spec.input.byte_len,
         input_chunk_root: spec.input.chunk_root.to_string(),
-        input_locator: spec.input.locator.clone(),
+        input_available: !spec.input.locator.trim().is_empty(),
         output_object_hash: output.map(|value| value.object_hash.to_string()),
         output_bytes: output.map(|value| value.byte_len),
         output_chunk_root: output.map(|value| value.chunk_root.to_string()),
-        output_locator: output.map(|value| value.locator.clone()),
+        output_available: output.map(|value| !value.locator.trim().is_empty()),
         worker: result.map(|signed| signed.claim.worker.to_string()),
         proof_system: result.map(|signed| signed.claim.proof_system),
         trace_root: result.map(|signed| signed.claim.trace_root.to_string()),
@@ -527,8 +602,43 @@ fn error_json(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>
     )
 }
 
-async fn serve_frontend() -> Html<&'static str> {
-    Html(INDEX_HTML)
+fn security_headers(content_type: &'static str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        ),
+    );
+    headers
+}
+
+async fn serve_frontend() -> (HeaderMap, Html<&'static str>) {
+    (
+        security_headers("text/html; charset=utf-8"),
+        Html(INDEX_HTML),
+    )
+}
+
+async fn serve_app_js() -> Response {
+    let mut response = Response::new(Body::from(APP_JS));
+    *response.headers_mut() = security_headers("text/javascript; charset=utf-8");
+    response
+}
+
+async fn serve_wasm() -> Response {
+    let mut response = Response::new(Body::from(EXPLORER_WASM));
+    *response.headers_mut() = security_headers("application/wasm");
+    response
 }
 
 async fn get_info(State(state): State<Arc<ExplorerState>>) -> impl IntoResponse {
@@ -712,13 +822,13 @@ async fn search_handler(
                 .into_response();
         }
 
-        if let Ok((block_hash, _)) = state.blockchain.blocks.get_tx_location(&hash) {
+        if state.blockchain.blocks.get_tx_location(&hash).is_ok() {
             return (
                 StatusCode::OK,
                 Json(SearchResponse {
                     result_type: "tx".into(),
                     height: None,
-                    hash: Some(block_hash.to_string()),
+                    hash: Some(hash.to_string()),
                 }),
             )
                 .into_response();
@@ -729,6 +839,22 @@ async fn search_handler(
                 StatusCode::OK,
                 Json(SearchResponse {
                     result_type: "science_task".into(),
+                    height: None,
+                    hash: Some(hash.to_string()),
+                }),
+            )
+                .into_response();
+        }
+
+        if state
+            .blockchain
+            .vm_contract(ContractAddress(*hash.as_bytes()))
+            .is_some()
+        {
+            return (
+                StatusCode::OK,
+                Json(SearchResponse {
+                    result_type: "app".into(),
                     height: None,
                     hash: Some(hash.to_string()),
                 }),
@@ -852,13 +978,10 @@ pub fn explorer_router(blockchain: Arc<Blockchain>, cfg: ChainConfig) -> Router 
         cfg,
         cache: RwLock::new(ExplorerCache::default()),
     });
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     Router::new()
         .route("/", get(serve_frontend))
+        .route("/app.js", get(serve_app_js))
+        .route("/hyphen_explorer_web.wasm", get(serve_wasm))
         .route("/api/info", get(get_info))
         .route("/api/updates", get(get_updates))
         .route("/api/blocks", get(get_blocks))
@@ -866,10 +989,11 @@ pub fn explorer_router(blockchain: Arc<Blockchain>, cfg: ChainConfig) -> Router 
         .route("/api/tx/{hash}", get(get_tx))
         .route("/api/science/tasks", get(get_scientific_tasks))
         .route("/api/science/task/{id}", get(get_scientific_task))
+        .route("/api/apps", get(get_contracts))
+        .route("/api/app/{address}", get(get_contract))
         .route("/api/miner/{pubkey}/rewards", get(get_miner_rewards))
         .route("/api/miner/{pubkey}/blocks", get(get_miner_blocks))
         .route("/api/search", get(search_handler))
-        .layer(cors)
         .with_state(state)
 }
 

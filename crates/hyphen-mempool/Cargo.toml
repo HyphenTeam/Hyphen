@@ -2,6 +2,7 @@
 name = "hyphen-mempool"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Transaction memory pool for the Hyphen blockchain"
 
 [dependencies]

@@ -190,18 +190,27 @@ impl VmEngine {
         let host_used = host_env.gas.lock().unwrap().used();
         let combined_used = instruction_used.saturating_add(host_used);
         let out_of_gas = exhausted || combined_used > call.gas_limit;
-        let success = execution.is_ok() && !out_of_gas;
+        let mut success = execution.is_ok() && !out_of_gas;
+        let mut read_only_violation = false;
 
         let (state_changes, logs) = if success {
             let updated_storage = host_env.storage.lock().unwrap().clone();
             let changes = state_changes(contract.address, &base_storage, &updated_storage);
-            self.storage.insert(contract.address, updated_storage);
-            (changes, host_env.logs.lock().unwrap().clone())
+            if call.function == crate::application::APP_QUERY_EXPORT && !changes.is_empty() {
+                success = false;
+                read_only_violation = true;
+                (Vec::new(), Vec::new())
+            } else {
+                self.storage.insert(contract.address, updated_storage);
+                (changes, host_env.logs.lock().unwrap().clone())
+            }
         } else {
             (Vec::new(), Vec::new())
         };
 
-        let return_data = if out_of_gas {
+        let return_data = if read_only_violation {
+            b"hyphen_query is read-only".to_vec()
+        } else if out_of_gas {
             b"out of gas".to_vec()
         } else if let Err(error) = execution {
             error.to_string().into_bytes()
@@ -309,6 +318,8 @@ fn validate_contract(code: &[u8]) -> Result<(), VmError> {
     Validator::new_with_features(features)
         .validate_all(code)
         .map_err(|e| VmError::Validation(e.to_string()))?;
+    crate::application::application_manifest(code)
+        .map_err(|error| VmError::Validation(error.to_string()))?;
 
     let mut memory_count = 0usize;
     let mut exports_memory = false;

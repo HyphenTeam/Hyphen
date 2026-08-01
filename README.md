@@ -2,8 +2,10 @@
 
 [中文说明](README_CN.md)
 
-Hyphen is an experimental privacy-oriented, CPU-first proof-of-work base chain
-written in Rust. This repository contains the node, consensus and state
+Hyphen is an experimental privacy-oriented base chain with deterministic
+scientific computational work, written in Rust. The protocol identifier remains
+`PoUW v1`, but the implemented block kernel is not task-backed useful work. This
+repository contains the node, consensus and state
 transition code, transaction validation, networking, RPC, cryptographic
 libraries, executable research models, and consensus test vectors.
 
@@ -24,7 +26,7 @@ devnet consensus:
 | Mechanism | Code and vectors | What is actually established | Missing before activation |
 | --- | --- | --- | --- |
 | H-WES recoverable state expiry | Public profile integrated on research chains | Atomic five-root state, signed public creation, bounded deterministic expiry and reorg rollback | Shielded recovery/consume circuit, incentives, benchmarks, audit |
-| H-BFM parallel block fusion | Present | Unique deterministic order for one agreed finite DAG | DAG set agreement, availability, conflict semantics, incentive and liveness proof |
+| H-BFM parallel block fusion | Present | Unique order, missing-parent rejection, preverified DA-set enforcement and atomic first-winner conflict receipts for one agreed finite DAG | DAG set agreement/certificate acquisition, incentives and liveness proof |
 | H-FOC' fair finality | Present, inactive | Durable PREPARE/COMMIT locks, timeout certificates, lock-carrying view change, dual-committee handoff, receipt obligations and typed P2P receipt transport | Unbiasable beacon, live pacemaker/leader, finalized committee source, block-execution integration, WAN benchmarks, audit |
 | H-SAC selective audit disclosure | Present, inactive | One-output amount opening, scoped Schnorr ownership proof, and a leakage lower bound | Frozen compliance relation, confidential delivery, chain-provenance ZK circuit, proving/verifying integration, independent circuit audit |
 
@@ -34,12 +36,59 @@ roots and reorg rollback. Scientific result settlement remains fail-closed
 until an exact audited proof verifier is installed. See the
 [AetherCompute boundary](docs/research/aether-compute.md).
 
+Block version 3 activates the protocol named AetherCompute PoUW v1. A miner derives a bounded
+64x64 Q12 field from the parent-bound header, executes the consensus diffusion
+PDE for exactly `difficulty` iterations, and commits the complete final field.
+Nodes and pools independently recompute the field; there is no digest target
+and no `hash < target` acceptance rule. BLAKE3 is used only for deterministic
+input derivation and input/output integrity commitments. Pool Protocol v5 can
+credit lower-iteration scientific checkpoints before the miner completes the
+full block workload.
+
+Each cell update has a specified seven-operation arithmetic model: three
+neighbour additions, two multiplications, one final addition, and one integer
+division. Telemetry uses this model; it is not an instruction count or a
+hardware-independent energy measurement.
+
+This block-level deterministic kernel is separate from user-funded
+AetherCompute result settlement. Settlement remains fail-closed until an exact
+audited circuit and verifier key are activated. The current PoUW does not
+justify claims of a SNARK, useful external dataset processing, succinct
+verification, or audited mainnet economic security. Because every verifier
+currently recomputes the PDE and every completed candidate is eligible, this
+revision also lacks a published analysis of verifier cost, deterministic-race
+centralization, fork rate, and adversarial scheduling. It is a research
+computational-work protocol, not a production-ready PoUW claim.
+
+The Explorer at `http://127.0.0.1:8080` uses a Rust-compiled WebAssembly
+renderer. It shows blocks, private-transaction inclusion records,
+AetherCompute commitments and deployed WASM applications. Scientific object
+locators, credentials and transaction payloads are not returned to the
+browser. The application convention is a bounded `hyphen.app` JSON custom
+section with ABI version, category (`defi`, `game`, or `utility`), name and
+version. Classified applications must export `hyphen_query` and
+`hyphen_execute`; queries are consensus-enforced read-only. Rebuild the checked
+in browser module after renderer changes with:
+
+```powershell
+.\scripts\build-explorer-wasm.ps1
+```
+
 Consensus and storage serialization uses RustBinary 0.1.2 with the explicit
 fixed-width little-endian legacy profile. Every call sets byte and collection
 limits and rejects trailing bytes. Consensus maps use ordered containers because
-the binary codec preserves map iteration order. Published devnet v2 chain
-identity vectors remain unchanged. RustBinary has not been independently audited
-for Hyphen.
+the binary codec preserves map iteration order. PoUW changed the block version,
+consensus parameters and genesis hashes. Normative identities are in
+`test-vectors/chain-identity-v3.json`; old databases are rejected before state
+mutation. RustBinary has not been independently audited for Hyphen.
+
+The checked-in `vendor/proc-macro-error2` directory is a build dependency, not
+a general dependency mirror. Wasmer 7.2.1 selects `proc-macro-error2` 2.0.1,
+whose `proc_macro` re-export fails on Rust 1.97. The local patch applies the
+upstream visibility fix and preserves its MIT/Apache-2.0 license files. Do not
+delete it while the `[patch.crates-io]` entry exists. It may be removed only
+after upgrading Wasmer or the transitive crate to a release containing the fix,
+regenerating `Cargo.lock`, and passing the full locked build and test gates.
 
 ## Run a node
 
@@ -61,8 +110,8 @@ The current devnet v2 identity is:
 ```text
 network=hyphen-devnet-v2
 network_magic=48594456
-consensus_params_hash=bb0c74b93362b8265d65af5dd48796084448e6b3022c39825476ce1b84439902
-genesis_hash=854adc605062fb872dcd20a535dca1ec25d4af58689f1be50e6c26df0c841295
+consensus_params_hash=54bf97e4e28d4fcf963d884a555a8425bbfe7c84d2753001bcabbaf116232fda
+genesis_hash=47d530160cfef9141fe3b37b886e09b9f96ec4dc93d6c05005b9c6dbf35b1972
 ```
 
 Start a local node:
@@ -84,7 +133,7 @@ the authoritative CLI reference.
 ## What the base chain verifies
 
 A block is accepted only after its chain identity, parent, height, timestamp,
-difficulty, proof of work, transaction encodings, signatures, range proofs,
+difficulty, scientific PoUW commitment, transaction encodings, signatures, range proofs,
 nullifiers, fees, roots, reward, and miner authorization pass validation. State
 updates are committed atomically. The backend can validate and execute a
 planned branch switch with rollback, but complete live reorg handling still

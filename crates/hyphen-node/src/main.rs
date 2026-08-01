@@ -1074,7 +1074,7 @@ fn validate_template_request(
     request: &hyphen_transport::TemplateRequest,
     cfg: &ChainConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if request.protocol_version != 2 {
+    if request.protocol_version != 3 {
         return Err(format!(
             "unsupported TP protocol version {}",
             request.protocol_version
@@ -1141,7 +1141,7 @@ fn build_template(
         state_root,
         receipt_root: hyphen_crypto::Hash256::ZERO,
         uncle_root: hyphen_crypto::Hash256::ZERO,
-        pow_commitment: hyphen_crypto::blake3_hash(epoch_seed.as_bytes()),
+        pow_commitment: hyphen_crypto::Hash256::ZERO,
         epoch_seed,
         difficulty,
         nonce: 0,
@@ -1174,7 +1174,7 @@ fn build_template(
         page_size: cfg.page_size as u64,
         clean: true,
         network_magic: cfg.network_magic.to_vec(),
-        protocol_version: 2,
+        protocol_version: 3,
         consensus_params_hash: cfg.consensus_params_hash().to_vec(),
         genesis_hash: build_genesis_block(cfg).hash().as_bytes().to_vec(),
     })

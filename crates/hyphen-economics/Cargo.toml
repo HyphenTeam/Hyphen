@@ -2,6 +2,7 @@
 name = "hyphen-economics"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Block rewards, emission schedule and fee model for the Hyphen blockchain"
 
 [dependencies]

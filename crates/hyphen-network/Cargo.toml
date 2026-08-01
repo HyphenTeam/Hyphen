@@ -2,6 +2,7 @@
 name = "hyphen-network"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "libp2p-based P2P networking for the Hyphen blockchain"
 
 [dependencies]

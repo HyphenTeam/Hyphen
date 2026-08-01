@@ -3,116 +3,243 @@ use hyphen_core::config::ChainConfig;
 use hyphen_crypto::Hash256;
 
 use crate::arena::EpochArena;
-use crate::difficulty::difficulty_to_target;
-use crate::kernels::{execute_kernel, EpochKernelParams};
-use crate::scratchpad::Scratchpad;
+use crate::kernels::EpochKernelParams;
 
-#[derive(Clone, Debug)]
+pub const POUW_PROTOCOL_VERSION: u16 = 1;
+pub const POUW_GRID_SIDE: usize = 64;
+pub const POUW_CELL_COUNT: usize = POUW_GRID_SIDE * POUW_GRID_SIDE;
+pub const POUW_ALPHA_Q12: i64 = 512;
+pub const MAX_POUW_ITERATIONS: u64 = 4_096;
+/// Three neighbour additions, two multiplications, one addition and one division.
+pub const POUW_ARITHMETIC_OPERATIONS_PER_CELL: u64 = 7;
+
+const INPUT_DOMAIN: &[u8] = b"Hyphen/AetherCompute/PoUW/input/v1";
+const OUTPUT_DOMAIN: &[u8] = b"Hyphen/AetherCompute/PoUW/output/v1";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PowResult {
-    pub hash: Hash256,
+    /// Commitment to the deterministic scientific output, not a target hash.
+    pub commitment: Hash256,
     pub nonce: u64,
     pub extra_nonce: [u8; 32],
+    pub iterations: u32,
+    pub operation_count: u64,
 }
 
-pub fn evaluate_pow(header: &BlockHeader, arena: &EpochArena, cfg: &ChainConfig) -> Hash256 {
-    let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
-    evaluate_pow_with_epoch(header, arena, cfg, &epoch)
+pub fn difficulty_to_iterations(difficulty: u64) -> Option<u32> {
+    (1..=MAX_POUW_ITERATIONS)
+        .contains(&difficulty)
+        .then_some(difficulty as u32)
 }
 
-/// Evaluate PoW with pre-computed epoch params (avoids re-deriving per nonce).
+pub fn operation_count(difficulty: u64) -> Option<u64> {
+    difficulty_to_iterations(difficulty).map(|iterations| {
+        u64::from(iterations) * POUW_CELL_COUNT as u64 * POUW_ARITHMETIC_OPERATIONS_PER_CELL
+    })
+}
+
+/// Recomputes the consensus scientific workload.
+///
+/// BLAKE3 is used only to derive deterministic input data and commit the
+/// output. Work validity never performs a hash-target comparison.
+pub fn evaluate_pow(header: &BlockHeader, _arena: &EpochArena, _cfg: &ChainConfig) -> Hash256 {
+    evaluate_scientific_work(header).unwrap_or(Hash256::ZERO)
+}
+
 pub fn evaluate_pow_with_epoch(
     header: &BlockHeader,
-    arena: &EpochArena,
-    cfg: &ChainConfig,
-    epoch: &EpochKernelParams,
+    _arena: &EpochArena,
+    _cfg: &ChainConfig,
+    _epoch: &EpochKernelParams,
 ) -> Hash256 {
-    let header_bytes = header.serialise_for_hash();
-    let seed = hyphen_crypto::blake3_hash(&header_bytes);
+    evaluate_pow(header, _arena, _cfg)
+}
 
-    let mut sp = Scratchpad::new(cfg.scratchpad_size, &seed);
+pub fn evaluate_scientific_work(header: &BlockHeader) -> Option<Hash256> {
+    let iterations = difficulty_to_iterations(header.difficulty)?;
+    evaluate_scientific_work_at(header, iterations)
+}
 
-    let page_count = arena.params.page_count();
+pub fn evaluate_scientific_work_at(header: &BlockHeader, iterations: u32) -> Option<Hash256> {
+    let block_iterations = difficulty_to_iterations(header.difficulty)?;
+    if iterations == 0 || iterations > block_iterations {
+        return None;
+    }
+    let input_seed = scientific_input_seed(header);
+    let mut input_bytes = [0u8; POUW_CELL_COUNT * 4];
+    let mut input_hasher = blake3::Hasher::new_keyed(input_seed.as_bytes());
+    input_hasher.update(INPUT_DOMAIN);
+    input_hasher.finalize_xof().fill(&mut input_bytes);
 
-    for round in 0..cfg.pow_rounds {
-        let page_idx = sp.next_page(page_count);
-        let page = arena.page(page_idx);
-
-        let kernel_id = sp.select_kernel(page[32], cfg.kernel_count);
-
-        let kernel_out = execute_kernel(kernel_id, page, &sp.state, epoch);
-
-        sp.mix_state(&kernel_out);
-
-        let write_pos = u64::from_le_bytes(kernel_out[0..8].try_into().unwrap()) as usize;
-        let write_val = u64::from_le_bytes(kernel_out[8..16].try_into().unwrap());
-        sp.write_u64(write_pos, write_val);
-
-        let link_slot = sp.select_link();
-        let linked_page = arena.page_link(page_idx, link_slot);
-        let link_data = arena.page(linked_page);
-        let link_mix = u64::from_le_bytes(link_data[32..40].try_into().unwrap());
-        sp.write_u64(write_pos.wrapping_add(8), link_mix);
-
-        if round % cfg.writeback_interval == 0 {
-            sp.writeback();
-        }
+    let mut current = vec![0i32; POUW_CELL_COUNT];
+    let mut next = vec![0i32; POUW_CELL_COUNT];
+    for (cell, bytes) in current.iter_mut().zip(input_bytes.chunks_exact(4)) {
+        *cell = (u32::from_le_bytes(bytes.try_into().expect("four-byte cell")) & 0x3ffff) as i32;
     }
 
-    sp.finalize()
+    let center_weight = 4096 - 4 * POUW_ALPHA_Q12;
+    for _ in 0..iterations {
+        for row in 0..POUW_GRID_SIDE {
+            let north = (row + POUW_GRID_SIDE - 1) % POUW_GRID_SIDE;
+            let south = (row + 1) % POUW_GRID_SIDE;
+            for column in 0..POUW_GRID_SIDE {
+                let west = (column + POUW_GRID_SIDE - 1) % POUW_GRID_SIDE;
+                let east = (column + 1) % POUW_GRID_SIDE;
+                let index = row * POUW_GRID_SIDE + column;
+                let neighbours = i64::from(current[north * POUW_GRID_SIDE + column])
+                    + i64::from(current[south * POUW_GRID_SIDE + column])
+                    + i64::from(current[row * POUW_GRID_SIDE + west])
+                    + i64::from(current[row * POUW_GRID_SIDE + east]);
+                let numerator =
+                    center_weight * i64::from(current[index]) + POUW_ALPHA_Q12 * neighbours;
+                next[index] = i32::try_from(numerator / 4096).ok()?;
+            }
+        }
+        std::mem::swap(&mut current, &mut next);
+    }
+
+    let mut commitment = blake3::Hasher::new();
+    commitment.update(OUTPUT_DOMAIN);
+    commitment.update(&POUW_PROTOCOL_VERSION.to_le_bytes());
+    commitment.update(&(POUW_GRID_SIDE as u16).to_le_bytes());
+    commitment.update(&(POUW_ALPHA_Q12 as u32).to_le_bytes());
+    commitment.update(&iterations.to_le_bytes());
+    commitment.update(input_seed.as_bytes());
+    for cell in current {
+        commitment.update(&cell.to_le_bytes());
+    }
+    Some(Hash256::from_bytes(*commitment.finalize().as_bytes()))
 }
 
 pub fn try_nonce(
     header: &mut BlockHeader,
-    arena: &EpochArena,
-    cfg: &ChainConfig,
+    _arena: &EpochArena,
+    _cfg: &ChainConfig,
     nonce: u64,
 ) -> Option<PowResult> {
     header.nonce = nonce;
-    let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
-    let hash = evaluate_pow_with_epoch(header, arena, cfg, &epoch);
-    let target = difficulty_to_target(header.difficulty);
-    if hash_below_target(&hash, &target) {
-        Some(PowResult {
-            hash,
-            nonce,
-            extra_nonce: header.extra_nonce,
-        })
-    } else {
-        None
-    }
+    let commitment = evaluate_scientific_work(header)?;
+    header.pow_commitment = commitment;
+    Some(PowResult {
+        commitment,
+        nonce,
+        extra_nonce: header.extra_nonce,
+        iterations: difficulty_to_iterations(header.difficulty)?,
+        operation_count: operation_count(header.difficulty)?,
+    })
 }
 
 pub fn mine_block(header: &mut BlockHeader, arena: &EpochArena, cfg: &ChainConfig) -> PowResult {
-    let epoch = EpochKernelParams::derive(arena.params.epoch_seed.as_bytes());
-    let mut nonce = header.nonce;
-    loop {
-        header.nonce = nonce;
-        let hash = evaluate_pow_with_epoch(header, arena, cfg, &epoch);
-        let target = difficulty_to_target(header.difficulty);
-        if hash_below_target(&hash, &target) {
-            return PowResult {
-                hash,
-                nonce,
-                extra_nonce: header.extra_nonce,
-            };
-        }
-        nonce = nonce.wrapping_add(1);
-    }
+    try_nonce(header, arena, cfg, header.nonce)
+        .expect("chain configuration must specify valid PoUW iterations")
 }
 
-pub fn verify_pow(header: &BlockHeader, arena: &EpochArena, cfg: &ChainConfig) -> bool {
-    let hash = evaluate_pow(header, arena, cfg);
-    let target = difficulty_to_target(header.difficulty);
-    hash_below_target(&hash, &target)
+pub fn verify_pow(header: &BlockHeader) -> bool {
+    evaluate_scientific_work(header).is_some_and(|expected| expected == header.pow_commitment)
 }
 
-fn hash_below_target(hash: &Hash256, target: &[u8; 32]) -> bool {
-    for (h, t) in hash.as_bytes().iter().zip(target.iter()) {
-        match h.cmp(t) {
-            std::cmp::Ordering::Less => return true,
-            std::cmp::Ordering::Greater => return false,
-            std::cmp::Ordering::Equal => continue,
+fn scientific_input_seed(header: &BlockHeader) -> Hash256 {
+    let mut input = blake3::Hasher::new();
+    input.update(INPUT_DOMAIN);
+    input.update(&POUW_PROTOCOL_VERSION.to_le_bytes());
+    input.update(&header.version.to_le_bytes());
+    input.update(&header.height.to_le_bytes());
+    input.update(&header.timestamp.to_le_bytes());
+    input.update(header.prev_hash.as_bytes());
+    input.update(header.tx_root.as_bytes());
+    input.update(header.commitment_root.as_bytes());
+    input.update(header.nullifier_root.as_bytes());
+    input.update(header.state_root.as_bytes());
+    input.update(header.receipt_root.as_bytes());
+    input.update(header.uncle_root.as_bytes());
+    input.update(header.epoch_seed.as_bytes());
+    input.update(&header.difficulty.to_le_bytes());
+    input.update(&header.nonce.to_le_bytes());
+    input.update(&header.extra_nonce);
+    input.update(&header.miner_pubkey);
+    input.update(&header.total_fee.to_le_bytes());
+    input.update(&header.reward.to_le_bytes());
+    input.update(&[header.view_tag]);
+    input.update(&header.block_size.to_le_bytes());
+    Hash256::from_bytes(*input.finalize().as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyphen_core::FROZEN_BLOCK_VERSION;
+
+    fn header() -> BlockHeader {
+        BlockHeader {
+            version: FROZEN_BLOCK_VERSION,
+            height: 42,
+            timestamp: 1_800_000_000_000,
+            prev_hash: Hash256::from_bytes([1; 32]),
+            tx_root: Hash256::from_bytes([2; 32]),
+            commitment_root: Hash256::from_bytes([3; 32]),
+            nullifier_root: Hash256::from_bytes([4; 32]),
+            state_root: Hash256::from_bytes([5; 32]),
+            receipt_root: Hash256::from_bytes([6; 32]),
+            uncle_root: Hash256::from_bytes([7; 32]),
+            pow_commitment: Hash256::ZERO,
+            epoch_seed: Hash256::from_bytes([8; 32]),
+            difficulty: 9,
+            nonce: 10,
+            extra_nonce: [11; 32],
+            miner_pubkey: [12; 32],
+            total_fee: 13,
+            reward: 14,
+            view_tag: 15,
+            block_size: 16,
         }
     }
-    true
+
+    #[test]
+    fn scientific_work_is_recomputed_not_target_compared() {
+        let mut header = header();
+        header.pow_commitment = evaluate_scientific_work(&header).unwrap();
+        assert_eq!(
+            header.pow_commitment.to_string(),
+            "25078c250c5b44211bbf0fea60e90ac7024df6ff94d154161852fdd72684e524"
+        );
+        assert_eq!(difficulty_to_iterations(header.difficulty), Some(9));
+        assert_eq!(operation_count(header.difficulty), Some(258_048));
+
+        let expected = header.pow_commitment;
+        let mut tampered = *header.pow_commitment.as_bytes();
+        tampered[0] ^= 1;
+        header.pow_commitment = Hash256::from_bytes(tampered);
+        assert_ne!(header.pow_commitment, expected);
+        assert_ne!(
+            evaluate_scientific_work(&header).unwrap(),
+            header.pow_commitment
+        );
+    }
+
+    #[test]
+    fn commitment_binds_scientific_input_and_rejects_unbounded_work() {
+        let original = evaluate_scientific_work(&header()).unwrap();
+        let mut changed = header();
+        changed.nonce += 1;
+        assert_ne!(evaluate_scientific_work(&changed).unwrap(), original);
+        changed.difficulty = MAX_POUW_ITERATIONS + 1;
+        assert_eq!(evaluate_scientific_work(&changed), None);
+    }
+
+    #[test]
+    fn commitment_is_not_a_recursive_input_and_work_bounds_are_exact() {
+        let mut with_placeholder = header();
+        with_placeholder.pow_commitment = Hash256::from_bytes([99; 32]);
+        assert_eq!(
+            evaluate_scientific_work(&with_placeholder),
+            evaluate_scientific_work(&header())
+        );
+        assert_eq!(difficulty_to_iterations(0), None);
+        assert_eq!(difficulty_to_iterations(1), Some(1));
+        assert_eq!(
+            difficulty_to_iterations(MAX_POUW_ITERATIONS),
+            Some(MAX_POUW_ITERATIONS as u32)
+        );
+        assert_eq!(difficulty_to_iterations(MAX_POUW_ITERATIONS + 1), None);
+    }
 }

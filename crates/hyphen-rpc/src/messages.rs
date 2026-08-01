@@ -43,6 +43,16 @@ pub struct ChainInfoResponse {
     pub network: String,
     #[prost(bytes = "vec", tag = "7")]
     pub epoch_seed: Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub network_magic: Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub consensus_params_hash: Vec<u8>,
+    #[prost(bytes = "vec", tag = "10")]
+    pub genesis_hash: Vec<u8>,
+    #[prost(uint32, tag = "11")]
+    pub block_version: u32,
+    #[prost(uint32, tag = "12")]
+    pub pouw_protocol_version: u32,
 }
 
 #[derive(Clone, prost::Message)]

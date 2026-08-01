@@ -17,6 +17,7 @@ members = [
     "crates/hyphen-rpc",
     "crates/hyphen-vm",
     "crates/hyphen-explorer",
+    "crates/hyphen-explorer-web",
     "crates/hyphen-compute",
 ]
 exclude = ["crates/hyphen-fuzz"]
@@ -25,9 +26,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Hyphen Contributors"]
-license = "AGPL-3.0"
-description = "Hyphen – a privacy-focused, CPU-first PoW blockchain"
+authors = ["blueokanna <blueokanna@gmail.com>", "HyphenTeam"]
+license = "PolyForm-Strict-1.0.0"
+description = "Privacy-focused research blockchain with scientific computational work and fail-closed AetherCompute settlement"
 
 [workspace.dependencies]
 # ── internal crates ──
@@ -48,6 +49,7 @@ hyphen-token = { path = "crates/hyphen-token" }
 hyphen-rpc = { path = "crates/hyphen-rpc" }
 hyphen-vm = { path = "crates/hyphen-vm" }
 hyphen-explorer = { path = "crates/hyphen-explorer" }
+hyphen-explorer-web = { path = "crates/hyphen-explorer-web" }
 hyphen-compute = { path = "crates/hyphen-compute" }
 
 # ── external crates ──
@@ -124,6 +126,8 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 name = "hyphen"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
 hyphen-crypto.workspace = true
@@ -141,3 +145,8 @@ hyphen-token.workspace = true
 hyphen-rpc.workspace = true
 hyphen-vm.workspace = true
 hyphen-explorer.workspace = true
+
+[patch.crates-io]
+# wasmer-derive 7.2.1 pins proc-macro-error2 2.0.1. This local copy applies
+# rust-lang/rust#127909's forward-compatibility fix until Wasmer updates it.
+proc-macro-error2 = { path = "vendor/proc-macro-error2" }
