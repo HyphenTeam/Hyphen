@@ -27,7 +27,7 @@ impl std::fmt::Debug for AssetId {
         if self.is_native() {
             write!(f, "HYP")
         } else {
-            write!(f, "Asset({})", hex::encode(&self.0[..8]))
+            write!(f, "Asset({})", hyphen_crypto::hex_encode(&self.0[..8]))
         }
     }
 }
@@ -37,7 +37,7 @@ impl std::fmt::Display for AssetId {
         if self.is_native() {
             write!(f, "HYP")
         } else {
-            write!(f, "{}", hex::encode(self.0))
+            write!(f, "{}", hyphen_crypto::hex_encode(self.0))
         }
     }
 }

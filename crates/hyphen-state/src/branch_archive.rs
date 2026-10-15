@@ -104,6 +104,7 @@ mod tests {
 
     fn block(marker: u8) -> Block {
         Block {
+            pow_witnesses: Vec::new(),
             header: BlockHeader {
                 version: 2,
                 height: 1,

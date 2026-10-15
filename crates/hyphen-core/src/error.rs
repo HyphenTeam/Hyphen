@@ -20,9 +20,6 @@ pub enum CoreError {
     #[error("difficulty check failed")]
     DifficultyFailed,
 
-    #[error("PoW verification failed")]
-    PowFailed,
-
     #[error("transaction root mismatch")]
     TxRootMismatch,
 

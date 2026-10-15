@@ -38,7 +38,7 @@ impl HyphenNetwork {
         identity: identity::Keypair,
         network_magic: [u8; 4],
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let network_tag = hex::encode(network_magic);
+        let network_tag = hyphen_crypto::hex_encode(network_magic);
         let sync_protocol =
             StreamProtocol::try_from_owned(format!("/hyphen/{network_tag}/sync/2"))?;
         let identify_protocol = format!("/hyphen/{network_tag}/id/2");

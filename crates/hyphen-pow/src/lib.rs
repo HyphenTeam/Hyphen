@@ -1,15 +1,13 @@
-pub mod arena;
 pub mod difficulty;
-pub mod kernels;
-pub mod scratchpad;
-pub mod solver;
+pub mod vms;
 
-pub use arena::EpochArena;
 pub use difficulty::next_difficulty;
-pub use kernels::EpochKernelParams;
-pub use scratchpad::Scratchpad;
-pub use solver::{
-    difficulty_to_iterations, evaluate_scientific_work, evaluate_scientific_work_at, mine_block,
-    operation_count, verify_pow, MAX_POUW_ITERATIONS, POUW_ARITHMETIC_OPERATIONS_PER_CELL,
-    POUW_PROTOCOL_VERSION,
+pub use vms::{
+    chain_element, chain_is_valid, is_prime_u64, search, verify_witnesses, SearchOutcome,
+    SearchParams, VmsError, MAX_CHAIN_LENGTH, MAX_WITNESSES_PER_BLOCK, MIN_CHAIN_LENGTH,
 };
+
+/// Protocol version of the workload itself. Bumped whenever the witness
+/// predicate, the commitment rule or the accepted parameter ranges change; it
+/// is part of the chain's public identity and of the pool template.
+pub const POUW_PROTOCOL_VERSION: u16 = 3;

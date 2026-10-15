@@ -19,8 +19,9 @@ use hyphen_core::timestamp::{ntp_adjusted_timestamp_ms, start_ntp_sync_task};
 use hyphen_mempool::Mempool;
 use hyphen_transport::{
     read_envelope, write_envelope, BlockTemplate, DeclareJobRequest, DeclareJobResult,
-    SignedEnvelope, SubmitBlockRequest, SubmitBlockResult, TP_DECLARE_JOB, TP_DECLARE_JOB_RESULT,
-    TP_GET_TEMPLATE, TP_SUBMIT_BLOCK, TP_SUBMIT_RESULT, TP_SUBSCRIBE, TP_TEMPLATE,
+    SignedEnvelope, SubmitBlockRequest, SubmitBlockResult, POOL_PROTOCOL_VERSION, TP_DECLARE_JOB,
+    TP_DECLARE_JOB_RESULT, TP_GET_TEMPLATE, TP_SUBMIT_BLOCK, TP_SUBMIT_RESULT, TP_SUBSCRIBE,
+    TP_TEMPLATE,
 };
 
 #[derive(Parser, Debug)]
@@ -89,10 +90,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if cli.print_chain_identity {
         println!("network={}", cfg.network_name);
-        println!("network_magic={}", hex::encode(cfg.network_magic));
+        println!(
+            "network_magic={}",
+            hyphen_crypto::hex_encode(cfg.network_magic)
+        );
         println!(
             "consensus_params_hash={}",
-            hex::encode(cfg.consensus_params_hash())
+            hyphen_crypto::hex_encode(cfg.consensus_params_hash())
         );
         println!("genesis_hash={}", build_genesis_block(&cfg).hash());
         return Ok(());
@@ -125,10 +129,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!(
-        "Starting Hyphen node on {} (block_time={}ms, arena={}MiB)",
+        "Starting Hyphen node on {} (block_time={}ms, chain_length={}, genesis_difficulty={})",
         cfg.network_name,
         cfg.block_time_ms(),
-        cfg.arena_size / (1024 * 1024),
+        cfg.pouw_chain_length,
+        cfg.genesis_difficulty,
     );
 
     let blockchain = Arc::new(
@@ -593,7 +598,7 @@ fn handle_behaviour_event(
                             }
                         };
 
-                        let tx_hash_hex = hex::encode(tx.hash().as_bytes());
+                        let tx_hash_hex = hyphen_crypto::hex_encode(tx.hash().as_bytes());
                         let mut pool = mempool.write();
                         match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
                             Ok(hash) => {
@@ -1074,7 +1079,7 @@ fn validate_template_request(
     request: &hyphen_transport::TemplateRequest,
     cfg: &ChainConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if request.protocol_version != 3 {
+    if request.protocol_version != POOL_PROTOCOL_VERSION {
         return Err(format!(
             "unsupported TP protocol version {}",
             request.protocol_version
@@ -1170,11 +1175,17 @@ fn build_template(
         total_fee,
         epoch_seed: epoch_seed.as_bytes().to_vec(),
         prev_hash: tip.hash.as_bytes().to_vec(),
-        arena_size: cfg.arena_size as u64,
-        page_size: cfg.page_size as u64,
+        pouw_chain_length: cfg.pouw_chain_length as u64,
+        parent_work_commitment: {
+            let parent = blockchain
+                .blocks
+                .get_block_by_height(tip.height)
+                .map_err(|error| error.to_string())?;
+            parent.header.pow_commitment.as_bytes().to_vec()
+        },
         clean: true,
         network_magic: cfg.network_magic.to_vec(),
-        protocol_version: 3,
+        protocol_version: POOL_PROTOCOL_VERSION,
         consensus_params_hash: cfg.consensus_params_hash().to_vec(),
         genesis_hash: build_genesis_block(cfg).hash().as_bytes().to_vec(),
     })
@@ -1297,6 +1308,7 @@ fn handle_job_declaration(
         Err(error) => return reject(format!("candidate validation: {error}")),
     };
     let custom_block = hyphen_core::Block {
+        pow_witnesses: Vec::new(),
         header: header.clone(),
         transactions: req.custom_transactions.clone(),
         uncle_headers: Vec::new(),

@@ -311,7 +311,7 @@ mod tests {
     use super::*;
 
     fn wasm(source: &str) -> Vec<u8> {
-        wasmer::wat2wasm(source.as_bytes()).unwrap().into_owned()
+        wat::parse_bytes(source.as_bytes()).unwrap().into_owned()
     }
 
     #[test]

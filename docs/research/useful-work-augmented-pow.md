@@ -8,12 +8,12 @@ result, fraud and custody proofs, and no token reward transfer is implemented.
 ## Non-negotiable security rule
 
 Task-backed useful work may augment rewards, but it MUST NOT silently replace
-the block-level scientific computational-work rule. A block remains eligible
-only after the node recomputes the complete deterministic PDE at the declared
-consensus iteration count. If there are zero external tasks, this base rule and
-its measurable computation remain unchanged. This rule is itself a research
-prototype: every completed candidate is eligible and verification repeats the
-full PDE, so it is not a succinct or externally useful proof.
+the block-level mathematical-work rule. A block remains eligible only after
+every claimed witness passes the chain predicate, is unclaimed, and the chained
+work commitment matches. If there
+are zero external tasks, this base rule and its measurable computation remain
+unchanged. This rule is itself a research prototype: the field is not
+externally useful data and the claim is not a succinct proof.
 
 For the first prototype, the safest accounting equation is:
 
@@ -22,7 +22,7 @@ miner_income = consensus_block_reward + transaction_fees + escrowed_task_bounty
 chain_weight  = verified_base_scientific_work_only
 ```
 
-Task proofs MUST NOT increase chain weight, lower base iterations, bypass the base work,
+Task proofs MUST NOT increase chain weight, lower base work, bypass the base work,
 or decide fork choice. Any future proposal to change that boundary is a new
 consensus design requiring a separate chain profile and audit.
 

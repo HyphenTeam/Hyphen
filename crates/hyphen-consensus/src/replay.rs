@@ -13,7 +13,6 @@ pub struct ChainArchive {
     pub network_magic: [u8; 4],
     pub consensus_params_hash: [u8; 32],
     pub genesis_hash: Hash256,
-    /// Contiguous post-genesis blocks in ascending height order.
     pub blocks: Vec<Block>,
 }
 
@@ -170,6 +169,7 @@ mod tests {
         )
         .unwrap();
         Block {
+            pow_witnesses: Vec::new(),
             header,
             transactions: Vec::new(),
             uncle_headers: Vec::new(),
@@ -200,7 +200,7 @@ mod tests {
     fn published_chain_identity_vectors_match_the_implementation() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../test-vectors/chain-identity-v3.json"
+            "/../../test-vectors/chain-identity-v5.json"
         );
         let bytes = std::fs::read(path).expect("read published chain identity vectors");
         let vectors: Vec<ChainIdentityVector> =
@@ -214,9 +214,12 @@ mod tests {
                 "mainnet-research" => ChainConfig::mainnet(),
                 other => panic!("unknown chain identity vector profile {other}"),
             };
-            assert_eq!(hex::encode(cfg.network_magic), vector.network_magic);
             assert_eq!(
-                hex::encode(cfg.consensus_params_hash()),
+                hyphen_crypto::hex_encode(cfg.network_magic),
+                vector.network_magic
+            );
+            assert_eq!(
+                hyphen_crypto::hex_encode(cfg.consensus_params_hash()),
                 vector.consensus_params_hash
             );
             assert_eq!(

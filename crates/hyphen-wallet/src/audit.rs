@@ -537,7 +537,7 @@ mod tests {
             },
         };
         assert_eq!(
-            hex::encode(disclosure.canonical_context()),
+            hyphen_crypto::hex_encode(disclosure.canonical_context()),
             vector["canonical_context"].as_str().unwrap()
         );
         assert_eq!(

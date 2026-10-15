@@ -2,13 +2,15 @@
 
 [English](README.md)
 
-Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 3 启用名为 AetherCompute PoUW v1 的协议：区块工作量来自确定性的科学计算，不是寻找低于目标值的哈希。当前区块内核没有消费用户科研任务，因此只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
+Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 4 启用 AetherCompute PoUW v2：工作量来自确定性的科学计算加一次精确的 claim 搜索，验证方只复算一次场，而不是重复矿工的全部尝试。当前区块内核没有消费用户科研任务，因此只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
 
 本仓库包含节点、共识、状态转换、P2P、RPC、密码学库、WASM 执行和共识测试向量。HyphenMiner、HyphenPool、HyphenWallet 是独立仓库，拥有各自的锁文件、CI 和发布边界，但必须使用同一套链身份和 PoUW 测试向量。
 
 ## 当前边界
 
 项目尚未经过独立密码学、共识或电路审计，也没有已发布的生产主网。命令行中的 mainnet 仍是研究配置，不应承载真实资产。
+
+设计理念、威胁模型、机制状态与已知局限全部写在[白皮书](docs/whitepaper.md)里。引用本仓库任何主张之前请先读它。
 
 - H-BFM 已实现固定 DAG 的规范排序、缺父块拒绝、DA 集合检查和原子冲突处理；DAG 集合一致性、激励和活性仍未完成。
 - H-FOC 已实现持久锁、timeout/view-change、双委员会 handoff 和 receipt obligation；不可偏置 beacon、在线 pacemaker/leader、最终委员会来源、区块执行接线和 WAN 基准仍未完成。
@@ -17,44 +19,34 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 3 启�
 - WASM 支持签名部署和调用，失败执行原子回滚。hyphen.app ABI 支持 defi、game、utility 分类，并强制 hyphen_query 只读。
 - Explorer 的核心渲染器由 Rust 编译为 WASM；浏览器 API 不返回科学对象 locator、凭证或私有交易 payload。
 
-## 科学计算 PoUW v1
+## 科学计算 PoUW v3
 
-共识输入绑定区块版本、高度、时间戳、父块、交易/状态根、epoch seed、难度、nonce、矿工公钥、费用和奖励。矿工据此生成 64x64 的 Q12 整数字段，执行二维扩散 PDE：
-
-```text
-u_next[x,y] =
-  ((4096 - 4a) * u[x,y]
-   + a * (u[north] + u[south] + u[west] + u[east])) / 4096
-
-a = 512
-iterations = difficulty
-```
-
-边界采用周期索引，所有运算均为确定性整数运算。pow_commitment 承诺完整最终字段以及协议版本、网格、系数、迭代数和输入承诺。节点和 Pool 独立复算后比较承诺；不存在 difficulty_to_target 或 hash < target 判定。BLAKE3 仅用于确定性输入派生和完整性承诺。
-
-迭代数必须在 1..=4096，节点在复算前先检查期望难度，避免攻击者用任意大迭代数制造验证 DoS。Pool Protocol v5 可用较低迭代数的科学计算检查点计量贡献，再验证完整区块迭代结果。v5 将计算速率固定为每单元更新 7 次算术操作，并拒绝使用旧 9 次计量的 v4 客户端。三端固定向量为：
+共识工作量是对可验证数学见证的搜索。区块必须认领 `difficulty` 个互异的 Cunningham 链见证，链长 `pouw_chain_length` 是 epoch 不变的共识参数：
 
 ```text
-25078c250c5b44211bbf0fea60e90ac7024df6ff94d154161852fdd72684e524
+见证 n  <=>  n, 2n+1, 4n+3, …（长度 L）全为素数且全部 < 2^64
 ```
 
-每个网格单元更新的规范计量是 7 次算术操作：3 次邻居加法、2 次乘法、1 次最终加法和 1 次整数除法。遥测按该模型计数，不代表 CPU/GPU 指令数或硬件无关的能耗。
+素性判定不是"假定正确"，而是**可证明正确**：Miller-Rabin 使用 Jaeschke、Sorenson 与 Webster 证明对全 `n < 2^64` 无假阳性的七基集合。共识路径不存在概率误差上界，也不需要大整数依赖。验证者付 `L` 次素性检验（微秒级），求解者在密度按 `A_L · (ln n)^-L` 下降的候选空间中搜索（秒到分钟级）；每个被接受的见证都是可独立核验的数论数据，而不是烧掉的摘要。
 
-固定向量证明四端实现的一致性，不等于外部审计、SNARK/STARK，也不代表用户提供的外部科学数据已经进入区块 PoUW。当前验证者会完整复算 PDE，且每个完成计算的候选都具备资格；确定性竞速的中心化、分叉率、验证成本和对抗调度尚无公开安全分析。因此这是可执行的研究计算工作协议，不是已经完成的生产级 PoUW。
+**绑定方式与直觉相反，这一点必须写清楚。** 用 header 派生过滤器（`H(header ‖ n) < T`）绑定见证是**不成立**的：构造 `m / p` 条链的求解者可以满足之后**每一个** header——过滤器按 header 逐次求值而池子持久，于是每多一个区块的边际成本塌缩成几次哈希。宽度为 `b` 的剩余类绑定同样失效：覆盖全部剩余类的代价 `2^b · m / density` 恰好等于一个诚实区块的代价 `m · 2^b / density`。因此见证必须**单次使用**：`hyphen-state::WitnessSet` 用稀疏 Merkle 集合记录已认领见证，预计算池只能花掉一次，总工作量守恒，预计算退化为"提前挖矿"、零优势。
 
+工作量承诺按父区块链式构造：`pow_commitment = BLAKE3(domain ‖ parent_commitment ‖ height ‖ witnesses)`。承诺刻意做成父区块相对而非集合根——集合根依赖整条已认领集合，竞争者为自己分支挖块时必须知道该分支的集合状态，这是不可维护的耦合。单次使用仍然是节点对自身分支已认领集合的本地判定，重组时释放被拆下区块的见证，使回退的分支可原样重新接入。
+
+诚实定位：这是可验证数学搜索。验证成本与求解成本结构性不对称（`L` 次素性检验 vs 完整搜索），见证集是可发布的数据集。它不是关于人工智能、量子计算或外部科研资助的声明——那些属于 AetherCompute 结算层，且默认 fail-closed。
 ## 链身份迁移
 
-PoUW v1 改变了区块版本、共识参数和创世哈希。规范向量位于 test-vectors/chain-identity-v3.json。旧数据库会在任何状态变更前因 params_hash 不匹配而拒绝打开；Miner、Pool 和 Wallet 也会拒绝旧协议或旧链身份。
+PoUW v3 改变了区块版本、共识参数和创世哈希。规范向量位于 test-vectors/chain-identity-v5.json。旧数据库会在任何状态变更前因 params_hash 不匹配而拒绝打开；Miner、Pool 和 Wallet 也必须同步升级，否则会因协议版本或链身份不匹配而拒绝服务。链身份与创世块只有一份实现，位于 hyphen-core，由 ChainConfig 单独推导（ChainIdentity::of、build_genesis_block），区块版本常量同样来源于此。Miner 与 Pool 以路径依赖链接并在运行时派生身份；Wallet 是独立发布的应用，因此钉住同样的取值，并用单元测试与规范向量比对，一旦漂移立即失败。没有这类测试的复制常量会把客户端钉死在一条已不存在的链上，握手在第一个字节就会失败。区块头里不再存在 arena/page/pouw_depth 等失效参数，共识参数哈希只承诺真正生效的字段。
 
 当前 devnet 标识：
 
 ```text
 network=hyphen-devnet-v2
 network_magic=48594456
-consensus_params_hash=54bf97e4e28d4fcf963d884a555a8425bbfe7c84d2753001bcabbaf116232fda
-genesis_hash=47d530160cfef9141fe3b37b886e09b9f96ec4dc93d6c05005b9c6dbf35b1972
-block_version=3
-pouw_protocol_version=1
+consensus_params_hash=521f6cdc47f4424c1ea7b9f4d6770cf114f620cdff62958060f8c6953cb69de8
+genesis_hash=4c24528fa76c896299d5bfa6d7fee28bf39b21c0efd1684d4b8bafa9819bde55
+block_version=5
+pouw_protocol_version=3
 ```
 
 ## 构建与运行
@@ -88,7 +80,19 @@ Explorer 使用 HTTP；RPC、P2P 和模板端口是二进制协议。修改 Expl
 
 共识和持久化编码使用 RustBinary 0.1.2 的固定宽度、小端、限制字节/集合长度并拒绝尾随字节的配置。格式迁移必须显式失败，禁止在共识哈希、签名或授权路径中自动回退。
 
-`vendor/proc-macro-error2` 是当前构建依赖，不是普通依赖镜像。Wasmer 7.2.1 选择的 `proc-macro-error2` 2.0.1 在 Rust 1.97 上存在 `proc_macro` 可见性编译错误；本地副本应用上游兼容修复并保留 MIT/Apache-2.0 许可证。在 `[patch.crates-io]` 存在时不能删除。只有升级到包含修复的 Wasmer/传递依赖、重新生成 `Cargo.lock`，并通过全部 locked 构建和测试后才能移除。
+### 依赖策略
+
+本仓库不保留依赖镜像，也没有任何 `[patch.crates-io]` 覆盖：每个依赖都是 crates.io 正式发布版本，由提交的锁文件固定。对"这个 crate 要不要引"的默认答案是不引——hex 编解码、base58 编解码、SNTP 客户端和 NTP 校正时钟都实现在 `hyphen-crypto` 与 `hyphen-core` 内部，因为共识 crate 不该为几十行字节处理引入一条供应链。
+
+合约 VM 使用 Wasmi 2.0（纯 Rust 解释器，内建 fuel 计量），不再是 JIT 运行时。这是刻意的取舍：
+
+- 执行在所有主机上确定性一致，合约 fuel 消耗是可复现的共识值，共识路径里没有代码生成器；
+- 依赖图从 368 个 crate 降到 267 个，同时移除整个 Cranelift、`bindgen`、CMake、`libclang` 和原生工具链面；
+- Wasmi 已通过两次独立审计，其中包括 Stellar Development Foundation 委托 Runtime Verification 的审计。
+
+Wasmer 间接引入的 `proc-macro-error2` 2.0.1 已彻底离开依赖图。上游从未发布修复其 `pub extern crate proc_macro;` 可见性问题的版本，因此移除需要它的运行时是唯一正确的解法。
+
+合约 gas 单位随运行时改变：指令 fuel 现在按 Wasmi 模型计费，而不是 Wasmer 的每操作一点。主机侧计费（`GAS_STORAGE_READ`、`GAS_HASH`、`GAS_LOG` 等）保持不变。任何按 PoUW v1 的 gas 数值调过的合约预算都必须重新测量。
 
 ## 许可证
 

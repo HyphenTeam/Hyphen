@@ -25,6 +25,7 @@ pub mod reorg_journal;
 pub mod store;
 pub mod vm_state;
 pub mod wes_state;
+pub mod witness_set;
 
 pub use atomic::{
     commit_block_update, consensus_state_root, revert_block_update, AtomicBlockUpdate,
@@ -64,3 +65,4 @@ pub use wes_state::{
     owner_policy as wes_owner_policy, SignedStateCreate, WesStateStore, WesTransaction,
     WesTransactionError, WES_STATE_KEY,
 };
+pub use witness_set::{WitnessSet, WitnessSetError};

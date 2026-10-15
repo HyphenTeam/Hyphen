@@ -45,6 +45,10 @@ impl BlockHeader {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
     pub header: BlockHeader,
+    /// Single-use mathematical witnesses claimed by this block. The header's
+    /// `pow_commitment` is the witness-set root after claiming them, so the
+    /// commitment binds the exact list without storing it twice.
+    pub pow_witnesses: Vec<u64>,
     pub transactions: Vec<Vec<u8>>,
     pub uncle_headers: Vec<BlockHeader>,
     /// Versioned miner authorization envelope required for post-genesis blocks.

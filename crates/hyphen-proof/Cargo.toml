@@ -14,4 +14,3 @@ rand.workspace             = true
 rand_core.workspace        = true
 serde.workspace            = true
 thiserror.workspace        = true
-once_cell.workspace        = true

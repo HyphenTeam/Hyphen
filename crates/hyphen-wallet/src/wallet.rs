@@ -9,27 +9,7 @@ use hyphen_tx::note::OwnedNote;
 
 use crate::address::HyphenAddress;
 use crate::derivation::{DerivedKeys, MasterKey};
-
-fn derive_wallet_key(password: &[u8], salt: &[u8; 32]) -> [u8; 32] {
-    let mut state = hyphen_crypto::hash::blake3_hash(&[salt.as_slice(), password].concat());
-    for _ in 0..100_000 {
-        state = hyphen_crypto::hash::blake3_hash(state.as_bytes());
-    }
-    *state.as_bytes()
-}
-
-fn xof_encrypt(key: &[u8; 32], data: &[u8]) -> Vec<u8> {
-    let mut h = blake3::Hasher::new_keyed(key);
-    h.update(b"Hyphen_wallet_stream");
-    let mut stream = h.finalize_xof();
-    let mut out = vec![0u8; data.len()];
-    let mut keystream = vec![0u8; data.len()];
-    stream.fill(&mut keystream);
-    for (i, b) in data.iter().enumerate() {
-        out[i] = b ^ keystream[i];
-    }
-    out
-}
+use crate::keystore::{self, KeystoreError};
 
 #[derive(Debug, Error)]
 pub enum WalletError {
@@ -37,6 +17,8 @@ pub enum WalletError {
     Io(#[from] std::io::Error),
     #[error("serialization: {0}")]
     Serialize(String),
+    #[error("keystore: {0}")]
+    Keystore(#[from] KeystoreError),
     #[error("stealth: {0}")]
     Stealth(String),
     #[error("insufficient balance: have {have}, need {need}")]
@@ -250,16 +232,7 @@ impl Wallet {
         let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .serialize(self)
             .map_err(|e| WalletError::Serialize(e.to_string()))?;
-        let mut salt = [0u8; 32];
-        hyphen_crypto::rng::fill_system_random(&mut salt);
-        let key = derive_wallet_key(password, &salt);
-        let encrypted = xof_encrypt(&key, &data);
-        let mac = hyphen_crypto::hash::blake3_keyed(&key, &encrypted);
-        let mut out = Vec::with_capacity(32 + 32 + encrypted.len());
-        out.extend_from_slice(&salt);
-        out.extend_from_slice(mac.as_bytes());
-        out.extend_from_slice(&encrypted);
-        std::fs::write(path, &out)?;
+        keystore::seal_to_path(path, &data, password)?;
         Ok(())
     }
 
@@ -272,25 +245,11 @@ impl Wallet {
     }
 
     pub fn load_encrypted(path: &std::path::Path, password: &[u8]) -> Result<Self, WalletError> {
-        let data = std::fs::read(path)?;
-        if data.len() < 64 {
-            return Err(WalletError::Serialize("wallet file too short".into()));
-        }
-        let salt: [u8; 32] = data[..32].try_into().unwrap();
-        let stored_mac: [u8; 32] = data[32..64].try_into().unwrap();
-        let ciphertext = &data[64..];
-        let key = derive_wallet_key(password, &salt);
-        let computed_mac = hyphen_crypto::hash::blake3_keyed(&key, ciphertext);
-        if computed_mac.as_bytes() != &stored_mac {
-            return Err(WalletError::Serialize(
-                "wrong password or corrupted file".into(),
-            ));
-        }
-        let plaintext = xof_encrypt(&key, ciphertext);
-        let w: Self = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        let plaintext = keystore::open_from_path(path, password)?;
+        let wallet: Self = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .deserialize(&plaintext)
             .map_err(|e| WalletError::Serialize(e.to_string()))?;
-        Ok(w)
+        Ok(wallet)
     }
 }
 

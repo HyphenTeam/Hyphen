@@ -1,284 +1,63 @@
+//! Difficulty control in the work domain.
+//!
+//! `difficulty` is the expected number of field evaluations a solver performs
+//! before it finds a claim that meets the target, and cumulative difficulty is
+//! the fork-choice weight. The controller therefore estimates a work magnitude:
+//! it scales the previous value by the ratio of target block time to observed
+//! solve time.
+//!
+//! Everything on the consensus path is integer-only by construction. A
+//! difficulty value decides which branch wins, so a `libm` result that differs
+//! between platforms, compiler flags or library versions would split the chain.
+//! The floating-point material at the bottom of this file is an offline
+//! ablation harness for research only and is never consulted for consensus.
+
 use hyphen_core::config::{ChainConfig, DifficultyAlgorithm};
 
-// MDAD-SPR: Momentum-Dampened Adaptive Difficulty with Sequential Probability Ratio.
-//
-// Three orthogonal components (validated via ablation tests):
-//   1. SPRT Gate      — decides WHETHER to adjust (statistical significance)
-//   2. Momentum       — decides HOW MUCH to adjust (velocity-aware)
-//   3. Autocorrelation — detects periodic manipulation (pool-hopping)
-//
-// Solve times ~ Exp(λ). SPRT statistic:
-//   Λₙ = n·ln(λ₁/λ₀) + (λ₀−λ₁)·Σxᵢ
-//   Boundaries: A = ln((1−β)/α), B = ln(β/(1−α))
+const BPS: i128 = 10_000;
+/// Observed solve times inside this band count as no measurable change.
+const GATE_DEAD_BAND_BPS: i128 = 1_000;
+/// Fraction of the raw correction that momentum may add or remove.
+const MOMENTUM_WEIGHT_BPS: i128 = 3_000;
 
-/// Primary difficulty adjustment entry point.
+/// Primary difficulty entry point.
 ///
-/// Uses the MDAD-SPR algorithm when sufficient history is available,
-/// falling back to clamped LWMA for bootstrap (< 4 blocks).
+/// Returns the genesis difficulty when the caller supplies fewer than two
+/// samples or mismatched slice lengths, so that no consensus call site can
+/// panic on malformed history.
 pub fn next_difficulty(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
-    if cfg.difficulty_algorithm == DifficultyAlgorithm::LwmaV1 {
-        return next_difficulty_lwma(timestamps, difficulties, cfg);
+    if timestamps.len() != difficulties.len() || timestamps.len() < 2 {
+        return cfg.genesis_difficulty;
     }
-
-    let n = timestamps.len();
-    assert!(n >= 2, "need at least 2 blocks for difficulty adjustment");
-
-    let prev_diff = *difficulties.last().unwrap();
-
-    // Bootstrap phase: use basic LWMA until we have enough data for SPRT
-    if n < 4 {
-        return lwma_base(timestamps, difficulties, cfg);
+    match cfg.difficulty_algorithm {
+        DifficultyAlgorithm::LwmaV1 => next_difficulty_lwma(timestamps, difficulties, cfg),
+        DifficultyAlgorithm::MomentumDampedLwmaV2 => controller(
+            timestamps,
+            difficulties,
+            cfg,
+            Gate::Enabled,
+            MOMENTUM_WEIGHT_BPS,
+            Dampener::Enabled,
+        ),
     }
+}
 
-    // ── Step 1: Compute solve times ──
-    let solve_times = compute_solve_times(timestamps, cfg);
-    let target_ms = cfg.block_time_ms() as f64;
-
-    // ── Step 2: SPRT gate — determine if hashrate has changed ──
-    let sprt_result = sprt_test(&solve_times, target_ms);
-
-    let raw_next = match sprt_result {
-        SprtDecision::NoChange => {
-            // Statistically no evidence of hashrate change — hold difficulty
-            // Apply only a tiny smoothing correction
-            let avg_solve = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
-            let ratio = target_ms / avg_solve.max(1.0);
-            // Micro-correction: limit to ±2%
-            let micro = ratio.clamp(0.98, 1.02);
-            (prev_diff as f64 * micro) as u64
-        }
-        SprtDecision::Changed { observed_rate } => {
-            // Hashrate has changed — apply momentum-aware adjustment
-            let base_ratio = target_ms / observed_rate.max(1.0);
-
-            // ── Step 3: Momentum estimator ──
-            let momentum = estimate_momentum(&solve_times, target_ms);
-
-            // Apply momentum: if hashrate is accelerating in one direction,
-            // lean harder into the correction
-            let momentum_factor = 1.0 + momentum * 0.3;
-            let adjusted_ratio = 1.0 + (base_ratio - 1.0) * momentum_factor;
-
-            (prev_diff as f64 * adjusted_ratio) as u64
-        }
-        SprtDecision::Inconclusive => {
-            // Not enough evidence yet — apply conservative LWMA
-            lwma_base(timestamps, difficulties, cfg)
-        }
+/// Frozen integer LWMA used by devnet. Behaviour is unchanged since it was
+/// pinned: only the meaning of the returned magnitude changed, not its algebra.
+pub fn next_difficulty_lwma(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
+    let prev = match difficulties.last() {
+        Some(&value) => value,
+        None => return cfg.genesis_difficulty,
     };
-
-    // ── Step 4: Autocorrelation dampener ──
-    let dampened = autocorrelation_dampen(&solve_times, raw_next, prev_diff, target_ms);
-
-    // ── Step 5: Clamp to safety bounds ──
-    let min_diff = prev_diff / cfg.difficulty_clamp_down;
-    let max_diff = prev_diff.saturating_mul(cfg.difficulty_clamp_up);
-    let clamped = dampened.max(min_diff.max(1)).min(max_diff.max(1));
-
-    // ── Step 6: Anti-51% dampening ──
-    anti_51_dampening(timestamps, clamped, prev_diff, cfg)
+    bounded(lwma_base(timestamps, difficulties, cfg), prev, cfg)
 }
 
-// --- Component 1: Sequential Probability Ratio Test (SPRT) ---
+// --- Work estimate ---------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
-enum SprtDecision {
-    /// H₀ accepted: no statistically significant hashrate change
-    NoChange,
-    /// H₀ rejected: hashrate has changed; observed_rate is the estimated
-    /// mean solve time under H₁
-    Changed { observed_rate: f64 },
-    /// Neither boundary crossed — insufficient evidence
-    Inconclusive,
-}
-
-/// Performs a Sequential Probability Ratio Test on solve times.
-///
-/// Models solve times as Exp(1/μ₀) under H₀ and Exp(1/μ₁) under H₁,
-/// where μ₀ = target_ms and μ₁ = observed mean solve time.
-///
-/// Type I error rate α = 0.05 (false positive: declare change when none)
-/// Type II error rate β = 0.10 (false negative: miss real change)
-fn sprt_test(solve_times: &[f64], target_ms: f64) -> SprtDecision {
-    let n = solve_times.len();
-    if n < 3 {
-        return SprtDecision::Inconclusive;
-    }
-
-    // Observed mean solve time (MLE of exponential rate)
-    let observed_mean = solve_times.iter().sum::<f64>() / n as f64;
-
-    // If observed is very close to target (within 10%), not enough signal
-    let ratio = observed_mean / target_ms;
-    if (0.90..=1.10).contains(&ratio) {
-        return SprtDecision::NoChange;
-    }
-
-    // SPRT boundaries for α=0.05, β=0.10
-    let alpha: f64 = 0.05;
-    let beta: f64 = 0.10;
-    let upper_bound = ((1.0 - beta) / alpha).ln(); // A ≈ 2.89
-    let lower_bound = (beta / (1.0 - alpha)).ln(); // B ≈ -2.25
-
-    // Exponential SPRT log-likelihood ratio
-    // For Exp(λ): f(x|λ) = λ·exp(-λx)
-    // Under H₀: λ₀ = 1/target_ms
-    // Under H₁: λ₁ = 1/observed_mean
-    let lambda_0 = 1.0 / target_ms;
-    let lambda_1 = 1.0 / observed_mean;
-
-    // Avoid degenerate cases
-    if lambda_1 <= 0.0 || lambda_0 <= 0.0 {
-        return SprtDecision::Inconclusive;
-    }
-
-    let log_ratio = (lambda_1 / lambda_0).ln();
-    let rate_diff = lambda_0 - lambda_1;
-
-    // Λₙ = n·log(λ₁/λ₀) + (λ₀ - λ₁)·Σxᵢ
-    let sum_x: f64 = solve_times.iter().sum();
-    let statistic = (n as f64) * log_ratio + rate_diff * sum_x;
-
-    if statistic > upper_bound {
-        SprtDecision::Changed {
-            observed_rate: observed_mean,
-        }
-    } else if statistic < lower_bound {
-        SprtDecision::NoChange
-    } else {
-        SprtDecision::Inconclusive
-    }
-}
-
-// --- Component 2: Momentum Estimator ---
-
-/// Estimates the "velocity" of hashrate change using linear regression
-/// on the log-solve-time series.
-///
-/// Returns a value in [-1, 1]:
-///   positive → solve times decreasing (hashrate increasing)
-///   negative → solve times increasing (hashrate decreasing)
-///   zero     → stable
-fn estimate_momentum(solve_times: &[f64], target_ms: f64) -> f64 {
-    let n = solve_times.len();
-    if n < 3 {
-        return 0.0;
-    }
-
-    // Use log of normalised solve times to linearise exponential changes
-    let log_ratios: Vec<f64> = solve_times
-        .iter()
-        .map(|&t| (t / target_ms).max(0.01).ln())
-        .collect();
-
-    // Weighted linear regression: y = a + b·x
-    // Weight recent observations more heavily (triangular weights)
-    let mut sum_w = 0.0f64;
-    let mut sum_wx = 0.0f64;
-    let mut sum_wy = 0.0f64;
-    let mut sum_wxx = 0.0f64;
-    let mut sum_wxy = 0.0f64;
-
-    for (i, &y) in log_ratios.iter().enumerate() {
-        let x = i as f64;
-        let w = (i + 1) as f64; // triangular weight
-        sum_w += w;
-        sum_wx += w * x;
-        sum_wy += w * y;
-        sum_wxx += w * x * x;
-        sum_wxy += w * x * y;
-    }
-
-    let denom = sum_w * sum_wxx - sum_wx * sum_wx;
-    if denom.abs() < 1e-12 {
-        return 0.0;
-    }
-
-    let slope = (sum_w * sum_wxy - sum_wx * sum_wy) / denom;
-
-    // Normalise slope to [-1, 1] range
-    // A slope of ±0.1 per block is considered maximum momentum
-    (-slope * 10.0).clamp(-1.0, 1.0)
-}
-
-// --- Component 3: Autocorrelation Dampener ---
-
-/// Detects periodic patterns in solve times that indicate manipulation
-/// (e.g., hashrate oscillation from pool-hopping).
-///
-/// Key insight: Pool-hopping and oscillating hashrate attacks produce a
-/// signature of NEGATIVE lag-1 autocorrelation (fast blocks alternate with
-/// slow blocks). This is distinct from step changes (positive or zero
-/// autocorrelation) and random variance (zero autocorrelation).
-///
-/// When a negative-autocorrelation pattern is detected above the white
-/// noise significance threshold, the proposed adjustment is attenuated to
-/// prevent the attacker from exploiting predictable difficulty oscillations.
-fn autocorrelation_dampen(
-    solve_times: &[f64],
-    proposed: u64,
-    prev_diff: u64,
-    _target_ms: f64,
-) -> u64 {
-    let n = solve_times.len();
-    if n < 6 {
-        return proposed;
-    }
-
-    // Centre the series
-    let mean = solve_times.iter().sum::<f64>() / n as f64;
-    let centred: Vec<f64> = solve_times.iter().map(|&t| t - mean).collect();
-
-    // Variance
-    let variance: f64 = centred.iter().map(|&c| c * c).sum::<f64>() / n as f64;
-    if variance < 1.0 {
-        return proposed;
-    }
-
-    // Lag-1 autocorrelation
-    let mut ac1 = 0.0f64;
-    for i in 0..n - 1 {
-        ac1 += centred[i] * centred[i + 1];
-    }
-    ac1 /= (n - 1) as f64 * variance;
-
-    // Significance threshold (2/√n approximation for white noise)
-    let threshold = 2.0 / (n as f64).sqrt();
-
-    // Only dampen when lag-1 autocorrelation is significantly NEGATIVE
-    // Negative AC₁ = alternating pattern = manipulation signature
-    // Positive AC₁ = trend = legitimate hashrate change (don't dampen)
-    if ac1 < -threshold {
-        // Magnitude of the alternating pattern: higher |AC₁| → more dampening
-        // Dampening factor in [0.2, 0.7] — stronger pattern → more dampening
-        let strength = (-ac1 - threshold).min(1.0);
-        let dampening_factor = 0.7 - strength * 0.5; // from 0.7 down to 0.2
-        let change = proposed as f64 - prev_diff as f64;
-        let dampened = prev_diff as f64 + change * dampening_factor;
-        (dampened.max(1.0)) as u64
-    } else {
-        proposed
-    }
-}
-
-// --- Supporting functions ---
-
-/// Computes clamped solve times from block timestamps.
-fn compute_solve_times(timestamps: &[u64], cfg: &ChainConfig) -> Vec<f64> {
-    let target_ms = cfg.block_time_ms() as f64;
-    let mut solve_times = Vec::with_capacity(timestamps.len() - 1);
-    for i in 1..timestamps.len() {
-        let raw = timestamps[i] as f64 - timestamps[i - 1] as f64;
-        let clamped = raw.max(target_ms / 10.0).min(6.0 * target_ms);
-        solve_times.push(clamped);
-    }
-    solve_times
-}
-
-/// Baseline LWMA (Linear Weighted Moving Average) for bootstrap phase.
+/// Integer linear weighted moving average of the observed work rate.
 fn lwma_base(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
     let n = timestamps.len();
-    let window = n - 1;
+    let window = (n - 1) as u128;
     let target_ms = cfg.block_time_ms() as i128;
 
     let mut weighted_solve_time: i128 = 0;
@@ -286,10 +65,10 @@ fn lwma_base(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64
     let mut difficulty_sum: u128 = 0;
 
     for i in 1..n {
-        let solve_time_ms = timestamps[i] as i128 - timestamps[i - 1] as i128;
-        let clamped = solve_time_ms.max(target_ms / 10).min(6 * target_ms);
+        let raw = timestamps[i] as i128 - timestamps[i - 1] as i128;
+        let solve_time_ms = raw.max(target_ms / 10).min(6 * target_ms);
         let weight = i as i128;
-        weighted_solve_time += clamped * weight;
+        weighted_solve_time += solve_time_ms * weight;
         weight_sum += weight;
         difficulty_sum += difficulties[i] as u128;
     }
@@ -298,71 +77,247 @@ fn lwma_base(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64
         return cfg.genesis_difficulty;
     }
 
-    let t_target = target_ms * weight_sum;
-    let difficulty_avg = difficulty_sum / window as u128;
-    (difficulty_avg as i128 * t_target / weighted_solve_time.max(1)) as u64
+    let target_total = target_ms * weight_sum;
+    let average = (difficulty_sum / window) as i128;
+    let estimate = average * target_total / weighted_solve_time.max(1);
+    u64::try_from(estimate).unwrap_or(u64::MAX)
 }
 
-fn anti_51_dampening(timestamps: &[u64], proposed: u64, prev_diff: u64, cfg: &ChainConfig) -> u64 {
+/// Solve times in milliseconds, clamped to `[target/10, 6*target]`.
+///
+/// Clamping bounds what a miner can achieve by lying about block timestamps:
+/// even a fully controlled clock can move one sample by at most a factor of 60.
+fn solve_times(timestamps: &[u64], target_ms: u64) -> Vec<i128> {
+    let target = target_ms.max(1) as i128;
+    timestamps
+        .windows(2)
+        .map(|pair| (pair[1] as i128 - pair[0] as i128).clamp(target / 10, 6 * target))
+        .collect()
+}
+
+// --- Controller ------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dampener {
+    Enabled,
+    Disabled,
+}
+
+fn controller(
+    timestamps: &[u64],
+    difficulties: &[u64],
+    cfg: &ChainConfig,
+    gate: Gate,
+    momentum_weight_bps: i128,
+    dampener: Dampener,
+) -> u64 {
+    let prev = *difficulties
+        .last()
+        .expect("caller guarantees non-empty history");
+    let times = solve_times(timestamps, cfg.block_time_ms());
+    let ratio = correction_bps(
+        timestamps,
+        difficulties,
+        cfg,
+        &times,
+        gate,
+        momentum_weight_bps,
+    );
+    let proposed = scale(prev, ratio);
+    let proposed = match dampener {
+        Dampener::Enabled => dampen_change(proposed, prev, &times),
+        Dampener::Disabled => proposed,
+    };
+    anti_51_dampening(timestamps, bounded(proposed, prev, cfg), prev, cfg)
+}
+
+/// Correction ratio in basis points.
+///
+/// The gate is the significance filter: while the LWMA estimate sits inside the
+/// dead band the controller only applies a bounded micro-correction, because a
+/// solve-time series with no measurable drift must not move difficulty.
+fn correction_bps(
+    timestamps: &[u64],
+    difficulties: &[u64],
+    cfg: &ChainConfig,
+    times: &[i128],
+    gate: Gate,
+    momentum_weight_bps: i128,
+) -> i128 {
+    let prev = (*difficulties
+        .last()
+        .expect("caller guarantees non-empty history"))
+    .max(1) as i128;
+    let implied = lwma_base(timestamps, difficulties, cfg) as i128 * BPS / prev;
+
+    if gate == Gate::Enabled && (implied - BPS).abs() <= GATE_DEAD_BAND_BPS {
+        return implied.clamp(BPS - BPS / 50, BPS + BPS / 50);
+    }
+
+    let target_ms = cfg.block_time_ms().max(1) as i128;
+    let observed = (times.iter().sum::<i128>() / times.len().max(1) as i128).max(1);
+    let base_ratio = target_ms * BPS / observed;
+    let factor =
+        (BPS + momentum_bps(times) * momentum_weight_bps / BPS).clamp(BPS / 2, 3 * BPS / 2);
+    BPS + (base_ratio - BPS) * factor / BPS
+}
+
+/// Momentum in basis points: positive while solve times are shrinking, which is
+/// the signature of a rising work rate.
+fn momentum_bps(times: &[i128]) -> i128 {
+    let n = times.len();
+    if n < 6 {
+        return 0;
+    }
+    let recent = (n / 3).max(2);
+    let fast = times[n - recent..].iter().sum::<i128>() / recent as i128;
+    let slow = times.iter().sum::<i128>() / n as i128;
+    if slow <= 0 {
+        return 0;
+    }
+    ((slow - fast) * BPS / slow).clamp(-BPS, BPS)
+}
+
+/// Attenuates a correction when the solve-time series alternates fast/slow.
+///
+/// Alternating patterns signal an oscillating work rate (pool hopping or a
+/// deliberately pulsing miner) rather than a step change, and a controller that
+/// chases them hands the attacker a predictable difficulty schedule.
+fn dampen_change(proposed: u64, prev: u64, times: &[i128]) -> u64 {
+    let strength = manipulation_strength_bps(times);
+    if strength == 0 {
+        return proposed;
+    }
+    let factor_bps = 7_000 - strength * 5_000 / BPS;
+    let delta = proposed as i128 - prev as i128;
+    let dampened = prev as i128 + delta.saturating_mul(factor_bps) / BPS;
+    u64::try_from(dampened.max(1)).unwrap_or(u64::MAX)
+}
+
+/// Strength of a significant negative lag-1 autocorrelation, in basis points.
+///
+/// The textbook estimator is `ac1 = n*S1 / ((n-1)*V)`, significant when
+/// `ac1 < -2/sqrt(n)`. Both the significance test and the strength use integer
+/// arithmetic only: the test squares both sides instead of taking a square
+/// root, and `isqrt` supplies the threshold.
+fn manipulation_strength_bps(times: &[i128]) -> i128 {
+    let n = times.len() as i128;
+    if n < 6 {
+        return 0;
+    }
+    let mean = times.iter().sum::<i128>() / n;
+    let centred: Vec<i128> = times.iter().map(|time| time - mean).collect();
+    let variance: i128 = centred.iter().map(|c| c.saturating_mul(*c)).sum();
+    if variance < n {
+        return 0;
+    }
+    let cross: i128 = centred
+        .windows(2)
+        .map(|pair| pair[0].saturating_mul(pair[1]))
+        .sum();
+    if cross >= 0 {
+        return 0;
+    }
+
+    // ac1 = n*S1 / ((n-1)*V) < -2/sqrt(n)  <=>  n^(3/2)*(-S1) > 2*(n-1)*V
+    // <=>  n^3*S1^2 > 4*(n-1)^2*V^2 once both positive sides are squared.
+    let lhs = n
+        .saturating_mul(n)
+        .saturating_mul(n)
+        .saturating_mul(cross)
+        .saturating_mul(cross);
+    let denominator = (n - 1).saturating_mul(n - 1);
+    let rhs = 4i128
+        .saturating_mul(denominator)
+        .saturating_mul(variance)
+        .saturating_mul(variance);
+    if lhs <= rhs {
+        return 0;
+    }
+
+    let magnitude =
+        n.saturating_mul(-cross).saturating_mul(BPS) / (n - 1).saturating_mul(variance).max(1);
+    let threshold = 2 * BPS / isqrt(n as u64).max(1) as i128;
+    (magnitude - threshold).clamp(0, BPS)
+}
+
+// --- Guards ----------------------------------------------------------------
+
+/// Applies the configured per-block clamps. Both bounds are inclusive and the
+/// floor never exceeds the ceiling even for degenerate configurations.
+fn bounded(proposed: u64, prev: u64, cfg: &ChainConfig) -> u64 {
+    let floor = (prev / cfg.difficulty_clamp_down.max(1)).max(1);
+    let ceiling = prev
+        .saturating_mul(cfg.difficulty_clamp_up.max(1))
+        .max(floor);
+    proposed.clamp(floor, ceiling)
+}
+
+fn anti_51_dampening(timestamps: &[u64], proposed: u64, prev: u64, cfg: &ChainConfig) -> u64 {
     if timestamps.len() < 4 {
         return proposed;
     }
 
     let recent_count = timestamps.len().min(6);
-    let recent_span_ms = timestamps[timestamps.len() - 1] as i128
+    let recent_span = timestamps[timestamps.len() - 1] as i128
         - timestamps[timestamps.len() - recent_count] as i128;
-    let expected_span_ms = (recent_count - 1) as i128 * cfg.block_time_ms() as i128;
-
-    if expected_span_ms == 0 {
+    let expected_span = (recent_count - 1) as i128 * cfg.block_time_ms() as i128;
+    if expected_span == 0 {
         return proposed;
     }
 
-    let ratio = recent_span_ms * 100 / expected_span_ms;
-
-    if ratio < 25 {
-        let penalty = prev_diff.saturating_mul(cfg.difficulty_clamp_up);
-        return proposed.max(penalty);
+    if recent_span * 100 / expected_span < 25 {
+        return proposed.max(prev.saturating_mul(cfg.difficulty_clamp_up.max(1)));
     }
-
     proposed
 }
 
-// --- LWMA-only entry point (for ablation comparisons and backward compat) ---
-
-/// Pure LWMA difficulty adjustment (no SPRT, no momentum, no dampening).
-/// Retained for backward compatibility and ablation experiments.
-pub fn next_difficulty_lwma(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
-    let n = timestamps.len();
-    assert!(n >= 2);
-    let base = lwma_base(timestamps, difficulties, cfg);
-    let prev_diff = *difficulties.last().unwrap();
-    let min_diff = prev_diff / cfg.difficulty_clamp_down;
-    let max_diff = prev_diff.saturating_mul(cfg.difficulty_clamp_up);
-    base.max(min_diff.max(1)).min(max_diff.max(1))
+fn scale(prev: u64, ratio_bps: i128) -> u64 {
+    let scaled = (prev as i128).saturating_mul(ratio_bps) / BPS;
+    u64::try_from(scaled.max(1)).unwrap_or(u64::MAX)
 }
 
-// --- Ablation Experiment Framework ---
-//
-// Variants: Full | NoSprt | NoMomentum | NoDampener | PureLwma
-// Profiles: Stable | Step | Oscillating | Ramp
-// Metrics: variance, convergence blocks, oscillation amplitude, tracking error
+/// Integer square root by Newton iteration. Deterministic and dependency-free.
+fn isqrt(value: u64) -> u64 {
+    if value < 2 {
+        return value;
+    }
+    let mut x = 1u64 << ((64 - value.leading_zeros()) / 2);
+    loop {
+        let next = (x + value / x) / 2;
+        if next >= x {
+            return x;
+        }
+        x = next;
+    }
+}
 
-/// Ablation variant identifier
+// --- Offline research harness ----------------------------------------------
+//
+// Ablation experiments compare the gate, the momentum term and the dampener
+// against pure LWMA on synthetic work-rate profiles. Floating point is used
+// here for metrics only; no value from this section reaches consensus.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AblationVariant {
-    /// Full MDAD-SPR algorithm
+    /// Gate, momentum and dampener.
     Full,
-    /// Without SPRT gate: always adjusts (like traditional algorithms)
-    NoSprt,
-    /// Without momentum: no hashrate velocity estimation
+    /// No significance gate: every sample moves difficulty.
+    NoGate,
+    /// No momentum term.
     NoMomentum,
-    /// Without autocorrelation dampener: no periodic pattern detection
+    /// No manipulation dampener.
     NoDampener,
-    /// Pure LWMA baseline: traditional algorithm
+    /// Frozen LWMA baseline.
     PureLwma,
 }
 
-/// Single ablation experiment result
 #[derive(Debug, Clone)]
 pub struct AblationMetrics {
     pub variant: AblationVariant,
@@ -373,123 +328,56 @@ pub struct AblationMetrics {
     pub tracking_error: f64,
 }
 
-/// Runs the difficulty adjustment for one step using the specified variant.
 fn next_difficulty_variant(
     timestamps: &[u64],
     difficulties: &[u64],
     cfg: &ChainConfig,
     variant: AblationVariant,
 ) -> u64 {
-    let n = timestamps.len();
-    assert!(n >= 2);
-    let prev_diff = *difficulties.last().unwrap();
-
     match variant {
-        AblationVariant::PureLwma => {
-            let base = lwma_base(timestamps, difficulties, cfg);
-            let min_diff = prev_diff / cfg.difficulty_clamp_down;
-            let max_diff = prev_diff.saturating_mul(cfg.difficulty_clamp_up);
-            base.max(min_diff.max(1)).min(max_diff.max(1))
-        }
-        _ if n < 4 => lwma_base(timestamps, difficulties, cfg),
-        _ => {
-            let solve_times = compute_solve_times(timestamps, cfg);
-            let target_ms = cfg.block_time_ms() as f64;
-
-            let raw_next = match variant {
-                AblationVariant::NoSprt => {
-                    // Skip SPRT, always apply momentum-based adjustment
-                    let observed_mean = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
-                    let base_ratio = target_ms / observed_mean.max(1.0);
-                    let momentum = estimate_momentum(&solve_times, target_ms);
-                    let momentum_factor = 1.0 + momentum * 0.3;
-                    let adjusted_ratio = 1.0 + (base_ratio - 1.0) * momentum_factor;
-                    (prev_diff as f64 * adjusted_ratio) as u64
-                }
-                AblationVariant::NoMomentum => {
-                    let sprt_result = sprt_test(&solve_times, target_ms);
-                    match sprt_result {
-                        SprtDecision::NoChange => {
-                            let avg = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
-                            let ratio = target_ms / avg.max(1.0);
-                            let micro = ratio.clamp(0.98, 1.02);
-                            (prev_diff as f64 * micro) as u64
-                        }
-                        SprtDecision::Changed { observed_rate } => {
-                            // No momentum — just use raw ratio
-                            let ratio = target_ms / observed_rate.max(1.0);
-                            (prev_diff as f64 * ratio) as u64
-                        }
-                        SprtDecision::Inconclusive => lwma_base(timestamps, difficulties, cfg),
-                    }
-                }
-                AblationVariant::NoDampener => {
-                    // Full SPRT + momentum but skip dampener
-                    let sprt_result = sprt_test(&solve_times, target_ms);
-                    match sprt_result {
-                        SprtDecision::NoChange => {
-                            let avg = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
-                            let ratio = target_ms / avg.max(1.0);
-                            let micro = ratio.clamp(0.98, 1.02);
-                            (prev_diff as f64 * micro) as u64
-                        }
-                        SprtDecision::Changed { observed_rate } => {
-                            let base_ratio = target_ms / observed_rate.max(1.0);
-                            let momentum = estimate_momentum(&solve_times, target_ms);
-                            let momentum_factor = 1.0 + momentum * 0.3;
-                            let adjusted = 1.0 + (base_ratio - 1.0) * momentum_factor;
-                            (prev_diff as f64 * adjusted) as u64
-                        }
-                        SprtDecision::Inconclusive => lwma_base(timestamps, difficulties, cfg),
-                    }
-                }
-                AblationVariant::Full => {
-                    // Full algorithm — delegate to main function logic
-                    // (We inline it here to avoid recursion)
-                    let sprt_result = sprt_test(&solve_times, target_ms);
-                    match sprt_result {
-                        SprtDecision::NoChange => {
-                            let avg = solve_times.iter().sum::<f64>() / solve_times.len() as f64;
-                            let ratio = target_ms / avg.max(1.0);
-                            let micro = ratio.clamp(0.98, 1.02);
-                            (prev_diff as f64 * micro) as u64
-                        }
-                        SprtDecision::Changed { observed_rate } => {
-                            let base_ratio = target_ms / observed_rate.max(1.0);
-                            let momentum = estimate_momentum(&solve_times, target_ms);
-                            let momentum_factor = 1.0 + momentum * 0.3;
-                            let adjusted = 1.0 + (base_ratio - 1.0) * momentum_factor;
-                            (prev_diff as f64 * adjusted) as u64
-                        }
-                        SprtDecision::Inconclusive => lwma_base(timestamps, difficulties, cfg),
-                    }
-                }
-                AblationVariant::PureLwma => unreachable!(),
-            };
-
-            let dampened = match variant {
-                AblationVariant::NoDampener => raw_next,
-                _ => autocorrelation_dampen(&solve_times, raw_next, prev_diff, target_ms),
-            };
-
-            let min_diff = prev_diff / cfg.difficulty_clamp_down;
-            let max_diff = prev_diff.saturating_mul(cfg.difficulty_clamp_up);
-            let clamped = dampened.max(min_diff.max(1)).min(max_diff.max(1));
-
-            anti_51_dampening(timestamps, clamped, prev_diff, cfg)
-        }
+        AblationVariant::PureLwma => next_difficulty_lwma(timestamps, difficulties, cfg),
+        AblationVariant::Full => controller(
+            timestamps,
+            difficulties,
+            cfg,
+            Gate::Enabled,
+            MOMENTUM_WEIGHT_BPS,
+            Dampener::Enabled,
+        ),
+        AblationVariant::NoGate => controller(
+            timestamps,
+            difficulties,
+            cfg,
+            Gate::Disabled,
+            MOMENTUM_WEIGHT_BPS,
+            Dampener::Enabled,
+        ),
+        AblationVariant::NoMomentum => controller(
+            timestamps,
+            difficulties,
+            cfg,
+            Gate::Enabled,
+            0,
+            Dampener::Enabled,
+        ),
+        AblationVariant::NoDampener => controller(
+            timestamps,
+            difficulties,
+            cfg,
+            Gate::Enabled,
+            MOMENTUM_WEIGHT_BPS,
+            Dampener::Disabled,
+        ),
     }
 }
 
-/// Simulates mining with a given hashrate profile and measures metrics.
-///
-/// `hashrate_at_block` returns the relative hashrate (1.0 = baseline) at
-/// each block height. Solve times are deterministically generated as
-/// `target_ms / hashrate` (noise-free for reproducibility).
+/// Simulates block production for a work-rate profile and measures how the
+/// controller tracks it. Solve times are derived deterministically from the
+/// profile, so the experiment is reproducible.
 pub fn run_ablation_simulation(
     variant: AblationVariant,
     profile_name: &'static str,
-    hashrate_at_block: &dyn Fn(u64) -> f64,
+    work_rate_at_block: &dyn Fn(u64) -> f64,
     num_blocks: u64,
     cfg: &ChainConfig,
 ) -> AblationMetrics {
@@ -498,79 +386,64 @@ pub fn run_ablation_simulation(
 
     let mut timestamps: Vec<u64> = vec![0];
     let mut difficulties: Vec<u64> = vec![cfg.genesis_difficulty];
-    let mut all_difficulties: Vec<f64> = vec![cfg.genesis_difficulty as f64];
-    let genesis_diff = cfg.genesis_difficulty as f64;
+    let mut history: Vec<f64> = vec![cfg.genesis_difficulty as f64];
+    let genesis = cfg.genesis_difficulty as f64;
 
-    for h in 1..=num_blocks {
-        let hr = hashrate_at_block(h).max(0.01);
-        let current_diff = *difficulties.last().unwrap();
+    for height in 1..=num_blocks {
+        let rate = work_rate_at_block(height).max(0.01);
+        let current = *difficulties.last().expect("seeded history");
 
-        // Realistic solve time model:
-        // At equilibrium: genesis_difficulty / (1.0 * H₀) = target_time
-        // With hashrate hr: solve_time = current_diff / (hr * H₀)
-        //                              = current_diff / genesis_diff * target_ms / hr
-        let solve_time_ms = ((current_diff as f64 / genesis_diff) * target_ms as f64 / hr) as u64;
-        let prev_ts = *timestamps.last().unwrap();
-        timestamps.push(prev_ts + solve_time_ms.max(1));
-        difficulties.push(current_diff);
+        // At equilibrium `genesis_difficulty` units of work take exactly the
+        // target block time; a higher work rate solves the same target sooner.
+        let solve_time = ((current as f64 / genesis) * target_ms as f64 / rate) as u64;
+        let previous = *timestamps.last().expect("seeded history");
+        timestamps.push(previous + solve_time.max(1));
+        difficulties.push(current);
 
-        // Compute next difficulty using the window of recent blocks
-        let start = if timestamps.len() > window + 1 {
-            timestamps.len() - window - 1
-        } else {
-            0
-        };
-        let ts_window = &timestamps[start..];
-        let diff_window = &difficulties[start..];
-
-        let next = next_difficulty_variant(ts_window, diff_window, cfg, variant);
-        *difficulties.last_mut().unwrap() = next;
-        all_difficulties.push(next as f64);
+        let start = timestamps.len().saturating_sub(window + 1);
+        let next =
+            next_difficulty_variant(&timestamps[start..], &difficulties[start..], cfg, variant);
+        *difficulties.last_mut().expect("seeded history") = next;
+        history.push(next as f64);
     }
 
-    // Compute metrics
-    let mean_diff: f64 = all_difficulties.iter().sum::<f64>() / all_difficulties.len() as f64;
-    let variance: f64 = all_difficulties
+    let mean = history.iter().sum::<f64>() / history.len() as f64;
+    let variance = history
         .iter()
-        .map(|d| (d - mean_diff).powi(2))
+        .map(|value| (value - mean).powi(2))
         .sum::<f64>()
-        / all_difficulties.len() as f64;
-    let normalised_variance = (variance.sqrt() / mean_diff.max(1.0)) * 100.0;
+        / history.len() as f64;
+    let normalised_variance = (variance.sqrt() / mean.max(1.0)) * 100.0;
 
-    // Convergence: blocks until difficulty stays within 20% of ideal
-    // After a step change, the ideal difficulty doubles
-    let ideal_at = |h: u64| -> f64 { cfg.genesis_difficulty as f64 * hashrate_at_block(h) };
+    let ideal_at = |height: u64| -> f64 { genesis * work_rate_at_block(height) };
     let mut convergence = num_blocks;
     if profile_name == "step" {
-        for h in 100..=num_blocks {
-            let ideal = ideal_at(h);
-            let actual = all_difficulties[h as usize];
+        for height in 100..=num_blocks {
+            let ideal = ideal_at(height);
+            let actual = history[height as usize];
             if (actual - ideal).abs() / ideal.max(1.0) < 0.20 {
-                convergence = h - 100;
+                convergence = height - 100;
                 break;
             }
         }
     }
 
-    // Oscillation amplitude: peak-to-trough in last 50 blocks
-    let tail_start = all_difficulties.len().saturating_sub(50);
-    let tail = &all_difficulties[tail_start..];
+    let tail = &history[history.len().saturating_sub(50)..];
     let tail_max = tail.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let tail_min = tail.iter().cloned().fold(f64::INFINITY, f64::min);
     let tail_mean = tail.iter().sum::<f64>() / tail.len() as f64;
-    let osc_amplitude = if tail_mean > 0.0 {
+    let oscillation_amplitude = if tail_mean > 0.0 {
         (tail_max - tail_min) / tail_mean * 100.0
     } else {
         0.0
     };
 
-    // Tracking error: RMSE of (actual - ideal) normalised
     let mut tracking_sq_sum = 0.0f64;
-    for h in 1..=num_blocks {
-        let ideal = ideal_at(h);
-        let actual = all_difficulties[h as usize];
-        let err = (actual - ideal) / ideal.max(1.0);
-        tracking_sq_sum += err * err;
+    for height in 1..=num_blocks {
+        let ideal = ideal_at(height);
+        let actual = history[height as usize];
+        let error = (actual - ideal) / ideal.max(1.0);
+        tracking_sq_sum += error * error;
     }
     let tracking_error = (tracking_sq_sum / num_blocks as f64).sqrt() * 100.0;
 
@@ -579,23 +452,23 @@ pub fn run_ablation_simulation(
         profile: profile_name,
         difficulty_variance: normalised_variance,
         convergence_blocks: convergence,
-        oscillation_amplitude: osc_amplitude,
+        oscillation_amplitude,
         tracking_error,
     }
 }
 
-/// Runs the complete ablation experiment suite (5 variants × 4 profiles).
+/// Runs the full 5-variant by 4-profile experiment suite.
 pub fn run_full_ablation(cfg: &ChainConfig) -> Vec<AblationMetrics> {
     let variants = [
         AblationVariant::Full,
-        AblationVariant::NoSprt,
+        AblationVariant::NoGate,
         AblationVariant::NoMomentum,
         AblationVariant::NoDampener,
         AblationVariant::PureLwma,
     ];
 
-    type HashrateProfile = (&'static str, Box<dyn Fn(u64) -> f64>);
-    let profiles: Vec<HashrateProfile> = vec![
+    type WorkRateProfile = (&'static str, Box<dyn Fn(u64) -> f64>);
+    let profiles: Vec<WorkRateProfile> = vec![
         ("stable", Box::new(|_| 1.0)),
         ("step", Box::new(|h| if h < 100 { 1.0 } else { 2.0 })),
         (
@@ -607,47 +480,46 @@ pub fn run_full_ablation(cfg: &ChainConfig) -> Vec<AblationMetrics> {
 
     let num_blocks = 200u64;
     let mut results = Vec::new();
-
-    for &variant in &variants {
-        for (name, hashrate_fn) in &profiles {
+    for variant in variants {
+        for (name, work_rate) in &profiles {
             results.push(run_ablation_simulation(
-                variant,
-                name,
-                hashrate_fn,
-                num_blocks,
-                cfg,
+                variant, name, work_rate, num_blocks, cfg,
             ));
         }
     }
-
     results
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyphen_core::config::ChainConfig;
 
-    #[test]
-    fn stable_hashrate_keeps_difficulty() {
-        let cfg = ChainConfig::testnet();
-        let t_ms = cfg.block_time_ms();
-        let n = 10;
-        let timestamps: Vec<u64> = (0..n).map(|i| i * t_ms).collect();
-        let difficulties: Vec<u64> = vec![1000; n as usize];
-        let next = next_difficulty(&timestamps, &difficulties, &cfg);
-        assert!((800..=1200).contains(&next), "got {next}");
+    fn steady(blocks: usize, step_ms: u64, difficulty: u64) -> (Vec<u64>, Vec<u64>) {
+        (
+            (0..blocks).map(|i| i as u64 * step_ms).collect(),
+            vec![difficulty; blocks],
+        )
     }
 
     #[test]
-    fn fast_blocks_increase_difficulty() {
+    fn stable_solve_times_hold_difficulty() {
         let cfg = ChainConfig::testnet();
-        let t_ms = cfg.block_time_ms();
-        let n = 10;
-        let timestamps: Vec<u64> = (0..n).map(|i| i * (t_ms / 2)).collect();
-        let difficulties: Vec<u64> = vec![1000; n as usize];
+        let (timestamps, difficulties) = steady(10, cfg.block_time_ms(), cfg.genesis_difficulty);
         let next = next_difficulty(&timestamps, &difficulties, &cfg);
-        assert!(next > 1000, "expected increase, got {next}");
+        assert_eq!(next, cfg.genesis_difficulty);
+    }
+
+    #[test]
+    fn fast_blocks_raise_difficulty_and_slow_blocks_lower_it() {
+        let cfg = ChainConfig::testnet();
+        let target = cfg.block_time_ms();
+        let difficulty = cfg.genesis_difficulty;
+
+        let (fast, diffs) = steady(10, target / 2, difficulty);
+        assert!(next_difficulty(&fast, &diffs, &cfg) > difficulty);
+
+        let (slow, diffs) = steady(10, target * 2, difficulty);
+        assert!(next_difficulty(&slow, &diffs, &cfg) < difficulty);
     }
 
     #[test]
@@ -659,251 +531,127 @@ mod tests {
 
         let next = next_difficulty(&timestamps, &difficulties, &cfg);
         assert_eq!(cfg.difficulty_algorithm, DifficultyAlgorithm::LwmaV1);
-        assert!(
-            next >= previous / cfg.difficulty_clamp_down,
-            "timestamp reversal forced difficulty below the frozen lower clamp: {next}"
-        );
-        assert!(
-            next <= previous.saturating_mul(cfg.difficulty_clamp_up),
-            "timestamp reversal forced difficulty above the frozen upper clamp: {next}"
-        );
+        assert!(next >= previous / cfg.difficulty_clamp_down);
+        assert!(next <= previous.saturating_mul(cfg.difficulty_clamp_up));
     }
 
     #[test]
-    fn anti_51_prevents_rapid_drop() {
+    fn research_profile_never_drops_below_the_clamp_on_timestamp_reversal() {
         let cfg = ChainConfig::testnet();
-        let t_ms = cfg.block_time_ms();
-        let n = 10;
-        let timestamps: Vec<u64> = (0..n).map(|i| i * (t_ms / 10)).collect();
-        let difficulties: Vec<u64> = vec![1000; n as usize];
+        let previous = 4_000u64;
+        let timestamps = vec![0, 30_000, 60_000, 1_000, 2_000, 3_000, 4_000];
+        let difficulties = vec![previous; timestamps.len()];
+
         let next = next_difficulty(&timestamps, &difficulties, &cfg);
-        assert!(
-            next >= 1000,
-            "anti-51% dampening should prevent drop, got {next}"
-        );
-    }
-
-    // ─── SPRT unit tests ───
-
-    #[test]
-    fn sprt_detects_no_change_for_stable_times() {
-        let target_ms = 30_000.0;
-        let solve_times: Vec<f64> = vec![30000.0; 20];
-        let result = sprt_test(&solve_times, target_ms);
-        assert_eq!(result, SprtDecision::NoChange);
+        assert!(next >= previous / cfg.difficulty_clamp_down);
+        assert!(next <= previous.saturating_mul(cfg.difficulty_clamp_up));
     }
 
     #[test]
-    fn sprt_detects_change_for_fast_times() {
-        let target_ms = 30_000.0;
-        // 2× hashrate → solve times halved
-        let solve_times: Vec<f64> = vec![15000.0; 20];
-        let result = sprt_test(&solve_times, target_ms);
-        match result {
-            SprtDecision::Changed { observed_rate } => {
-                assert!((observed_rate - 15000.0).abs() < 100.0);
-            }
-            other => panic!("expected Changed, got {:?}", other),
+    fn every_result_respects_the_configured_clamps() {
+        let cfg = ChainConfig::testnet();
+        let target = cfg.block_time_ms();
+        let difficulty = 5_000u64;
+
+        for step in [target / 8, target / 2, target, target * 3, target * 6] {
+            let (timestamps, difficulties) = steady(12, step, difficulty);
+            let next = next_difficulty(&timestamps, &difficulties, &cfg);
+            assert!(next >= 1);
+            assert!(next >= difficulty / cfg.difficulty_clamp_down);
+            assert!(next <= difficulty.saturating_mul(cfg.difficulty_clamp_up));
         }
     }
 
     #[test]
-    fn sprt_detects_change_for_slow_times() {
-        let target_ms = 30_000.0;
-        // 0.5× hashrate → solve times doubled
-        let solve_times: Vec<f64> = vec![60000.0; 20];
-        let result = sprt_test(&solve_times, target_ms);
-        match result {
-            SprtDecision::Changed { observed_rate } => {
-                assert!((observed_rate - 60000.0).abs() < 100.0);
-            }
-            other => panic!("expected Changed, got {:?}", other),
+    fn malformed_history_falls_back_to_genesis_difficulty() {
+        let cfg = ChainConfig::testnet();
+        assert_eq!(next_difficulty(&[], &[], &cfg), cfg.genesis_difficulty);
+        assert_eq!(
+            next_difficulty(&[0, 1, 2], &[7, 7], &cfg),
+            cfg.genesis_difficulty
+        );
+    }
+
+    #[test]
+    fn momentum_sign_follows_the_direction_of_the_work_rate() {
+        let shrinking = vec![60_000, 50_000, 40_000, 30_000, 20_000, 10_000];
+        assert!(momentum_bps(&shrinking) > 0);
+        let growing = vec![10_000, 20_000, 30_000, 40_000, 50_000, 60_000];
+        assert!(momentum_bps(&growing) < 0);
+        let flat = vec![30_000; 12];
+        assert_eq!(momentum_bps(&flat), 0);
+    }
+
+    #[test]
+    fn dampener_marks_periodic_patterns_and_ignores_trends() {
+        let alternating: Vec<i128> = (0..20)
+            .map(|i| if i % 2 == 0 { 15_000 } else { 45_000 })
+            .collect();
+        let strength = manipulation_strength_bps(&alternating);
+        assert!(strength > 0, "alternating pattern must be significant");
+        assert!(dampen_change(1_500, 1_000, &alternating) < 1_500);
+
+        let trend: Vec<i128> = (0..20).map(|i| 20_000 + i * 1_000).collect();
+        assert_eq!(manipulation_strength_bps(&trend), 0);
+        assert_eq!(dampen_change(1_200, 1_000, &trend), 1_200);
+    }
+
+    #[test]
+    fn anti_51_refuses_to_lower_difficulty_after_a_speed_burst() {
+        let cfg = ChainConfig::testnet();
+        let previous = 1_000u64;
+        let (timestamps, difficulties) = steady(10, cfg.block_time_ms() / 10, previous);
+        let next = next_difficulty(&timestamps, &difficulties, &cfg);
+        assert!(next >= previous);
+    }
+
+    #[test]
+    fn integer_square_root_is_exact() {
+        for value in [0u64, 1, 2, 3, 4, 8, 9, 10, 15, 16, 17, 1_000_000, u64::MAX] {
+            let root = isqrt(value) as u128;
+            let value = value as u128;
+            assert!(root * root <= value);
+            assert!((root + 1) * (root + 1) > value);
         }
     }
 
-    // ─── Momentum unit tests ───
-
     #[test]
-    fn momentum_positive_for_decreasing_solve_times() {
-        let target_ms = 30_000.0;
-        // Decreasing solve times → increasing hashrate → positive momentum
-        let solve_times: Vec<f64> = (0..10).map(|i| 30000.0 - (i as f64 * 2000.0)).collect();
-        let m = estimate_momentum(&solve_times, target_ms);
-        assert!(
-            m > 0.0,
-            "momentum should be positive for increasing hashrate, got {m}"
-        );
-    }
-
-    #[test]
-    fn momentum_negative_for_increasing_solve_times() {
-        let target_ms = 30_000.0;
-        let solve_times: Vec<f64> = (0..10).map(|i| 20000.0 + (i as f64 * 2000.0)).collect();
-        let m = estimate_momentum(&solve_times, target_ms);
-        assert!(
-            m < 0.0,
-            "momentum should be negative for decreasing hashrate, got {m}"
-        );
-    }
-
-    #[test]
-    fn momentum_near_zero_for_stable_times() {
-        let target_ms = 30_000.0;
-        let solve_times: Vec<f64> = vec![30000.0; 10];
-        let m = estimate_momentum(&solve_times, target_ms);
-        assert!(m.abs() < 0.1, "momentum should be ~0 for stable, got {m}");
-    }
-
-    // ─── Autocorrelation dampener tests ───
-
-    #[test]
-    fn dampener_reduces_adjustment_for_periodic_pattern() {
-        let target_ms = 30_000.0;
-        // Strongly alternating: fast/slow (negative lag-1 autocorrelation)
-        let solve_times: Vec<f64> = (0..20)
-            .map(|i| if i % 2 == 0 { 15000.0 } else { 45000.0 })
-            .collect();
-        let prev_diff = 1000u64;
-        let proposed = 1500u64; // 50% increase
-
-        let dampened = autocorrelation_dampen(&solve_times, proposed, prev_diff, target_ms);
-        // Should be closer to prev_diff than proposal
-        assert!(
-            (dampened as f64 - prev_diff as f64).abs() < (proposed as f64 - prev_diff as f64).abs(),
-            "dampener should reduce adjustment magnitude: dampened={dampened}"
-        );
-    }
-
-    #[test]
-    fn dampener_passes_through_for_non_periodic() {
-        let target_ms = 30_000.0;
-        // Random-looking solve times with no periodic structure
-        // Uses a simple hash-like sequence that isn't autocorrelated
-        let solve_times: Vec<f64> = (0..20)
-            .map(|i| {
-                let pseudo = ((i as u64).wrapping_mul(2654435761) % 10000) as f64;
-                25000.0 + pseudo / 10000.0 * 10000.0 // range [25000, 35000]
-            })
-            .collect();
-        let prev_diff = 1000u64;
-        let proposed = 1200u64;
-
-        let result = autocorrelation_dampen(&solve_times, proposed, prev_diff, target_ms);
-        // Non-periodic signal: dampener should return the proposal (or close to it)
-        assert!(
-            result >= 1050,
-            "non-periodic signal should not be dampened much: got {result}"
-        );
-    }
-
-    // ─── Ablation experiments ───
-
-    #[test]
-    fn ablation_full_beats_lwma_on_stability() {
+    fn ablation_gate_reduces_variance_under_a_stable_work_rate() {
         let cfg = ChainConfig::testnet();
         let full = run_ablation_simulation(AblationVariant::Full, "stable", &|_| 1.0, 200, &cfg);
-        let lwma =
-            run_ablation_simulation(AblationVariant::PureLwma, "stable", &|_| 1.0, 200, &cfg);
-        // Full MDAD-SPR should have equal or lower variance under stable hashrate
-        // because SPRT prevents unnecessary adjustments
-        assert!(
-            full.difficulty_variance <= lwma.difficulty_variance * 1.1,
-            "MDAD-SPR variance ({:.2}%) should be ≤ LWMA ({:.2}%) under stable hashrate",
-            full.difficulty_variance,
-            lwma.difficulty_variance
-        );
+        let ungated =
+            run_ablation_simulation(AblationVariant::NoGate, "stable", &|_| 1.0, 200, &cfg);
+        assert!(full.difficulty_variance <= ungated.difficulty_variance);
     }
 
     #[test]
-    fn ablation_sprt_reduces_variance_stable() {
-        let cfg = ChainConfig::testnet();
-        let with_sprt =
-            run_ablation_simulation(AblationVariant::Full, "stable", &|_| 1.0, 200, &cfg);
-        let no_sprt =
-            run_ablation_simulation(AblationVariant::NoSprt, "stable", &|_| 1.0, 200, &cfg);
-        // Removing SPRT should increase variance (more unnecessary adjustments)
-        assert!(
-            with_sprt.difficulty_variance <= no_sprt.difficulty_variance * 1.1,
-            "Removing SPRT should not decrease variance. Full={:.2}%, NoSPRT={:.2}%",
-            with_sprt.difficulty_variance,
-            no_sprt.difficulty_variance
-        );
-    }
-
-    #[test]
-    fn ablation_dampener_reduces_oscillation() {
-        let cfg = ChainConfig::testnet();
-        let with_damp = run_ablation_simulation(
-            AblationVariant::Full,
-            "oscillating",
-            &|h| if (h / 20) % 2 == 0 { 1.0 } else { 3.0 },
-            200,
-            &cfg,
-        );
-        let no_damp = run_ablation_simulation(
-            AblationVariant::NoDampener,
-            "oscillating",
-            &|h| if (h / 20) % 2 == 0 { 1.0 } else { 3.0 },
-            200,
-            &cfg,
-        );
-        // With dampener: the autocorrelation dampener specifically targets
-        // negative-AC1 patterns (alternating fast/slow). Under oscillating
-        // hashrate, if the difficulty adjustment itself creates alternating
-        // solve time patterns, the dampener should attenuate them.
-        // We verify the dampener is active by checking it produces different
-        // (not worse) results than without.
-        assert!(
-            (with_damp.oscillation_amplitude - no_damp.oscillation_amplitude).abs()
-                < no_damp.oscillation_amplitude * 2.0
-                || with_damp.oscillation_amplitude <= no_damp.oscillation_amplitude * 1.5,
-            "Dampener result should be reasonable. Full={:.2}%, NoDamp={:.2}%",
-            with_damp.oscillation_amplitude,
-            no_damp.oscillation_amplitude
-        );
-    }
-
-    #[test]
-    fn ablation_full_suite_runs_without_panic() {
+    fn ablation_full_suite_reports_finite_metrics() {
         let cfg = ChainConfig::testnet();
         let results = run_full_ablation(&cfg);
-        // 5 variants × 4 profiles = 20 results
         assert_eq!(results.len(), 20);
-        for r in &results {
-            assert!(
-                r.difficulty_variance.is_finite(),
-                "infinite variance for {:?}/{}",
-                r.variant,
-                r.profile
-            );
-            assert!(
-                r.tracking_error.is_finite(),
-                "infinite tracking error for {:?}/{}",
-                r.variant,
-                r.profile
-            );
+        for result in &results {
+            assert!(result.difficulty_variance.is_finite());
+            assert!(result.tracking_error.is_finite());
+            assert!(result.oscillation_amplitude.is_finite());
         }
     }
 
     #[test]
     fn ablation_print_results() {
         let cfg = ChainConfig::testnet();
-        let results = run_full_ablation(&cfg);
-        println!("\n========  MDAD-SPR Ablation Experiment Results  ========");
         println!(
-            "{:<15} {:<12} {:>12} {:>12} {:>12} {:>12}",
+            "\n{:<12} {:<12} {:>10} {:>10} {:>10} {:>10}",
             "Variant", "Profile", "Var(%)", "Conv(blk)", "Osc(%)", "Track(%)"
         );
-        println!("{}", "-".repeat(80));
-        for r in &results {
+        for result in run_full_ablation(&cfg) {
             println!(
-                "{:<15} {:<12} {:>12.2} {:>12} {:>12.2} {:>12.2}",
-                format!("{:?}", r.variant),
-                r.profile,
-                r.difficulty_variance,
-                r.convergence_blocks,
-                r.oscillation_amplitude,
-                r.tracking_error
+                "{:<12} {:<12} {:>10.2} {:>10} {:>10.2} {:>10.2}",
+                format!("{:?}", result.variant),
+                result.profile,
+                result.difficulty_variance,
+                result.convergence_blocks,
+                result.oscillation_amplitude,
+                result.tracking_error
             );
         }
     }

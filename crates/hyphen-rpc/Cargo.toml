@@ -23,5 +23,4 @@ serde.workspace            = true
 rustbinary.workspace       = true
 thiserror.workspace        = true
 tracing.workspace          = true
-hex.workspace              = true
 parking_lot.workspace      = true

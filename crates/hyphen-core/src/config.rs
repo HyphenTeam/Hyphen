@@ -49,8 +49,9 @@ pub const STATE_TRANSITION_VERSION: u16 = 2;
 pub enum DifficultyAlgorithm {
     /// Frozen, integer-only linear weighted moving average.
     LwmaV1 = 1,
-    /// Experimental momentum/SPRT controller retained for research networks.
-    MdadSprResearchV1 = 2,
+    /// Integer-only LWMA with a significance gate, a momentum term and an
+    /// alternating-pattern dampener. Research profiles only.
+    MomentumDampedLwmaV2 = 2,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,13 +62,10 @@ pub struct ChainConfig {
     pub difficulty_algorithm: DifficultyAlgorithm,
     pub block_time: Duration,
     pub epoch_length: u64,
-    pub arena_size: usize,
-    pub scratchpad_size: usize,
-    pub page_size: usize,
-    pub pow_rounds: u32,
-    pub writeback_interval: u32,
-    pub kernel_count: u8,
-    pub merkle_depth: usize,
+    /// Epoch-invariant Cunningham chain length required of every witness.
+    /// Chain length is the coarse difficulty axis: each additional link
+    /// multiplies the expected search cost by roughly `ln(n) / 2`.
+    pub pouw_chain_length: u32,
     pub ring_size: usize,
     pub difficulty_window: u64,
     pub genesis_difficulty: u64,
@@ -167,7 +165,7 @@ impl ChainConfig {
     /// will be detected and rejected.
     pub fn consensus_params_hash(&self) -> [u8; 32] {
         let mut buf = Vec::with_capacity(256);
-        buf.extend_from_slice(b"HyphenConsensusParams/v6-scientific-pouw-v1");
+        buf.extend_from_slice(b"HyphenConsensusParams/v8-pouw-v3-single-use-witnesses");
         buf.extend_from_slice(&STATE_TRANSITION_VERSION.to_le_bytes());
         buf.extend_from_slice(&FROZEN_BLOCK_VERSION.to_le_bytes());
         buf.extend_from_slice(&self.network_magic);
@@ -175,13 +173,7 @@ impl ChainConfig {
         buf.push(self.difficulty_algorithm as u8);
         buf.extend_from_slice(&self.block_time_ms().to_le_bytes());
         buf.extend_from_slice(&self.epoch_length.to_le_bytes());
-        buf.extend_from_slice(&(self.arena_size as u64).to_le_bytes());
-        buf.extend_from_slice(&(self.scratchpad_size as u64).to_le_bytes());
-        buf.extend_from_slice(&(self.page_size as u64).to_le_bytes());
-        buf.extend_from_slice(&self.pow_rounds.to_le_bytes());
-        buf.extend_from_slice(&self.writeback_interval.to_le_bytes());
-        buf.push(self.kernel_count);
-        buf.extend_from_slice(&(self.merkle_depth as u64).to_le_bytes());
+        buf.extend_from_slice(&(self.pouw_chain_length as u64).to_le_bytes());
         buf.extend_from_slice(&(self.ring_size as u64).to_le_bytes());
         buf.extend_from_slice(&self.difficulty_window.to_le_bytes());
         buf.extend_from_slice(&self.genesis_difficulty.to_le_bytes());
@@ -218,20 +210,15 @@ impl ChainConfig {
             network_name: "hyphen-mainnet".into(),
             network_magic: [0x48, 0x59, 0x50, 0x4E],
             consensus_features: RESEARCH_CONSENSUS_FEATURES,
-            difficulty_algorithm: DifficultyAlgorithm::MdadSprResearchV1,
+            difficulty_algorithm: DifficultyAlgorithm::MomentumDampedLwmaV2,
             block_time: Duration::from_secs(60),
             epoch_length: 2048,
-            arena_size: 2 * 1024 * 1024 * 1024,
-            scratchpad_size: 8 * 1024 * 1024,
-            page_size: 4096,
-            pow_rounds: 1024,
-            writeback_interval: 32,
-            kernel_count: 12,
-            merkle_depth: 32,
+            pouw_chain_length: 4,
             ring_size: 16,
             difficulty_window: 60,
-            // PoUW v1 difficulty is the exact number of Q12 diffusion steps.
-            genesis_difficulty: 384,
+            // PoUW v3 difficulty is the number of distinct single-use witnesses
+            // a block must claim; each witness costs a chain search.
+            genesis_difficulty: 8,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
             tail_emission: 600_000_000_000,
@@ -267,19 +254,13 @@ impl ChainConfig {
             network_name: "hyphen-testnet".into(),
             network_magic: [0x48, 0x59, 0x54, 0x53],
             consensus_features: RESEARCH_CONSENSUS_FEATURES,
-            difficulty_algorithm: DifficultyAlgorithm::MdadSprResearchV1,
+            difficulty_algorithm: DifficultyAlgorithm::MomentumDampedLwmaV2,
             block_time: Duration::from_secs(30),
             epoch_length: 128,
-            arena_size: 64 * 1024 * 1024,
-            scratchpad_size: 256 * 1024,
-            page_size: 4096,
-            pow_rounds: 64,
-            writeback_interval: 8,
-            kernel_count: 12,
-            merkle_depth: 32,
+            pouw_chain_length: 4,
             ring_size: 4,
             difficulty_window: 30,
-            genesis_difficulty: 192,
+            genesis_difficulty: 4,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
             tail_emission: 600_000_000_000,
@@ -322,16 +303,10 @@ impl ChainConfig {
             difficulty_algorithm: DifficultyAlgorithm::LwmaV1,
             block_time: Duration::from_secs(30),
             epoch_length: 128,
-            arena_size: 64 * 1024 * 1024,
-            scratchpad_size: 256 * 1024,
-            page_size: 4096,
-            pow_rounds: 64,
-            writeback_interval: 8,
-            kernel_count: 12,
-            merkle_depth: 32,
+            pouw_chain_length: 3,
             ring_size: 4,
             difficulty_window: 30,
-            genesis_difficulty: 64,
+            genesis_difficulty: 1,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
             tail_emission: 600_000_000_000,

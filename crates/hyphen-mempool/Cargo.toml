@@ -13,9 +13,7 @@ hyphen-proof.workspace     = true
 curve25519-dalek.workspace = true
 parking_lot.workspace      = true
 thiserror.workspace        = true
-log.workspace              = true
 serde.workspace            = true
-chrono.workspace           = true
 
 [dev-dependencies]
 hyphen-state.workspace     = true

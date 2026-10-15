@@ -38,8 +38,8 @@ impl std::fmt::Debug for StealthAddress {
         write!(
             f,
             "HYP:{}{}",
-            hex::encode(self.view_public),
-            hex::encode(self.spend_public)
+            crate::hex_encode(self.view_public),
+            crate::hex_encode(self.spend_public)
         )
     }
 }
@@ -49,8 +49,8 @@ impl std::fmt::Display for StealthAddress {
         write!(
             f,
             "HYP:{}{}",
-            hex::encode(self.view_public),
-            hex::encode(self.spend_public)
+            crate::hex_encode(self.view_public),
+            crate::hex_encode(self.spend_public)
         )
     }
 }

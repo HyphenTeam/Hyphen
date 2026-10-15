@@ -12,6 +12,10 @@ pub const TP_DECLARE_JOB: u32 = 110;
 pub const TP_DECLARE_JOB_RESULT: u32 = 111;
 pub const TP_TEMPLATE_INVALIDATED: u32 = 120;
 
+/// Wire protocol between nodes, pools and miners. Bumped whenever the template
+/// or submission contract changes; PoUW v3 miners require version 5.
+pub const POOL_PROTOCOL_VERSION: u32 = 5;
+
 #[derive(Debug, Error)]
 pub enum TPError {
     #[error("io: {0}")]
@@ -128,10 +132,9 @@ pub struct BlockTemplate {
     pub epoch_seed: Vec<u8>,
     #[prost(bytes = "vec", tag = "9")]
     pub prev_hash: Vec<u8>,
+    /// Epoch-invariant Cunningham chain length every witness must satisfy.
     #[prost(uint64, tag = "10")]
-    pub arena_size: u64,
-    #[prost(uint64, tag = "11")]
-    pub page_size: u64,
+    pub pouw_chain_length: u64,
     #[prost(bool, tag = "12")]
     pub clean: bool,
     #[prost(bytes = "vec", tag = "13")]
@@ -142,6 +145,10 @@ pub struct BlockTemplate {
     pub consensus_params_hash: Vec<u8>,
     #[prost(bytes = "vec", tag = "16")]
     pub genesis_hash: Vec<u8>,
+    /// Work commitment of the parent block. Miners chain it with their witness
+    /// list to build the block's `pow_commitment`.
+    #[prost(bytes = "vec", tag = "17")]
+    pub parent_work_commitment: Vec<u8>,
 }
 
 #[derive(Clone, prost::Message)]

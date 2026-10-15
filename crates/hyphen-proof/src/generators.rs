@@ -1,5 +1,5 @@
 use curve25519_dalek::ristretto::RistrettoPoint;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock as Lazy;
 
 pub const MAX_RANGE_BITS: usize = 64;
 pub const MAX_AGGREGATION: usize = 16;

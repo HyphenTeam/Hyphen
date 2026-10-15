@@ -9,11 +9,12 @@ use hyphen_core::error::CoreError;
 use hyphen_core::timestamp::ntp_adjusted_timestamp_ms;
 use hyphen_crypto::Hash256;
 use hyphen_pow::difficulty::next_difficulty;
-use hyphen_pow::solver::verify_pow;
+use hyphen_pow::{verify_witnesses, MAX_WITNESSES_PER_BLOCK};
 use hyphen_state::chain_state::{ChainState, ChainTip};
 use hyphen_state::commitment_tree::PersistentCommitmentTree;
 use hyphen_state::nullifier_set::NullifierSet;
 use hyphen_state::store::BlockStore;
+use hyphen_state::witness_set::WitnessSet;
 use hyphen_state::{
     commit_block_update, consensus_state_root, revert_block_update, AtomicBlockUpdate,
     AtomicStateStores, AuthenticatedBlobStore, BranchBlockArchive, ComputeStateStore,
@@ -24,8 +25,8 @@ use hyphen_tx::builder::build_coinbase_tx;
 use hyphen_tx::transaction::Transaction;
 use hyphen_vm::{Contract, ContractAddress, VmTransaction};
 
-use crate::genesis::{build_genesis_block, genesis_epoch_seed};
 use crate::validator::BlockValidator;
+use hyphen_core::genesis::{build_genesis_block, genesis_epoch_seed};
 
 pub struct Blockchain {
     pub cfg: ChainConfig,
@@ -42,6 +43,8 @@ pub struct Blockchain {
     pub compute_state: RwLock<ComputeStateStore>,
     pub vm_state: RwLock<VmStateStore>,
     pub wes_state: RwLock<WesStateStore>,
+    /// Single-use PoUW witness set. Mutated only while `transition` is held.
+    pub witnesses: WitnessSet,
     pub reorg: ReorgCoordinator,
     compute_verifier: Arc<dyn ProofVerifier>,
     transition: Mutex<()>,
@@ -97,6 +100,8 @@ impl Blockchain {
         let vm_state = VmStateStore::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
         let wes_state = WesStateStore::open(&db, build_genesis_block(&cfg).hash())
             .map_err(|e| CoreError::Storage(e.to_string()))?;
+        let witnesses = WitnessSet::open(&db, chain_namespace)
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
 
         // ── Genesis config immutability check ──────────────────────
         let meta_tree = db
@@ -134,6 +139,7 @@ impl Blockchain {
             compute_state: RwLock::new(compute_state),
             vm_state: RwLock::new(vm_state),
             wes_state: RwLock::new(wes_state),
+            witnesses,
             reorg,
             compute_verifier,
             transition: Mutex::new(()),
@@ -297,8 +303,82 @@ impl Blockchain {
             difficulties.push(block.header.difficulty);
         }
 
-        Ok(next_difficulty(&timestamps, &difficulties, &self.cfg)
-            .min(hyphen_pow::MAX_POUW_ITERATIONS))
+        Ok(
+            next_difficulty(&timestamps, &difficulties, &self.cfg)
+                .clamp(1, MAX_WITNESSES_PER_BLOCK),
+        )
+    }
+
+    /// Checks a block's mathematical witnesses and its chained commitment.
+    ///
+    /// Order matters: the pure predicate is checked first so a malformed list is
+    /// rejected without touching storage, then single-use membership is checked
+    /// against the node's claimed set, and only then is the commitment compared.
+    fn validate_witnesses(
+        &self,
+        block: &Block,
+        parent_commitment: &Hash256,
+        required: u64,
+    ) -> Result<(), CoreError> {
+        verify_witnesses(&block.pow_witnesses, self.cfg.pouw_chain_length, required)
+            .map_err(|error| CoreError::Validation(format!("proof of work rejected: {error}")))?;
+
+        for witness in &block.pow_witnesses {
+            let claimed = self
+                .witnesses
+                .contains(*witness)
+                .map_err(|error| CoreError::Storage(error.to_string()))?;
+            if claimed {
+                return Err(CoreError::Validation(format!(
+                    "proof of work rejected: witness {witness} was already claimed"
+                )));
+            }
+        }
+
+        let expected = hyphen_pow::vms::witness_commitment(
+            parent_commitment,
+            block.header.height,
+            &block.pow_witnesses,
+        );
+        if expected != block.header.pow_commitment {
+            return Err(CoreError::Validation(
+                "work commitment does not match the claimed witness list".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Claims the block's witnesses. Written before the atomic state commit so
+    /// that a crash leaves extra claims rather than missing ones: rejecting a
+    /// valid witness is a liveness problem, accepting a spent one is unsound.
+    fn claim_witnesses(&self, block: &Block) -> Result<(), CoreError> {
+        let mut claimed = Vec::with_capacity(block.pow_witnesses.len());
+        for witness in &block.pow_witnesses {
+            match self.witnesses.insert(*witness, block.header.height) {
+                Ok(_) => claimed.push(*witness),
+                Err(error) => {
+                    for rollback in claimed {
+                        let _ = self.witnesses.remove(rollback);
+                    }
+                    return Err(CoreError::Storage(error.to_string()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Releases the witnesses of a block that is being detached. Failure here
+    /// leaves the set stricter than the chain, which is fail-closed.
+    fn release_witnesses(&self, block: &Block) {
+        for witness in &block.pow_witnesses {
+            if let Err(error) = self.witnesses.remove(*witness) {
+                tracing::error!(
+                    witness,
+                    height = block.header.height,
+                    "failed to release witness: {error}"
+                );
+            }
+        }
     }
 
     fn apply_block_unchecked(&self, block: &Block) -> Result<(), CoreError> {
@@ -372,8 +452,8 @@ impl Blockchain {
             info!(
                 "Coinbase: height={} view_public={} spend_public={} reward={}",
                 block.header.height,
-                hex::encode(authorization.reward_view_public),
-                hex::encode(authorization.reward_spend_public),
+                hyphen_crypto::hex_encode(authorization.reward_view_public),
+                hyphen_crypto::hex_encode(authorization.reward_spend_public),
                 block.header.reward,
             );
             let coinbase_tx = build_coinbase_tx(
@@ -448,14 +528,17 @@ impl Blockchain {
         let now_ms = ntp_adjusted_timestamp_ms();
 
         // Get previous block timestamp for minimum-timestamp validation
-        let prev_timestamp = if tip.height > 0 {
-            self.blocks
-                .get_block_by_height(tip.height)
-                .map(|b| b.header.timestamp)
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        let parent_header = self
+            .blocks
+            .get_block_by_height(tip.height)
+            .map(|b| b.header);
+        let prev_timestamp = parent_header.as_ref().map(|h| h.timestamp).unwrap_or(0);
+        // PoUW v3 chains each block's witness commitment to its parent, so the
+        // miner never needs branch-local state to build a valid block.
+        let parent_commitment = parent_header
+            .as_ref()
+            .map(|h| h.pow_commitment)
+            .unwrap_or(Hash256::ZERO);
 
         let validator = BlockValidator::new(&self.cfg);
 
@@ -505,9 +588,7 @@ impl Blockchain {
                 block.header.epoch_seed
             )));
         }
-        if !verify_pow(&block.header) {
-            return Err(CoreError::PowFailed);
-        }
+        self.validate_witnesses(block, &parent_commitment, expected_difficulty)?;
 
         // C3 fix: Verify declared reward matches emission formula
         let expected_reward =
@@ -551,7 +632,12 @@ impl Blockchain {
             )));
         }
 
-        self.apply_block_unchecked(block)
+        self.claim_witnesses(block)?;
+        if let Err(error) = self.apply_block_unchecked(block) {
+            self.release_witnesses(block);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Fully validates an ordered transaction candidate against current
@@ -665,7 +751,9 @@ impl Blockchain {
                     .map_err(|error| CoreError::Storage(error.to_string()))?
                     || !block_key_images.insert(input.key_image)
                 {
-                    return Err(CoreError::DuplicateNullifier(hex::encode(input.key_image)));
+                    return Err(CoreError::DuplicateNullifier(hyphen_crypto::hex_encode(
+                        input.key_image,
+                    )));
                 }
             }
 
@@ -944,7 +1032,14 @@ impl ReorgBackend for BlockchainReorgBackend<'_> {
             },
             &expected,
         )
-        .map_err(|error| CoreError::Storage(error.to_string()))
+        .map_err(|error| CoreError::Storage(error.to_string()))?;
+
+        // The detached block's witnesses become claimable again, so the
+        // reverted branch can be re-attached without a spurious rejection.
+        if let Ok(detached) = self.chain.blocks.get_block_by_hash(&expected) {
+            self.chain.release_witnesses(&detached);
+        }
+        Ok(())
     }
 
     fn attach(&mut self, block: Hash256) -> Result<(), Self::Error> {
@@ -970,19 +1065,13 @@ mod tests {
     };
     use hyphen_core::{BlockAuthorization, BlockHeader, FROZEN_BLOCK_VERSION};
     use hyphen_crypto::{SecretKey, SpendKey, ViewKey};
-    use hyphen_pow::EpochArena;
     use hyphen_vm::ledger::{SignedCall, SignedDeploy};
     use hyphen_vm::types::{ContractCall, DeployParams};
 
     fn test_config() -> ChainConfig {
         let mut cfg = ChainConfig::devnet();
         cfg.genesis_difficulty = 1;
-        cfg.arena_size = 4_096;
-        cfg.scratchpad_size = 4_096;
-        cfg.page_size = 4_096;
-        cfg.pow_rounds = 1;
-        cfg.writeback_interval = 1;
-        cfg.kernel_count = 1;
+        cfg.pouw_chain_length = 3;
         cfg.difficulty_window = 2;
         cfg.epoch_length = 100;
         cfg
@@ -1004,7 +1093,40 @@ mod tests {
         ));
     }
 
-    fn remine_and_authorize(cfg: &ChainConfig, block: &mut Block, marker: u8) {
+    /// Test-only mining. Each marker owns a disjoint residue class, so blocks
+    /// built for different branches can never claim the same witness and a
+    /// re-attached branch is accepted without spurious collisions.
+    fn mine_witnesses(
+        cfg: &ChainConfig,
+        block: &mut Block,
+        parent_commitment: Hash256,
+        marker: u8,
+    ) {
+        let required = block.header.difficulty;
+        let claimed_never = |_: u64| false;
+        let outcome = hyphen_pow::search(&hyphen_pow::SearchParams {
+            length: cfg.pouw_chain_length,
+            offset: 3 + 2 * u64::from(marker % 64),
+            stride: 128,
+            count: required,
+            max_candidates: 20_000_000,
+            is_claimed: &claimed_never,
+        })
+        .expect("valid test search parameters");
+        assert_eq!(
+            outcome.witnesses.len() as u64,
+            required,
+            "test search budget exhausted for marker {marker}"
+        );
+        block.pow_witnesses = outcome.witnesses;
+        block.header.pow_commitment = hyphen_pow::vms::witness_commitment(
+            &parent_commitment,
+            block.header.height,
+            &block.pow_witnesses,
+        );
+    }
+
+    fn authorize_block(cfg: &ChainConfig, block: &mut Block, marker: u8) {
         let miner = SecretKey([marker; 32]);
         let view_public = ViewKey([marker.wrapping_add(1); 32])
             .public_point()
@@ -1014,9 +1136,6 @@ mod tests {
             .public_point()
             .compress()
             .to_bytes();
-        block.header.nonce = 0;
-        let arena = EpochArena::generate(block.header.epoch_seed, cfg.arena_size, cfg.page_size);
-        hyphen_pow::solver::mine_block(&mut block.header, &arena, cfg);
         let authorization = BlockAuthorization::sign(
             &block.header,
             cfg.network_magic,
@@ -1034,17 +1153,9 @@ mod tests {
 
     fn child(cfg: &ChainConfig, parent: &Block, marker: u8, timestamp_offset: u64) -> Block {
         let miner = SecretKey([marker; 32]);
-        let view_public = ViewKey([marker.wrapping_add(1); 32])
-            .public_point()
-            .compress()
-            .to_bytes();
-        let spend_public = SpendKey([marker.wrapping_add(2); 32])
-            .public_point()
-            .compress()
-            .to_bytes();
         let height = parent.header.height + 1;
         let epoch_seed = genesis_epoch_seed(cfg);
-        let mut header = BlockHeader {
+        let header = BlockHeader {
             version: FROZEN_BLOCK_VERSION,
             height,
             timestamp: parent.header.timestamp + timestamp_offset,
@@ -1066,26 +1177,16 @@ mod tests {
             view_tag: 0,
             block_size: 0,
         };
-        let arena = EpochArena::generate(epoch_seed, cfg.arena_size, cfg.page_size);
-        hyphen_pow::solver::mine_block(&mut header, &arena, cfg);
-        let authorization = BlockAuthorization::sign(
-            &header,
-            cfg.network_magic,
-            cfg.consensus_params_hash(),
-            build_genesis_block(cfg).hash(),
-            view_public,
-            spend_public,
-            &miner,
-        )
-        .unwrap();
-        Block {
+        let mut block = Block {
             header,
+            pow_witnesses: Vec::new(),
             transactions: Vec::new(),
             uncle_headers: Vec::new(),
-            block_authorization: crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-                .serialize(&authorization)
-                .unwrap(),
-        }
+            block_authorization: Vec::new(),
+        };
+        mine_witnesses(cfg, &mut block, parent.header.pow_commitment, marker);
+        authorize_block(cfg, &mut block, marker);
+        block
     }
 
     fn competing_branches(cfg: &ChainConfig) -> (Block, Vec<Block>, Vec<Block>) {
@@ -1300,7 +1401,7 @@ mod tests {
         block.header.tx_root = block.compute_tx_root();
         block.header.state_root = chain.state_root_after(&block.transactions, 1).unwrap();
         let expected_root = block.header.state_root;
-        remine_and_authorize(&cfg, &mut block, 96);
+        authorize_block(&cfg, &mut block, 96);
         chain.accept_block(&block).unwrap();
         assert_eq!(chain.state_root(), expected_root);
         drop(chain);
@@ -1318,7 +1419,7 @@ mod tests {
         let chain = Blockchain::open_db(db.clone(), cfg.clone()).unwrap();
         let genesis = chain.blocks.get_block_by_height(0).unwrap();
         let owner = SecretKey([97; 32]);
-        let code = wasmer::wat2wasm(
+        let code = wat::parse_bytes(
             br#"(module
                 (import "env" "h_storage_write" (func $write (param i32 i32 i32 i32) (result i32)))
                 (memory (export "memory") 1 1)
@@ -1352,7 +1453,7 @@ mod tests {
         old_one.header.state_root = chain
             .state_root_after(&old_one.transactions, old_one.header.height)
             .unwrap();
-        remine_and_authorize(&cfg, &mut old_one, 97);
+        authorize_block(&cfg, &mut old_one, 97);
         chain.accept_block(&old_one).unwrap();
 
         let call = VmTransaction::Call(
@@ -1379,7 +1480,7 @@ mod tests {
         old_two.header.state_root = chain
             .state_root_after(&old_two.transactions, old_two.header.height)
             .unwrap();
-        remine_and_authorize(&cfg, &mut old_two, 98);
+        authorize_block(&cfg, &mut old_two, 98);
         chain.accept_block(&old_two).unwrap();
         let persisted_root = chain.state_root();
         assert_eq!(chain.vm_storage(address, b"key"), Some(b"value".to_vec()));
@@ -1442,13 +1543,13 @@ mod tests {
         first.transactions = vec![blob];
         first.header.tx_root = first.compute_tx_root();
         first.header.state_root = chain.state_root_after(&first.transactions, 1).unwrap();
-        remine_and_authorize(&cfg, &mut first, 104);
+        authorize_block(&cfg, &mut first, 104);
         chain.accept_block(&first).unwrap();
         let live_roots = chain.wes_state.read().roots();
 
         let mut second = child(&cfg, &first, 105, 1);
         second.header.state_root = chain.state_root_after(&[], 2).unwrap();
-        remine_and_authorize(&cfg, &mut second, 105);
+        authorize_block(&cfg, &mut second, 105);
         chain.accept_block(&second).unwrap();
         let expired_roots = chain.wes_state.read().roots();
         assert_ne!(live_roots.live, expired_roots.live);

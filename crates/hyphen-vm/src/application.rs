@@ -122,7 +122,7 @@ mod tests {
         } else {
             ""
         };
-        wasmer::wat2wasm(
+        wat::parse_bytes(
             format!(
                 r#"(module (@custom "hyphen.app" "{manifest}") (memory (export "memory") 1 1) {functions})"#
             )

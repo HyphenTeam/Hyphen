@@ -1,7 +1,10 @@
 pub(crate) const DEFAULT_WIRE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_WIRE_COLLECTION_ITEMS: usize = 1_000_000;
 
-pub(crate) fn wire_config(max_bytes: usize) -> rustbinary::Config {
+/// The one wire profile every Hyphen binary must use. Exposed so that clients
+/// (miner, pool, wallet) decode headers with the node's exact limits instead of
+/// re-implementing them.
+pub fn wire_config(max_bytes: usize) -> rustbinary::Config {
     rustbinary::legacy_options()
         .with_little_endian()
         .with_fixint_encoding()
@@ -14,6 +17,7 @@ pub mod authorization;
 pub mod block;
 pub mod config;
 pub mod error;
+pub mod genesis;
 pub mod timestamp;
 
 pub use authorization::{
@@ -30,7 +34,7 @@ pub use config::{
     MAINNET_DISCOVERY_PORT, MAINNET_P2P_PORT, MAINNET_RPC_PORT, RESEARCH_CONSENSUS_FEATURES,
     TESTNET_DISCOVERY_PORT, TESTNET_P2P_PORT, TESTNET_RPC_PORT,
 };
-pub use error::CoreError;
+pub use genesis::{build_genesis_block, genesis_epoch_seed, ChainIdentity};
 
 #[cfg(test)]
 mod wire_tests {

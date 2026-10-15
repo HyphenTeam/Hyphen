@@ -58,12 +58,12 @@ proof-system ID and current retention-provider count. Search accepts a task ID.
 The independent `HyphenMiner` repository contains a versioned C ABI for native
 CUDA, HIP, Intel OpenVINO NPU/GPU and Qualcomm QNN plugins. ABI loading,
 capability checks, bounded result ownership and error isolation stay in Rust.
-ABI v2 implements the consensus 64x64 Q12 periodic diffusion/PDE step with
+ABI v2 implements the consensus 64x64 Q12 periodic diffusion step with
 bounded non-negative `i32` cells. CUDA, HIP and OpenVINO use the same
-four-neighbour relation and seven-operation accounting as PoUW v1. Old ABI v1
-plugins are rejected. Every accepted device output is recomputed by the
-independent Rust implementation, checked byte-for-byte and committed with
-domain-separated BLAKE3 input/output hashes.
+four-neighbour relation and seven-operation accounting of the retired
+hyphen-pow v2 research kernel. Old ABI v1 plugins are rejected. Every accepted device output is
+recomputed by the independent Rust implementation, checked byte-for-byte and
+committed with domain-separated BLAKE3 input/output hashes.
 
 The CUDA source compiles with CUDA 13.2 on the current development host. No
 compatible device execution was performed in this verification run, and HIP,
@@ -72,9 +72,10 @@ were unavailable. QNN advertises no kernel capability until a target-specific
 deterministic graph implements ABI v2. Provider discovery is not treated as
 useful computation.
 
-The ABI v2 execution path is connected to block mining: verified devices run
-the exact header-derived consensus grid, while the default path falls back to
-Rust CPU execution. `--require-accelerator` makes device availability and
+The ABI v2 execution path is connected to block mining: the host drives the
+nonce search, and each attempt runs the exact header-derived consensus grid on
+a verified device when one is available, with the Rust CPU implementation as
+the default path. `--require-accelerator` makes device availability and
 successful execution mandatory. This boundary does not replace the consensus
 `ProofVerifier` and does not settle user-published AetherCompute tasks.
 

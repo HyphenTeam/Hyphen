@@ -19,8 +19,6 @@ hyphen-compute.workspace = true
 hyphen-vm.workspace      = true
 thiserror.workspace     = true
 parking_lot.workspace   = true
-log.workspace           = true
-hex.workspace           = true
 rand.workspace          = true
 
 [dev-dependencies]

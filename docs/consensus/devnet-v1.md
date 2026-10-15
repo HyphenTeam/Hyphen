@@ -63,7 +63,8 @@ different chain identity and MUST NOT be deployed as devnet v1.
 
 ## Disabled research mechanisms
 
-Uncles, TERA, VRE consensus enforcement, MSE, and MDAD-SPR are disabled. The
+Uncles, TERA, VRE consensus enforcement, MSE, and the momentum-damped LWMA
+research controller are disabled. The
 code may retain these mechanisms for research profiles, but a devnet v1 node
 MUST NOT activate them. Useful-Work is not a consensus feature and is not part
 of devnet v1.
@@ -220,7 +221,7 @@ cargo test -p hyphen-consensus published_chain_identity_vectors_match_the_implem
 
 ## 禁用的研究机制
 
-Uncle、TERA、VRE 共识强制、MSE 和 MDAD-SPR 被禁用。代码可为研究 profile 保留这些机制，但 devnet v1 节点不得激活。Useful-Work 不是共识功能，也不属于 devnet v1。
+Uncle、TERA、VRE 共识强制、MSE 和 momentum-damped LWMA 研究控制器被禁用。代码可为研究 profile 保留这些机制，但 devnet v1 节点不得激活。Useful-Work 不是共识功能，也不属于 devnet v1。
 
 ## 区块头与链规则
 

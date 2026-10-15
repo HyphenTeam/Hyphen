@@ -891,6 +891,7 @@ mod tests {
 
     fn block(height: u64, previous: Hash256, marker: u8) -> Block {
         Block {
+            pow_witnesses: Vec::new(),
             header: BlockHeader {
                 version: 2,
                 height,

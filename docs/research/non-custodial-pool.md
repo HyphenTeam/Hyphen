@@ -1,6 +1,6 @@
 # Hyphen Non-Custodial Pool Protocol
 
-Status: experimental Pool Protocol v5. It reduces delegated block authority, but
+Status: experimental Pool Protocol v7. It reduces delegated block authority, but
 does not yet provide a complete trustless shared-pool system.
 
 ## Objective
@@ -17,8 +17,8 @@ The pool can account for shares, operate VarDiff, relay templates, and provide
 PPLNS/PPS/FPPS calculations. It cannot produce a consensus-valid block for a
 miner unless that miner authorizes the exact solved header and reward keys.
 
-This document calls the node-to-pool Template Provider protocol TP v3 and the
-pool-to-miner protobuf protocol Pool v5. Legacy Stratum V1 is a local share-only
+This document calls the node-to-pool Template Provider protocol TP v5 and the
+pool-to-miner protobuf protocol Pool v7. Legacy Stratum V1 is a local share-only
 adapter; it cannot carry the frozen block authorization and is forbidden on
 mainnet mode.
 
@@ -36,20 +36,23 @@ wallet seeds and do not replace wallet backup.
 
 ## Protocol flow
 
-1. TP v3 binds signed requests and templates to network magic, consensus
+1. TP v5 binds signed requests and templates to network magic, consensus
    parameters hash, and genesis hash.
-2. Pool v5 login sends the miner identity, payout view/spend public keys,
+2. Pool v7 login sends the miner identity, payout view/spend public keys,
    thread count, and the same chain identity.
 3. The pool personalizes the header with the miner public key and advertises
    exact reward keys, transaction blobs, transaction root, difficulty, epoch
-   seed, arena size, and page size.
+   seed, chain length (`pouw_chain_length`) and the parent work commitment the
+   miner must chain its witness list into.
 4. The miner recomputes the transaction root and rejects chain, header,
-   difficulty, arena, miner-key, or reward-key mismatches. A shared mode may
+   difficulty, depth, miner-key, or reward-key mismatches. A shared mode may
    redirect coinbase to the pool wallet only when the miner explicitly starts
    with `--allow-shared-reward-recipient`.
-5. The miner evaluates PoW. Ordinary shares carry no reusable block
-   authorization. A full-block solution carries `BlockAuthorization` signed by
-   the miner over the full solved header, chain identity, and reward keys.
+5. The miner searches its nonce residue class. Ordinary shares are the same
+   header-bound claim judged against the share difficulty; they carry no
+   reusable block authorization. A full-block solution carries
+   `BlockAuthorization` signed by the miner over the full solved header, chain
+   identity, and reward keys.
 6. The pool recomputes PoW and verifies miner authorization before relaying a
    full block to the node.
 7. Every accepted share result has a pool-signed envelope and a hash-chain
@@ -80,7 +83,7 @@ mean the pool has no remaining control.
 | Attack | Status | Remaining work |
 | --- | --- | --- |
 | Share stealing | Mitigated for identity substitution and payload replay | Test hostile proxies, reconnect races, and same-identity key compromise |
-| Template hijacking | Post-delivery mutation is detected | Pool currently chooses the transaction list it sends; miner-originated job declaration is not exposed through Pool v5 |
+| Template hijacking | Post-delivery mutation is detected | Pool currently chooses the transaction list it sends; miner-originated job declaration is not exposed through Pool v6 |
 | Pool censorship / MEV | Not solved | Add miner-selected transaction sets or direct miner-to-TP job declaration with bounded validation and fallback nodes |
 | Block withholding by miner | Not solved | Economic detection/penalties require a formal model and cannot prove a private solution existed |
 | Block withholding by pool | Not solved | Miner needs a safe direct submission path or encrypted/adaptor relay design after finding a block |
@@ -96,7 +99,7 @@ Those entries MUST NOT be represented as wallet funds or completed payments.
 
 ## Next protocol milestone
 
-A future Pool v6 proposal should be evaluated before implementation and should include:
+A future protocol revision should be evaluated before implementation and should include:
 
 1. Miner-declared transaction sets with deterministic size/fee policy and TP
    validation, without allowing unbounded parsing or memory use.
@@ -130,7 +133,7 @@ security.
 
 # Hyphen 非托管矿池协议
 
-状态：实验性 Pool Protocol v5。它减少了委托的区块权限，但尚未提供完整的无信任共享矿池系统。
+状态：实验性 Pool Protocol v7。它减少了委托的区块权限，但尚未提供完整的无信任共享矿池系统。
 
 ## 目标
 
@@ -144,7 +147,7 @@ Hyphen 将传统矿池经常合并的两种权力分开：
 
 矿池可以统计 share、运行 VarDiff、转发 template 并提供 PPLNS/PPS/FPPS 计算。除非矿工授权精确的已求解区块头和奖励密钥，否则矿池不能为该矿工生成共识有效区块。
 
-本文把 node-to-pool Template Provider 协议称为 TP v3，把 pool-to-miner protobuf 协议称为 Pool v5。旧 Stratum V1 只是本地 share adapter，无法携带冻结区块授权，在 mainnet 模式下禁用。旧的 `--standalone` 内置伪链同样 fail-closed 禁用；生产入口必须连接真实主链 Template Provider。
+本文把 node-to-pool Template Provider 协议称为 TP v5，把 pool-to-miner protobuf 协议称为 Pool v7。旧 Stratum V1 只是本地 share adapter，无法携带冻结区块授权，在 mainnet 模式下禁用。旧的 `--standalone` 内置伪链同样 fail-closed 禁用；生产入口必须连接真实主链 Template Provider。
 
 ## 角色和信任边界
 
@@ -157,11 +160,11 @@ Hyphen 将传统矿池经常合并的两种权力分开：
 
 ## 协议流程
 
-1. TP v3 把签名请求和 template 绑定到 network magic、共识参数哈希和创世哈希。
-2. Pool v5 登录发送矿工身份、收款 view/spend 公钥、线程数和相同链身份。
-3. 矿池以矿工公钥个性化区块头，并公布精确奖励密钥、交易 blob、交易根、难度、epoch seed、arena 大小和 page 大小。
-4. 矿工重算交易根，并拒绝链、区块头、难度、arena、矿工密钥或奖励密钥不匹配。只有矿工明确以 `--allow-shared-reward-recipient` 启动时，共享模式才可把 coinbase 重定向到矿池钱包。
-5. 矿工计算 PoW。普通 share 不携带可复用区块授权。完整区块解携带 `BlockAuthorization`，由矿工对完整已求解区块头、链身份和奖励密钥签名。
+1. TP v4 把签名请求和 template 绑定到 network magic、共识参数哈希和创世哈希。
+2. Pool v6 登录发送矿工身份、收款 view/spend 公钥、线程数和相同链身份。
+3. 矿池以矿工公钥个性化区块头，并公布精确奖励密钥、交易 blob、交易根、难度、epoch seed、链长（`pouw_chain_length`）以及矿工必须把见证列表链入的父区块工作量承诺。
+4. 矿工重算交易根，并拒绝链、区块头、难度、深度、矿工密钥或奖励密钥不匹配。只有矿工明确以 `--allow-shared-reward-recipient` 启动时，共享模式才可把 coinbase 重定向到矿池钱包。
+5. 矿工在自己的 nonce 余数类上搜索。普通 share 就是用相同区块头绑定的 claim 对照 share 难度判定，不携带可复用区块授权。完整区块解携带 `BlockAuthorization`，由矿工对完整已求解区块头、链身份和奖励密钥签名。
 6. 矿池重算 PoW 并验证矿工授权，然后才把完整区块转发给节点。
 7. 每个接受的 share 结果具有矿池签名 envelope 和 hash-chain receipt，承诺矿池身份、矿工身份、序号、前一 receipt、精确提交哈希和精确结果哈希。矿工重算 receipt，并保留有界的未回答提交队列。
 
@@ -186,7 +189,7 @@ Hyphen 将传统矿池经常合并的两种权力分开：
 | 攻击 | 状态 | 剩余工作 |
 | --- | --- | --- |
 | Share stealing | 缓解身份替换和 payload 重放 | 测试恶意代理、重连竞态及同身份密钥泄露 |
-| Template hijacking | 可检测交付后修改 | Pool v5 尚未暴露矿工发起的 job declaration，矿池仍选择发送的交易列表 |
+| Template hijacking | 可检测交付后修改 | Pool v6 尚未暴露矿工发起的 job declaration，矿池仍选择发送的交易列表 |
 | 矿池审查/MEV | 未解决 | 增加矿工选择交易集，或矿工直连 TP 的 job declaration，并提供有界验证和备用节点 |
 | 矿工扣留区块 | 未解决 | 经济检测/惩罚需要正式模型，且不能证明私人解曾存在 |
 | 矿池扣留区块 | 未解决 | 矿工找到区块后需要安全直提路径，或加密/adaptor relay 设计 |
@@ -201,7 +204,7 @@ Hyphen 将传统矿池经常合并的两种权力分开：
 
 ## 下一协议里程碑
 
-未来的 Pool v6 提案应先评估后实现，并包括：
+未来的协议版本提案应先评估后实现，并包括：
 
 1. 矿工声明的交易集和有界 TP 验证。
 2. 不在固定矿工授权前暴露可转移解的完整区块直提 fallback。

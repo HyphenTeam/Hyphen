@@ -1,11 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
-use wasmer::sys::{CompilerConfig, Cranelift, EngineBuilder};
-use wasmer::{FunctionEnv, Instance, Module, Store};
-use wasmer_middlewares::metering::{get_remaining_points, MeteringPoints};
-use wasmer_middlewares::Metering;
+use wasmi::{Config, Engine, Instance, Module, Store, TrapCode};
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef, Validator, WasmFeatures};
 
 use crate::contract::Contract;
@@ -51,9 +48,13 @@ pub enum VmError {
     CodeIntegrity,
 }
 
-/// Deterministic WASM executor with instruction metering and transactional
-/// in-memory state. Chain integration must persist the returned state changes
-/// atomically with the containing block.
+/// Deterministic WASM executor with fuel metering and transactional in-memory
+/// state. Chain integration must persist the returned state changes atomically
+/// with the containing block.
+///
+/// Execution is interpreted, not JIT compiled: identical input produces
+/// identical fuel consumption and identical results on every host, and no
+/// native code generator sits in the consensus path.
 pub struct VmEngine {
     storage: HashMap<ContractAddress, HashMap<Vec<u8>, Vec<u8>>>,
 }
@@ -106,19 +107,18 @@ impl VmEngine {
             base_storage.clone(),
         )?;
 
-        let execution = match instance.exports.get_function("init") {
-            Ok(init) => init.call(&mut store, &[]).map(|_| ()),
-            Err(_) => Ok(()),
+        let execution = match instance.get_func(&store, "init") {
+            Some(function) => match function.typed::<(), ()>(&store) {
+                Ok(typed) => typed.call(&mut store, ()),
+                Err(error) => Err(error),
+            },
+            None => Ok(()),
         };
-        let instruction_used = instruction_gas_used(&mut store, &instance, execution_limit);
+        let instruction_used = instruction_gas_used(&store, execution_limit);
         let host_used = host_env.gas.lock().unwrap().used();
         let execution_used = instruction_used.saturating_add(host_used);
 
-        if matches!(
-            get_remaining_points(&mut store, &instance),
-            MeteringPoints::Exhausted
-        ) || execution_used > execution_limit
-        {
+        if out_of_fuel(&execution) || execution_used > execution_limit {
             return Err(GasError::OutOfGas {
                 needed: execution_used,
                 remaining: execution_limit,
@@ -178,15 +178,14 @@ impl VmEngine {
             base_storage.clone(),
         )?;
         let function = instance
-            .exports
-            .get_function(&call.function)
-            .map_err(|_| VmError::MissingExport(call.function.clone()))?;
-        let execution = function.call(&mut store, &[]);
-        let exhausted = matches!(
-            get_remaining_points(&mut store, &instance),
-            MeteringPoints::Exhausted
-        );
-        let instruction_used = instruction_gas_used(&mut store, &instance, call.gas_limit);
+            .get_func(&store, &call.function)
+            .ok_or_else(|| VmError::MissingExport(call.function.clone()))?;
+        let execution = match function.typed::<(), ()>(&store) {
+            Ok(typed) => typed.call(&mut store, ()),
+            Err(error) => Err(error),
+        };
+        let exhausted = out_of_fuel(&execution);
+        let instruction_used = instruction_gas_used(&store, call.gas_limit);
         let host_used = host_env.gas.lock().unwrap().used();
         let combined_used = instruction_used.saturating_add(host_used);
         let out_of_gas = exhausted || combined_used > call.gas_limit;
@@ -234,6 +233,9 @@ impl Default for VmEngine {
     }
 }
 
+/// Live instance handles for one contract invocation.
+type VmInstance = (Store<Arc<HostEnv>>, Instance, Arc<HostEnv>);
+
 fn create_instance(
     code: &[u8],
     contract: ContractAddress,
@@ -241,30 +243,48 @@ fn create_instance(
     gas_limit: u64,
     input: Vec<u8>,
     storage: HashMap<Vec<u8>, Vec<u8>>,
-) -> Result<(Store, Instance, Arc<HostEnv>), VmError> {
-    let metering = Arc::new(Metering::new(gas_limit, |_| 1));
-    let mut compiler = Cranelift::default();
-    compiler.push_middleware(metering);
-    let mut store = Store::new(EngineBuilder::new(compiler));
-    let module = Module::new(&store, code).map_err(|e| VmError::Compilation(e.to_string()))?;
+) -> Result<VmInstance, VmError> {
+    let engine = engine();
+    let module = Module::new(engine, code).map_err(|e| VmError::Compilation(e.to_string()))?;
     let host_env = Arc::new(HostEnv::new(contract, caller, gas_limit, input, storage));
-    let function_env = FunctionEnv::new(&mut store, host_env.clone());
-    let imports = host::build_imports(&mut store, &function_env);
-    let instance = Instance::new(&mut store, &module, &imports)
+    let mut store = Store::new(engine, host_env.clone());
+    store
+        .set_fuel(gas_limit)
+        .map_err(|e| VmError::Instantiation(e.to_string()))?;
+    let linker = host::build_linker(engine).map_err(VmError::Instantiation)?;
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
         .map_err(|e| VmError::Instantiation(e.to_string()))?;
     let memory = instance
-        .exports
-        .get_memory("memory")
-        .map_err(|_| VmError::Validation("contract must export memory as 'memory'".into()))?;
-    host_env.set_memory(memory.clone());
+        .get_memory(&store, "memory")
+        .ok_or_else(|| VmError::Validation("contract must export memory as 'memory'".into()))?;
+    host_env.set_memory(memory);
     Ok((store, instance, host_env))
 }
 
-fn instruction_gas_used(store: &mut Store, instance: &Instance, limit: u64) -> u64 {
-    match get_remaining_points(store, instance) {
-        MeteringPoints::Remaining(remaining) => limit.saturating_sub(remaining),
-        MeteringPoints::Exhausted => limit,
-    }
+/// Process-wide interpreter engine. Fuel metering is enabled once here, so every
+/// store created from it charges for metered instructions.
+fn engine() -> &'static Engine {
+    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let mut config = Config::default();
+        config.consume_fuel(true);
+        Engine::new(&config)
+    })
+}
+
+/// Fuel consumed by metered instructions, capped at the limit.
+fn instruction_gas_used(store: &Store<Arc<HostEnv>>, limit: u64) -> u64 {
+    let remaining = store.get_fuel().unwrap_or(0);
+    limit.saturating_sub(remaining)
+}
+
+fn out_of_fuel(execution: &Result<(), wasmi::Error>) -> bool {
+    execution
+        .as_ref()
+        .err()
+        .and_then(wasmi::Error::as_trap_code)
+        .is_some_and(|code| code == TrapCode::OutOfFuel)
 }
 
 fn state_changes(
@@ -384,7 +404,7 @@ mod tests {
     use super::*;
 
     fn wasm(source: &str) -> Vec<u8> {
-        wasmer::wat2wasm(source.as_bytes()).unwrap().into_owned()
+        wat::parse_bytes(source.as_bytes()).unwrap().into_owned()
     }
 
     fn deploy(engine: &mut VmEngine, code: Vec<u8>) -> Contract {

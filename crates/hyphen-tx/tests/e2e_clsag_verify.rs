@@ -282,16 +282,16 @@ fn e2e_wallet_hex_roundtrip_verify() {
     );
 
     // Simulate wallet storage (hex encoding, like WalletOutput)
-    let blinding_hex = hex::encode(blinding.to_bytes());
-    let spend_sk_hex = hex::encode(one_time_sk.to_bytes());
-    let otp_hex = hex::encode(one_time_pk.compress().to_bytes());
-    let cm_hex = hex::encode(Commitment::from_point(&commitment).as_bytes());
+    let blinding_hex = hyphen_crypto::hex_encode(blinding.to_bytes());
+    let spend_sk_hex = hyphen_crypto::hex_encode(one_time_sk.to_bytes());
+    let otp_hex = hyphen_crypto::hex_encode(one_time_pk.compress().to_bytes());
+    let cm_hex = hyphen_crypto::hex_encode(Commitment::from_point(&commitment).as_bytes());
 
     // Step 2: Simulate transfer — reconstruct from hex (like transfer.rs does)
-    let blinding_bytes: Vec<u8> = hex::decode(&blinding_hex).unwrap();
-    let spend_sk_bytes: Vec<u8> = hex::decode(&spend_sk_hex).unwrap();
-    let otp_bytes: Vec<u8> = hex::decode(&otp_hex).unwrap();
-    let cm_bytes: Vec<u8> = hex::decode(&cm_hex).unwrap();
+    let blinding_bytes: Vec<u8> = hyphen_crypto::hex_decode(&blinding_hex).unwrap();
+    let spend_sk_bytes: Vec<u8> = hyphen_crypto::hex_decode(&spend_sk_hex).unwrap();
+    let otp_bytes: Vec<u8> = hyphen_crypto::hex_decode(&otp_hex).unwrap();
+    let cm_bytes: Vec<u8> = hyphen_crypto::hex_decode(&cm_hex).unwrap();
 
     let mut bl = [0u8; 32];
     bl.copy_from_slice(&blinding_bytes);

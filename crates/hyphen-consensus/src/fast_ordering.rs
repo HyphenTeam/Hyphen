@@ -19,8 +19,6 @@ const MAX_COMMITTEE_SEATS: u16 = 4096;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkContribution {
     pub public_key: PublicKey,
-    /// Independently verified cumulative PoW for this identity in the source
-    /// epoch. Repeated public keys are aggregated before sampling.
     pub work: u128,
 }
 
@@ -576,7 +574,7 @@ mod tests {
             vector["committee"]["committee_id"].as_str().unwrap()
         );
         assert_eq!(
-            hex::encode(statement.canonical_bytes()),
+            hyphen_crypto::hex_encode(statement.canonical_bytes()),
             vector["statement"]["canonical_encoding"].as_str().unwrap()
         );
         assert_eq!(

@@ -1,5 +1,4 @@
 use blake3;
-use bs58;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -66,14 +65,13 @@ impl HyphenAddress {
         payload.extend_from_slice(&self.view_public);
         payload.extend_from_slice(&self.spend_public);
         payload.extend_from_slice(&cs);
-        format!("{}{}", PREFIX, bs58::encode(&payload).into_string())
+        format!("{}{}", PREFIX, hyphen_crypto::base58::encode(&payload))
     }
 
     pub fn decode(s: &str) -> Result<Self, AddressError> {
         let body = s.strip_prefix(PREFIX).ok_or(AddressError::MissingPrefix)?;
-        let payload = bs58::decode(body)
-            .into_vec()
-            .map_err(|_| AddressError::Base58Decode)?;
+        let payload =
+            hyphen_crypto::base58::decode(body).map_err(|_| AddressError::Base58Decode)?;
         if payload.len() != PAYLOAD_LEN {
             return Err(AddressError::InvalidLength);
         }

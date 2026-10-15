@@ -13,6 +13,7 @@ pub(crate) fn wire_config(max_bytes: usize) -> rustbinary::Config {
 pub mod address;
 pub mod audit;
 pub mod derivation;
+pub mod keystore;
 pub mod signer;
 pub mod wallet;
 
@@ -22,6 +23,7 @@ pub use audit::{
     OwnershipProof, SelectiveDisclosure, DISCLOSED_FIELDS_V0, SELECTIVE_DISCLOSURE_VERSION,
 };
 pub use derivation::{DerivedKeys, MasterKey};
+pub use keystore::{KeystoreError, DEFAULT_ITERATIONS};
 pub use signer::{
     verify_signing_response, DeviceFamily, ExternalSigner, KeyLocator, NetworkBinding,
     SignerCapabilities, SignerError, SignerTransport, SigningRequest, SigningResponse,

@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
-use wasmer::{imports, Function, FunctionEnv, FunctionEnvMut, Imports, Memory, Store};
+
+use wasmi::{Caller, Engine, Linker, Memory};
 
 use crate::gas::{self, GasError, GasMeter};
 use crate::types::{ContractAddress, ContractLog};
@@ -40,8 +41,8 @@ impl HostEnv {
         }
     }
 
-    pub fn set_memory(&self, mem: Memory) {
-        *self.memory.lock().unwrap() = Some(mem);
+    pub fn set_memory(&self, memory: Memory) {
+        *self.memory.lock().unwrap() = Some(memory);
     }
 }
 
@@ -49,74 +50,74 @@ fn consume_gas(env: &HostEnv, amount: u64) -> Result<(), GasError> {
     env.gas.lock().unwrap().consume(amount)
 }
 
-fn get_memory(env: &FunctionEnvMut<Arc<HostEnv>>) -> Option<Memory> {
-    env.data().memory.lock().unwrap().clone()
+fn memory_of(caller: &Caller<'_, Arc<HostEnv>>) -> Option<Memory> {
+    *caller.data().memory.lock().unwrap()
 }
 
-pub fn build_imports(store: &mut Store, env: &FunctionEnv<Arc<HostEnv>>) -> Imports {
-    imports! {
-        "env" => {
-            "h_storage_read" => Function::new_typed_with_env(store, env, host_storage_read),
-            "h_storage_write" => Function::new_typed_with_env(store, env, host_storage_write),
-            "h_storage_delete" => Function::new_typed_with_env(store, env, host_storage_delete),
-            "h_blake3" => Function::new_typed_with_env(store, env, host_blake3),
-            "h_log" => Function::new_typed_with_env(store, env, host_log),
-            "h_set_return" => Function::new_typed_with_env(store, env, host_set_return),
-            "h_caller" => Function::new_typed_with_env(store, env, host_caller),
-            "h_self_address" => Function::new_typed_with_env(store, env, host_self_address),
-            "h_gas_remaining" => Function::new_typed_with_env(store, env, host_gas_remaining),
-            "h_input_len" => Function::new_typed_with_env(store, env, host_input_len),
-            "h_input_copy" => Function::new_typed_with_env(store, env, host_input_copy),
-        }
-    }
+/// Registers the frozen host ABI under the `env` module.
+///
+/// Import names are compile-time constants, so registration can only fail for a
+/// duplicate or malformed name; that is reported as a string instead of
+/// panicking on the consensus path.
+pub fn build_linker(engine: &Engine) -> Result<Linker<Arc<HostEnv>>, String> {
+    let mut linker = Linker::new(engine);
+    linker
+        .func_wrap("env", "h_storage_read", host_storage_read)
+        .and_then(|linker| linker.func_wrap("env", "h_storage_write", host_storage_write))
+        .and_then(|linker| linker.func_wrap("env", "h_storage_delete", host_storage_delete))
+        .and_then(|linker| linker.func_wrap("env", "h_blake3", host_blake3))
+        .and_then(|linker| linker.func_wrap("env", "h_log", host_log))
+        .and_then(|linker| linker.func_wrap("env", "h_set_return", host_set_return))
+        .and_then(|linker| linker.func_wrap("env", "h_caller", host_caller))
+        .and_then(|linker| linker.func_wrap("env", "h_self_address", host_self_address))
+        .and_then(|linker| linker.func_wrap("env", "h_gas_remaining", host_gas_remaining))
+        .and_then(|linker| linker.func_wrap("env", "h_input_len", host_input_len))
+        .and_then(|linker| linker.func_wrap("env", "h_input_copy", host_input_copy))
+        .map_err(|error| error.to_string())?;
+    Ok(linker)
 }
 
 fn host_storage_read(
-    env: FunctionEnvMut<Arc<HostEnv>>,
+    mut caller: Caller<'_, Arc<HostEnv>>,
     key_ptr: u32,
     key_len: u32,
     val_ptr: u32,
 ) -> i32 {
-    let data = env.data().clone();
+    let data = caller.data().clone();
     let key_len = key_len as usize;
     if key_len > MAX_STORAGE_KEY_SIZE
         || consume_gas(&data, gas::GAS_STORAGE_READ.saturating_add(key_len as u64)).is_err()
     {
         return -1;
     }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
         None => return -1,
     };
-    let view = mem.view(&env);
     let mut key = vec![0u8; key_len];
-    if view.read(key_ptr as u64, &mut key).is_err() {
+    if memory.read(&caller, key_ptr as usize, &mut key).is_err() {
         return -1;
     }
 
-    let storage = data.storage.lock().unwrap();
-    match storage.get(&key) {
-        Some(val) => {
-            let len = val.len() as i32;
-            let val_copy = val.clone();
-            drop(storage);
-            if view.write(val_ptr as u64, &val_copy).is_err() {
+    let value = data.storage.lock().unwrap().get(&key).cloned();
+    match value {
+        Some(value) => {
+            if memory.write(&mut caller, val_ptr as usize, &value).is_err() {
                 return -1;
             }
-            len
+            value.len() as i32
         }
         None => 0,
     }
 }
-
 fn host_storage_write(
-    env: FunctionEnvMut<Arc<HostEnv>>,
+    caller: Caller<'_, Arc<HostEnv>>,
     key_ptr: u32,
     key_len: u32,
     val_ptr: u32,
     val_len: u32,
 ) -> i32 {
-    let data = env.data().clone();
+    let data = caller.data().clone();
     let key_len = key_len as usize;
     let val_len = val_len as usize;
     if key_len > MAX_STORAGE_KEY_SIZE
@@ -129,26 +130,25 @@ fn host_storage_write(
     {
         return -1;
     }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
         None => return -1,
     };
-    let view = mem.view(&env);
     let mut key = vec![0u8; key_len];
-    let mut val = vec![0u8; val_len];
-    if view.read(key_ptr as u64, &mut key).is_err() {
+    let mut value = vec![0u8; val_len];
+    if memory.read(&caller, key_ptr as usize, &mut key).is_err() {
         return -1;
     }
-    if view.read(val_ptr as u64, &mut val).is_err() {
+    if memory.read(&caller, val_ptr as usize, &mut value).is_err() {
         return -1;
     }
 
-    data.storage.lock().unwrap().insert(key, val);
+    data.storage.lock().unwrap().insert(key, value);
     0
 }
 
-fn host_storage_delete(env: FunctionEnvMut<Arc<HostEnv>>, key_ptr: u32, key_len: u32) -> i32 {
-    let data = env.data().clone();
+fn host_storage_delete(caller: Caller<'_, Arc<HostEnv>>, key_ptr: u32, key_len: u32) -> i32 {
+    let data = caller.data().clone();
     let key_len = key_len as usize;
     if key_len > MAX_STORAGE_KEY_SIZE
         || consume_gas(
@@ -159,12 +159,12 @@ fn host_storage_delete(env: FunctionEnvMut<Arc<HostEnv>>, key_ptr: u32, key_len:
     {
         return -1;
     }
-    let mem = match get_memory(&env) {
+    let memory = match memory_of(&caller) {
         Some(memory) => memory,
         None => return -1,
     };
     let mut key = vec![0u8; key_len];
-    if mem.view(&env).read(key_ptr as u64, &mut key).is_err() {
+    if memory.read(&caller, key_ptr as usize, &mut key).is_err() {
         return -1;
     }
     data.storage.lock().unwrap().remove(&key);
@@ -172,12 +172,12 @@ fn host_storage_delete(env: FunctionEnvMut<Arc<HostEnv>>, key_ptr: u32, key_len:
 }
 
 fn host_blake3(
-    env: FunctionEnvMut<Arc<HostEnv>>,
+    mut caller: Caller<'_, Arc<HostEnv>>,
     data_ptr: u32,
     data_len: u32,
     out_ptr: u32,
 ) -> i32 {
-    let host = env.data().clone();
+    let host = caller.data().clone();
     let data_len = data_len as usize;
     if data_len > MAX_IO_SIZE
         || consume_gas(
@@ -188,98 +188,17 @@ fn host_blake3(
     {
         return -1;
     }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
         None => return -1,
     };
-    let view = mem.view(&env);
     let mut input = vec![0u8; data_len];
-    if view.read(data_ptr as u64, &mut input).is_err() {
+    if memory.read(&caller, data_ptr as usize, &mut input).is_err() {
         return -1;
     }
     let hash = hyphen_crypto::blake3_hash(&input);
-    if view.write(out_ptr as u64, hash.as_bytes()).is_err() {
-        return -1;
-    }
-    0
-}
-
-fn host_log(env: FunctionEnvMut<Arc<HostEnv>>, data_ptr: u32, data_len: u32) -> i32 {
-    let host = env.data().clone();
-    let data_len = data_len as usize;
-    if data_len > MAX_IO_SIZE
-        || host.logs.lock().unwrap().len() >= MAX_LOGS
-        || consume_gas(&host, gas::GAS_LOG.saturating_add(data_len as u64)).is_err()
-    {
-        return -1;
-    }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
-        None => return -1,
-    };
-    let view = mem.view(&env);
-    let mut log_data = vec![0u8; data_len];
-    if view.read(data_ptr as u64, &mut log_data).is_err() {
-        return -1;
-    }
-    let log = ContractLog {
-        contract: host.contract,
-        topics: vec![],
-        data: log_data,
-    };
-    host.logs.lock().unwrap().push(log);
-    0
-}
-
-fn host_set_return(env: FunctionEnvMut<Arc<HostEnv>>, data_ptr: u32, data_len: u32) -> i32 {
-    let host = env.data().clone();
-    let data_len = data_len as usize;
-    if data_len > MAX_IO_SIZE
-        || consume_gas(&host, gas::GAS_BASE.saturating_add(data_len as u64)).is_err()
-    {
-        return -1;
-    }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
-        None => return -1,
-    };
-    let view = mem.view(&env);
-    let mut ret = vec![0u8; data_len];
-    if view.read(data_ptr as u64, &mut ret).is_err() {
-        return -1;
-    }
-    *host.return_data.lock().unwrap() = ret;
-    0
-}
-
-fn host_caller(env: FunctionEnvMut<Arc<HostEnv>>, out_ptr: u32) -> i32 {
-    let host = env.data().clone();
-    if consume_gas(&host, gas::GAS_BASE).is_err() {
-        return -1;
-    }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
-        None => return -1,
-    };
-    let view = mem.view(&env);
-    if view.write(out_ptr as u64, &host.caller).is_err() {
-        return -1;
-    }
-    0
-}
-
-fn host_self_address(env: FunctionEnvMut<Arc<HostEnv>>, out_ptr: u32) -> i32 {
-    let host = env.data().clone();
-    if consume_gas(&host, gas::GAS_BASE).is_err() {
-        return -1;
-    }
-    let mem = match get_memory(&env) {
-        Some(m) => m,
-        None => return -1,
-    };
-    let view = mem.view(&env);
-    if view
-        .write(out_ptr as u64, host.contract.as_bytes())
+    if memory
+        .write(&mut caller, out_ptr as usize, hash.as_bytes())
         .is_err()
     {
         return -1;
@@ -287,27 +206,106 @@ fn host_self_address(env: FunctionEnvMut<Arc<HostEnv>>, out_ptr: u32) -> i32 {
     0
 }
 
-fn host_gas_remaining(env: FunctionEnvMut<Arc<HostEnv>>) -> u64 {
-    let remaining = env.data().gas.lock().unwrap().remaining();
-    remaining
-}
-
-fn host_input_len(env: FunctionEnvMut<Arc<HostEnv>>) -> u32 {
-    env.data().input.len() as u32
-}
-
-fn host_input_copy(env: FunctionEnvMut<Arc<HostEnv>>, out_ptr: u32) -> i32 {
-    let host = env.data().clone();
-    if consume_gas(&host, gas::GAS_BASE.saturating_add(host.input.len() as u64)).is_err() {
+fn host_log(caller: Caller<'_, Arc<HostEnv>>, data_ptr: u32, data_len: u32) -> i32 {
+    let host = caller.data().clone();
+    let data_len = data_len as usize;
+    if data_len > MAX_IO_SIZE
+        || host.logs.lock().unwrap().len() >= MAX_LOGS
+        || consume_gas(&host, gas::GAS_LOG.saturating_add(data_len as u64)).is_err()
+    {
         return -1;
     }
-    let memory = match get_memory(&env) {
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
+        None => return -1,
+    };
+    let mut data = vec![0u8; data_len];
+    if memory.read(&caller, data_ptr as usize, &mut data).is_err() {
+        return -1;
+    }
+    host.logs.lock().unwrap().push(ContractLog {
+        contract: host.contract,
+        topics: vec![],
+        data,
+    });
+    0
+}
+
+fn host_set_return(caller: Caller<'_, Arc<HostEnv>>, data_ptr: u32, data_len: u32) -> i32 {
+    let host = caller.data().clone();
+    let data_len = data_len as usize;
+    if data_len > MAX_IO_SIZE
+        || consume_gas(&host, gas::GAS_BASE.saturating_add(data_len as u64)).is_err()
+    {
+        return -1;
+    }
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
+        None => return -1,
+    };
+    let mut value = vec![0u8; data_len];
+    if memory.read(&caller, data_ptr as usize, &mut value).is_err() {
+        return -1;
+    }
+    *host.return_data.lock().unwrap() = value;
+    0
+}
+
+fn host_caller(mut caller: Caller<'_, Arc<HostEnv>>, out_ptr: u32) -> i32 {
+    let host = caller.data().clone();
+    if consume_gas(&host, gas::GAS_BASE).is_err() {
+        return -1;
+    }
+    let memory = match memory_of(&caller) {
         Some(memory) => memory,
         None => return -1,
     };
     if memory
-        .view(&env)
-        .write(out_ptr as u64, &host.input)
+        .write(&mut caller, out_ptr as usize, &host.caller)
+        .is_err()
+    {
+        return -1;
+    }
+    0
+}
+
+fn host_self_address(mut caller: Caller<'_, Arc<HostEnv>>, out_ptr: u32) -> i32 {
+    let host = caller.data().clone();
+    if consume_gas(&host, gas::GAS_BASE).is_err() {
+        return -1;
+    }
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
+        None => return -1,
+    };
+    if memory
+        .write(&mut caller, out_ptr as usize, host.contract.as_bytes())
+        .is_err()
+    {
+        return -1;
+    }
+    0
+}
+
+fn host_gas_remaining(caller: Caller<'_, Arc<HostEnv>>) -> u64 {
+    caller.data().gas.lock().unwrap().remaining()
+}
+
+fn host_input_len(caller: Caller<'_, Arc<HostEnv>>) -> u32 {
+    caller.data().input.len() as u32
+}
+
+fn host_input_copy(mut caller: Caller<'_, Arc<HostEnv>>, out_ptr: u32) -> i32 {
+    let host = caller.data().clone();
+    if consume_gas(&host, gas::GAS_BASE.saturating_add(host.input.len() as u64)).is_err() {
+        return -1;
+    }
+    let memory = match memory_of(&caller) {
+        Some(memory) => memory,
+        None => return -1,
+    };
+    if memory
+        .write(&mut caller, out_ptr as usize, &host.input)
         .is_err()
     {
         return -1;

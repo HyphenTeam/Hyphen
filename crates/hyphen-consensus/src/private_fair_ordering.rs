@@ -789,7 +789,7 @@ mod tests {
             .zip(vector["committee"]["seat_public_keys"].as_array().unwrap())
         {
             assert_eq!(
-                hex::encode(seat.public_key.as_bytes()),
+                hyphen_crypto::hex_encode(seat.public_key.as_bytes()),
                 expected.as_str().unwrap()
             );
         }
@@ -799,7 +799,7 @@ mod tests {
             .zip(vector["observations"].as_array().unwrap())
         {
             assert_eq!(
-                hex::encode(observation.statement.canonical_bytes().unwrap()),
+                hyphen_crypto::hex_encode(observation.statement.canonical_bytes().unwrap()),
                 expected["canonical_encoding"].as_str().unwrap()
             );
             assert_eq!(
@@ -807,7 +807,7 @@ mod tests {
                 expected["digest"]
             );
             assert_eq!(
-                hex::encode(observation.signature.as_bytes()),
+                hyphen_crypto::hex_encode(observation.signature.as_bytes()),
                 expected["signature"].as_str().unwrap()
             );
         }

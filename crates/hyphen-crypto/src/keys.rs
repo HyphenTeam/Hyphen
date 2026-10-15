@@ -35,13 +35,13 @@ impl PublicKey {
 
 impl std::fmt::Debug for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PK({})", hex::encode(self.0))
+        write!(f, "PK({})", crate::hex_encode(self.0))
     }
 }
 
 impl std::fmt::Display for PublicKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", crate::hex_encode(self.0))
     }
 }
 
@@ -104,7 +104,7 @@ impl Signature {
 
 impl std::fmt::Debug for Signature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Sig({}…)", hex::encode(&self.0[..8]))
+        write!(f, "Sig({}…)", crate::hex_encode(&self.0[..8]))
     }
 }
 

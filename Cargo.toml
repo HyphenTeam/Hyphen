@@ -67,14 +67,22 @@ merlin = "3"
 serde = { version = "1.0.229", features = ["derive"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
-bs58 = "0.5"
 
 # ── storage ──
 sled = "0.34"
 zstd = "0.13.3"
-wasmer = "7.2.1"
-wasmer-middlewares = "7.2.1"
+# Audited pure-Rust Wasm interpreter: deterministic execution, built-in fuel
+# metering, no JIT, no C toolchain, no proc-macro-error2.
+wasmi = { version = "2.0.0", default-features = false, features = [
+    "stable",
+    "std",
+    "wat",
+    "validate",
+    "deterministic",
+    "extra-checks",
+] }
 wasmparser = "0.255.0"
+wat = "1.254.0"
 
 # ── async / networking ──
 tokio = { version = "1.53.1", features = ["full"] }
@@ -105,21 +113,14 @@ rand = "0.10.2"
 rand_core = "0.10.1"
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 rand_chacha = "0.10.0"
-hex = { version = "0.4", features = ["serde"] }
 thiserror = "2.0.19"
-log = "0.4.33"
 env_logger = "0.11"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = "1.0.151"
-chrono = { version = "0.4.45", features = ["serde"] }
 parking_lot = "0.12.5"
-byteorder = "1"
 clap = { version = "4.6.4", features = ["derive"] }
-once_cell = "1"
 rustbinary = { version = "0.1.2", features = ["derive"] }
-unsigned-varint = "0.8"
-sntpc = { version = "0.11.0", features = ["std", "sync"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
 
 [package]
@@ -145,8 +146,3 @@ hyphen-token.workspace = true
 hyphen-rpc.workspace = true
 hyphen-vm.workspace = true
 hyphen-explorer.workspace = true
-
-[patch.crates-io]
-# wasmer-derive 7.2.1 pins proc-macro-error2 2.0.1. This local copy applies
-# rust-lang/rust#127909's forward-compatibility fix until Wasmer updates it.
-proc-macro-error2 = { path = "vendor/proc-macro-error2" }

@@ -37,13 +37,13 @@ impl From<[u8; 32]> for Hash256 {
 
 impl fmt::Debug for Hash256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", crate::hex_encode(self.0))
     }
 }
 
 impl fmt::Display for Hash256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
+        write!(f, "{}", crate::hex_encode(self.0))
     }
 }
 

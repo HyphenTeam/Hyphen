@@ -263,7 +263,7 @@ fn contract_response(contract: Contract) -> ContractResponse {
     ContractResponse {
         address: contract.address.to_string(),
         code_hash: contract.code_hash.to_string(),
-        deployer: hex::encode(contract.deployer),
+        deployer: hyphen_crypto::hex_encode(contract.deployer),
         deployed_height: contract.deployed_height,
         code_bytes: contract.code.len(),
         application,
@@ -365,7 +365,7 @@ impl ExplorerState {
                 reward_atomic: block.header.reward,
                 total_fee: format_hpn(block.header.total_fee),
                 total_fee_atomic: block.header.total_fee,
-                miner_pubkey: hex::encode(block.header.miner_pubkey),
+                miner_pubkey: hyphen_crypto::hex_encode(block.header.miner_pubkey),
             };
             let events = cache
                 .miner_blocks
@@ -436,8 +436,8 @@ fn header_detail(h: &BlockHeader) -> HeaderDetail {
         epoch_seed: h.epoch_seed.to_string(),
         difficulty: h.difficulty,
         nonce: h.nonce,
-        extra_nonce: hex::encode(h.extra_nonce),
-        miner_pubkey: hex::encode(h.miner_pubkey),
+        extra_nonce: hyphen_crypto::hex_encode(h.extra_nonce),
+        miner_pubkey: hyphen_crypto::hex_encode(h.miner_pubkey),
         total_fee: format_hpn(h.total_fee),
         total_fee_atomic: h.total_fee,
         reward: format_hpn(h.reward),
@@ -460,7 +460,7 @@ fn block_summary(block: &Block) -> BlockSummary {
         reward_atomic: header.reward,
         total_fee: format_hpn(header.total_fee),
         total_fee_atomic: header.total_fee,
-        miner_pubkey: hex::encode(header.miner_pubkey),
+        miner_pubkey: hyphen_crypto::hex_encode(header.miner_pubkey),
     }
 }
 
@@ -583,7 +583,7 @@ async fn get_scientific_task(
 }
 
 fn parse_hash(s: &str) -> Option<Hash256> {
-    let bytes = hex::decode(s).ok()?;
+    let bytes = hyphen_crypto::hex_decode(s).ok()?;
     if bytes.len() != 32 {
         return None;
     }

@@ -2,10 +2,10 @@
 
 [中文说明](README_CN.md)
 
-Hyphen is an experimental privacy-oriented base chain with deterministic
-scientific computational work, written in Rust. The protocol identifier remains
-`PoUW v1`, but the implemented block kernel is not task-backed useful work. This
-repository contains the node, consensus and state
+Hyphen is an experimental privacy-oriented base chain whose block work is a
+search for verifiable mathematical witnesses, written in Rust. The protocol
+identifier is `PoUW v3`: single-use Cunningham-chain witnesses, not digest
+grinding. This repository contains the node, consensus and state
 transition code, transaction validation, networking, RPC, cryptographic
 libraries, executable research models, and consensus test vectors.
 
@@ -19,6 +19,10 @@ but it does not make those repositories part of this one.
 Hyphen is not a launched mainnet and has not had an independent consensus or
 cryptographic audit. `mainnet` is a research profile. The current devnet can be
 built and tested, but that is not evidence that real assets are safe.
+
+The design rationale, threat model, mechanism status and known limitations are
+written up in the [whitepaper](docs/whitepaper.md). Read it before quoting any
+claim from this repository.
 
 The four named research mechanisms are executable reference models, not active
 devnet consensus:
@@ -36,29 +40,56 @@ roots and reorg rollback. Scientific result settlement remains fail-closed
 until an exact audited proof verifier is installed. See the
 [AetherCompute boundary](docs/research/aether-compute.md).
 
-Block version 3 activates the protocol named AetherCompute PoUW v1. A miner derives a bounded
-64x64 Q12 field from the parent-bound header, executes the consensus diffusion
-PDE for exactly `difficulty` iterations, and commits the complete final field.
-Nodes and pools independently recompute the field; there is no digest target
-and no `hash < target` acceptance rule. BLAKE3 is used only for deterministic
-input derivation and input/output integrity commitments. Pool Protocol v5 can
-credit lower-iteration scientific checkpoints before the miner completes the
-full block workload.
+Block version 5 activates PoUW v3. A block claims `difficulty` distinct
+Cunningham-chain witnesses of the epoch's chain length; a witness is a value `n`
+whose chain `n, 2n+1, 4n+3, …` is prime at every link and fits in 64 bits.
+Primality is decided by Miller-Rabin with the seven-base set that Jaeschke,
+Sorenson and Webster proved exact for every `n < 2^64`, so verification is a
+handful of integer operations per link and carries no probabilistic error bound.
 
-Each cell update has a specified seven-operation arithmetic model: three
-neighbour additions, two multiplications, one final addition, and one integer
-division. Telemetry uses this model; it is not an instruction count or a
-hardware-independent energy measurement.
+Witnesses are **single-use**: the chain records every claimed witness in a sparse
+Merkle set, and a block is rejected if any witness it claims was claimed before.
+That is the whole anti-replay argument of the workload, and it is why header
+filters are not used at all:
+
+- A header-derived filter (`H(header ‖ n) < T`) is broken by pooling. A solver
+  who builds `m / p` chains satisfies *every* future header, because the filter
+  is evaluated per header while the pool persists, so each further block costs a
+  handful of hashes.
+- Residue binding (`n ≡ r(header) mod 2^b`) fails the same way: covering every
+  residue class costs `2^b · m / density` candidate tests, while one honest block
+  costs `m · 2^b / density`. One block of work buys a permanent table.
+
+Single-use witnesses make a precomputed pool spendable exactly once, so total
+work is conserved and precomputation degenerates into mining in advance with no
+advantage. `n` in the paragraph above is not a nonce: the miner searches the
+number space for chains, and the block commits the list through
+`pow_commitment = BLAKE3(domain ‖ parent_commitment ‖ height ‖ witnesses)`. The
+commitment is parent-relative on purpose — a set root would depend on the whole
+claimed set, so a miner building on a non-canonical branch would need that
+branch's set state to produce a valid commitment.
+
+`difficulty` is the number of witnesses a block must claim, and cumulative
+difficulty is the fork-choice weight. `pouw_chain_length` is epoch-invariant and
+is the coarse knob: each extra link multiplies the expected search cost by
+roughly `ln(n) / 2`.
+
+Honest framing: this is verifiable mathematical search. A verifier pays `L`
+primality tests where a solver pays the full search, every accepted witness is
+independently checkable number-theoretic data rather than a burned digest, and
+the accumulated witness set is a publishable dataset. It is not a claim about
+artificial intelligence, quantum computing or externally funded science; those
+belong to the AetherCompute settlement layer, which remains fail-closed.
 
 This block-level deterministic kernel is separate from user-funded
 AetherCompute result settlement. Settlement remains fail-closed until an exact
 audited circuit and verifier key are activated. The current PoUW does not
 justify claims of a SNARK, useful external dataset processing, succinct
-verification, or audited mainnet economic security. Because every verifier
-currently recomputes the PDE and every completed candidate is eligible, this
-revision also lacks a published analysis of verifier cost, deterministic-race
-centralization, fork rate, and adversarial scheduling. It is a research
-computational-work protocol, not a production-ready PoUW claim.
+verification, or audited mainnet economic security. The search rule makes
+verifier cost bounded and measurable, but this revision still lacks a published
+analysis of ASIC advantage, deterministic-race centralization, fork rate, and
+adversarial scheduling. It is a research computational-work protocol, not a
+production-ready PoUW claim.
 
 The Explorer at `http://127.0.0.1:8080` uses a Rust-compiled WebAssembly
 renderer. It shows blocks, private-transaction inclusion records,
@@ -79,16 +110,83 @@ fixed-width little-endian legacy profile. Every call sets byte and collection
 limits and rejects trailing bytes. Consensus maps use ordered containers because
 the binary codec preserves map iteration order. PoUW changed the block version,
 consensus parameters and genesis hashes. Normative identities are in
-`test-vectors/chain-identity-v3.json`; old databases are rejected before state
-mutation. RustBinary has not been independently audited for Hyphen.
+`test-vectors/chain-identity-v5.json`; old databases are rejected before state
+mutation. Both the identity and the genesis block are computed inside `hyphen-core` from
+`ChainConfig` alone, so there is exactly one implementation: `ChainIdentity::of`
+and `build_genesis_block`. The miner and the pool link these crates by path and
+derive the identity at runtime; the wallet ships as a standalone application, so
+it pins the same values and a unit test compares them against the canonical
+vector, which fails the moment they drift. A copied constant without that test
+pins a client to a chain that no longer exists, and the handshake then fails on
+the first byte.
+RustBinary has not been independently audited for Hyphen.
 
-The checked-in `vendor/proc-macro-error2` directory is a build dependency, not
-a general dependency mirror. Wasmer 7.2.1 selects `proc-macro-error2` 2.0.1,
-whose `proc_macro` re-export fails on Rust 1.97. The local patch applies the
-upstream visibility fix and preserves its MIT/Apache-2.0 license files. Do not
-delete it while the `[patch.crates-io]` entry exists. It may be removed only
-after upgrading Wasmer or the transitive crate to a release containing the fix,
-regenerating `Cargo.lock`, and passing the full locked build and test gates.
+### Dependency policy
+
+The workspace keeps no dependency mirror and no `[patch.crates-io]` override.
+Every dependency is a crates.io release pinned by the committed lockfile, and
+the default answer to "do we need this crate" is no: the hex codec, the base58
+codec, the SNTP client and the NTP-adjusted clock live in `hyphen-crypto` and
+`hyphen-core`, because a consensus crate should not import a supply chain for
+forty lines of byte shuffling.
+
+The contract VM is Wasmi 2.0, a pure-Rust interpreter with built-in fuel
+metering, rather than a JIT runtime. That choice is deliberate:
+
+- execution is deterministic across hosts, so contract fuel consumption is a
+  reproducible consensus value and there is no code generator in the consensus
+  path;
+- the dependency graph drops from 368 crates to 267, and with it the whole
+  Cranelift, `bindgen`, CMake, `libclang` and native-toolchain surface;
+- Wasmi has been independently audited twice, including by Runtime Verification
+  for the Stellar Development Foundation.
+
+`proc-macro-error2` 2.0.1, which Wasmer pulled in transitively, is gone from
+the graph entirely. Upstream never published a fix for its
+`pub extern crate proc_macro;` visibility bug, so removing the runtime that
+needed it was the only correct resolution.
+
+Contract gas units changed with the runtime: instruction fuel is now charged by
+the Wasmi model rather than one point per Wasmer operation. Host-side charges
+(`GAS_STORAGE_READ`, `GAS_HASH`, `GAS_LOG`, ...) are unchanged. Any contract
+budget tuned against PoUW v1 gas numbers must be re-measured.
+
+### PoUW v3: verifiable mathematical search
+
+`hyphen-pow::vms` implements the active workload:
+
+```text
+witness n  <=>  n, 2n+1, 4n+3, ... (length L) are all prime and all < 2^64
+```
+
+The block claims `difficulty` distinct witnesses of the epoch's chain length.
+Deterministic primality is not assumed, it is proven: Miller-Rabin with the
+seven-base set that Jaeschke, Sorenson and Webster proved exact for every
+`n < 2^64`. No probabilistic error bound enters consensus and no big-integer
+dependency is needed. A verifier pays `L` primality tests (microseconds) where a
+solver pays the full search (seconds to minutes), every accepted witness is
+independently checkable number-theoretic data rather than a burned digest, and
+the accumulated witness set is a publishable dataset.
+
+Binding a witness to a header with a derived filter or residue class is unsound,
+and the reason is worth stating precisely, because the intuitive design is the
+broken one. A solver who builds a pool of `m / p` chains satisfies *every*
+future header: the filter is evaluated once per header while the pool persists,
+so the marginal cost of each further block collapses to a handful of hashes.
+Residue binding of width `b` fails identically, because the cost of covering
+every residue class equals the cost of one honest block. Witnesses must
+therefore be **single-use**: `hyphen-state::WitnessSet` records claimed
+witnesses in a sparse Merkle set, a precomputed pool can be spent exactly once,
+total work is conserved, and precomputation degrades into mining in advance with
+no advantage at all.
+
+`pow_commitment` chains each block to its parent:
+`BLAKE3(domain ‖ parent_commitment ‖ height ‖ witnesses)`. The commitment is
+parent-relative on purpose — a set root depends on the whole claimed set, so a
+miner building on a non-canonical branch would need that branch's set state to
+produce a valid commitment. Single-use membership stays a node-local oracle over
+that branch's own claimed set, and a reorg releases the detached block's
+witnesses so the reverted branch can be re-attached unchanged.
 
 ## Run a node
 
@@ -110,8 +208,8 @@ The current devnet v2 identity is:
 ```text
 network=hyphen-devnet-v2
 network_magic=48594456
-consensus_params_hash=54bf97e4e28d4fcf963d884a555a8425bbfe7c84d2753001bcabbaf116232fda
-genesis_hash=47d530160cfef9141fe3b37b886e09b9f96ec4dc93d6c05005b9c6dbf35b1972
+consensus_params_hash=521f6cdc47f4424c1ea7b9f4d6770cf114f620cdff62958060f8c6953cb69de8
+genesis_hash=4c24528fa76c896299d5bfa6d7fee28bf39b21c0efd1684d4b8bafa9819bde55
 ```
 
 Start a local node:

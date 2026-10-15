@@ -152,7 +152,7 @@ impl RpcHandler {
             epoch_seed: epoch_seed.to_vec(),
             network_magic: self.chain.cfg.network_magic.to_vec(),
             consensus_params_hash: self.chain.cfg.consensus_params_hash().to_vec(),
-            genesis_hash: hyphen_consensus::genesis::build_genesis_block(&self.chain.cfg)
+            genesis_hash: hyphen_core::genesis::build_genesis_block(&self.chain.cfg)
                 .hash()
                 .to_vec(),
             block_version: hyphen_core::FROZEN_BLOCK_VERSION,

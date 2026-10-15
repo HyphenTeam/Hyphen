@@ -1452,7 +1452,7 @@ mod tests {
         let archived = state.expire_due(20, 1).remove(0);
         let expired = state.roots();
         assert_eq!(
-            hex::encode(record.canonical_bytes()),
+            hyphen_crypto::hex_encode(record.canonical_bytes()),
             vector["record"]["canonical_encoding"].as_str().unwrap()
         );
         assert_eq!(
@@ -1525,7 +1525,7 @@ mod tests {
             vector["recover"]["authorization_digest"].as_str().unwrap()
         );
         assert_eq!(
-            hex::encode(recovery.receipt.event.canonical_bytes()),
+            hyphen_crypto::hex_encode(recovery.receipt.event.canonical_bytes()),
             vector["recover"]["event_encoding"].as_str().unwrap()
         );
         assert_eq!(
@@ -1541,7 +1541,7 @@ mod tests {
             vector["consume"]["authorization_digest"].as_str().unwrap()
         );
         assert_eq!(
-            hex::encode(consumption.event.canonical_bytes()),
+            hyphen_crypto::hex_encode(consumption.event.canonical_bytes()),
             vector["consume"]["event_encoding"].as_str().unwrap()
         );
         assert_eq!(

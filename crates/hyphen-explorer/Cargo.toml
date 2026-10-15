@@ -16,7 +16,6 @@ hyphen-state.workspace     = true
 hyphen-vm.workspace        = true
 
 axum.workspace = true
-hex.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true

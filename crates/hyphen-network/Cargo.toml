@@ -22,6 +22,4 @@ rustbinary.workspace       = true
 thiserror.workspace        = true
 tracing.workspace          = true
 parking_lot.workspace      = true
-unsigned-varint.workspace  = true
 rand.workspace             = true
-hex.workspace              = true
