@@ -136,7 +136,12 @@ Every dependency is a crates.io release pinned by the committed lockfile, and
 the default answer to "do we need this crate" is no: the hex codec, the base58
 codec, the SNTP client and the NTP-adjusted clock live in `hyphen-crypto` and
 `hyphen-core`, because a consensus crate should not import a supply chain for
-forty lines of byte shuffling.
+forty lines of byte shuffling. The crates the chain does take from outside the
+repository are the ones that answer a question the repository should not answer
+itself — the bounded binary codec (`rustbinary`, frozen in `hyphen-wire`), the
+DNSSEC-validating resolver for seed names (`recurse-x`), the calendar behind
+operator-facing timestamps (`tzcraft`), and, in the miner, the proxy engine that
+carries a pool link across a locked-down network (`corduit`).
 
 The contract VM is Wasmi 2.0, a pure-Rust interpreter with built-in fuel
 metering, rather than a JIT runtime. That choice is deliberate:
@@ -551,10 +556,35 @@ proof or an external security review.
 
 The two audit exceptions are optional `hickory-proto` dependencies retained in
 libp2p's lock graph. Hyphen disables libp2p default features, DNS, and mDNS, so
-those crates are not in the built runtime graph; boot nodes must currently use
-IP multiaddresses. Any new non-ignored RustSec vulnerability fails CI.
-Informational unmaintained/unsound transitive warnings remain tracked and are
-not presented as resolved.
+those crates are not in the built runtime graph. Any new non-ignored RustSec
+vulnerability fails CI. Informational unmaintained/unsound transitive warnings
+remain tracked and are not presented as resolved.
+
+Because libp2p's DNS transport stays out, `/dns4`, `/dns6` and `/dns` boot nodes
+are resolved by the node itself through `hyphen-network`'s seed resolver, which
+is built on RecurseX: a resolver that walks the delegation tree from the root
+servers and validates DNSSEC, with the HyphenTeam crates as its only
+dependencies. An operator who must route DNS through their own infrastructure
+names upstreams instead:
+
+```powershell
+# Iterative, DNSSEC-validating (the default)
+.\target\release\hyphen-node.exe --network mainnet `
+    --boot-nodes /dns4/seed.example.org/tcp/48334/p2p/12D3Koo... --data-dir node
+
+# Through an encrypted upstream; the `#name` fragment is the TLS identity
+.\target\release\hyphen-node.exe --network mainnet `
+    --dns-upstream tls://1.1.1.1:853#cloudflare-dns.com `
+    --dns-upstream https://dns.google/dns-query#dns.google `
+    --boot-nodes /dns4/seed.example.org/tcp/48334/p2p/12D3Koo... --data-dir node
+```
+
+A seed whose host does not resolve is a startup error naming the host, never a
+silently dropped peer, and an isolated node re-resolves on its bootstrap retry
+tick so a rotated seed record does not strand it until restart. Wall-clock
+values that operators read — the genesis instant, sync logs — are rendered in
+RFC 3339 by `tzcraft`; the chain's own bytes keep the frozen millisecond
+encoding.
 
 ## CI and automated releases
 

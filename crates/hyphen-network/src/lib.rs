@@ -1,16 +1,12 @@
-pub(crate) const MAX_WIRE_COLLECTION_ITEMS: usize = 1_000_000;
-
-pub(crate) fn wire_config(max_bytes: usize) -> rustbinary::CompactConfig {
-    rustbinary::options()
-        .with_limit(max_bytes as u64)
-        .with_collection_limit(max_bytes.min(MAX_WIRE_COLLECTION_ITEMS) as u64)
-        .reject_trailing_bytes()
-        .with_compact_format()
-}
+// The wire profile lives in `hyphen-wire`; see the crate for the frozen
+// profile, its byte/element budgets and the container adapters.
+pub(crate) use hyphen_wire::wire_config;
 
 pub mod behaviour;
+pub mod bootstrap;
 pub mod protocol;
 pub mod sync;
 
 pub use behaviour::HyphenNetwork;
+pub use bootstrap::{is_dns_seed, SeedError, SeedResolver};
 pub use protocol::{NetworkMessage, SyncRequest, SyncResponse};

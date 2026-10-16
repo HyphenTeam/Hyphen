@@ -10,6 +10,9 @@ hyphen-crypto.workspace = true
 serde.workspace         = true
 rustbinary.workspace    = true
 hyphen-wire.workspace   = true
+# Calendar math for operator-facing timestamps and for proving the genesis
+# instant. Codec features are off: `hyphen-wire` owns the wire format.
+tzcraft = { version = "0.1", default-features = false, features = ["std"] }
 thiserror.workspace     = true
 rand.workspace          = true
 parking_lot.workspace   = true

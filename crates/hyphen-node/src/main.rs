@@ -8,13 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use hyphen_consensus::{
     build_genesis_block, export_archive, replay_archive, verify_archive_envelopes, Blockchain,
     ChainArchive,
 };
-use hyphen_core::config::ChainConfig;
+use hyphen_core::config::{ChainConfig, GENESIS_TIMESTAMP_MS};
 use hyphen_core::timestamp::{ntp_adjusted_timestamp_ms, start_ntp_sync_task};
 use hyphen_mempool::Mempool;
 use hyphen_transport::{
@@ -41,6 +41,16 @@ struct Cli {
 
     #[arg(long, default_value = "")]
     boot_nodes: String,
+
+    /// Upstream resolver for `/dns4`, `/dns6` and `/dns` boot nodes, repeatable.
+    ///
+    /// `recurse-x`'s spec format: `udp://1.1.1.1:53`, `tls://1.1.1.1:853#cloudflare-dns.com`,
+    /// `https://dns.google/dns-query#dns.google`. Without any upstream the node
+    /// resolves seed names itself, from the root servers, with DNSSEC
+    /// validation. The `#name` fragment is the TLS identity of an encrypted
+    /// upstream and is mandatory for `tls://` and `https://`.
+    #[arg(long = "dns-upstream", value_name = "SPEC")]
+    dns_upstreams: Vec<String>,
 
     /// Allow a mainnet seed node to start without boot peers.
     #[arg(long)]
@@ -99,6 +109,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hyphen_crypto::hex_encode(cfg.consensus_params_hash())
         );
         println!("genesis_hash={}", build_genesis_block(&cfg).hash());
+        println!("genesis_timestamp_ms={}", GENESIS_TIMESTAMP_MS);
+        println!(
+            "genesis_instant={}",
+            hyphen_core::timestamp::genesis_instant_iso8601()
+        );
         return Ok(());
     }
     if cli.network == "mainnet"
@@ -129,11 +144,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!(
-        "Starting Hyphen node on {} (block_time={}ms, chain_length={}, genesis_difficulty={})",
+        "Starting Hyphen node on {} (block_time={}ms, chain_length={}, genesis_difficulty={}, genesis {})",
         cfg.network_name,
         cfg.block_time_ms(),
         cfg.pouw_chain_length,
         cfg.genesis_difficulty,
+        hyphen_core::timestamp::genesis_instant_iso8601(),
     );
 
     let blockchain = Arc::new(
@@ -186,7 +202,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .listen
         .unwrap_or_else(|| format!("/ip4/0.0.0.0/tcp/{}", cfg.p2p_port));
     let listen_addr: libp2p::Multiaddr = listen_addr_str.parse()?;
-    let boot_nodes = parse_boot_nodes(&cli.boot_nodes)?;
+    let boot_addresses = parse_boot_nodes(&cli.boot_nodes)?;
+    let (boot_nodes, seed_resolver) =
+        resolve_boot_nodes(boot_addresses.clone(), &cli.dns_upstreams)?;
     let identity_path = cli
         .identity_file
         .clone()
@@ -255,10 +273,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ = bootstrap_interval.tick() => {
                 // Periodically re-attempt Kademlia bootstrap so we discover
-                // new peers even if the initial boot nodes were offline.
+                // new peers even if the initial boot nodes were offline. A seed
+                // name is a record the operator rotates, so an isolated node
+                // re-resolves before it retries: an address that moved must not
+                // strand the node until it is restarted.
                 let n = network.connected_peer_count();
                 if n == 0 {
                     info!("No peers connected, retrying Kademlia bootstrap...");
+                    if let Some(resolver) = seed_resolver.as_ref() {
+                        match resolver.resolve(&boot_addresses) {
+                            Ok(addresses) => {
+                                for address in addresses {
+                                    if let Ok(peer) = boot_peer(&address) {
+                                        network.add_peer(peer, address);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                warn!("Seed re-resolution failed, keeping known addresses: {error}");
+                            }
+                        }
+                    }
                 }
                 network.try_bootstrap();
             }
@@ -284,9 +319,12 @@ fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::E
     Ok(wire_config(512 * 1024 * 1024).deserialize(&encoded)?)
 }
 
-fn parse_boot_nodes(
-    s: &str,
-) -> Result<Vec<(libp2p::PeerId, libp2p::Multiaddr)>, Box<dyn std::error::Error>> {
+/// Parses `--boot-nodes` into validated multiaddrs.
+///
+/// Each address must parse and must carry `/p2p/<peer-id>`: a boot node without
+/// a peer id cannot be authenticated, so accepting one would only defer the
+/// failure to the dial.
+fn parse_boot_nodes(s: &str) -> Result<Vec<libp2p::Multiaddr>, Box<dyn std::error::Error>> {
     if s.is_empty() {
         return Ok(Vec::new());
     }
@@ -297,20 +335,76 @@ fn parse_boot_nodes(
             let addr: libp2p::Multiaddr = trimmed
                 .parse()
                 .map_err(|e| format!("invalid boot node '{trimmed}': {e}"))?;
-            let peer_id = addr
-                .iter()
-                .find_map(|proto| {
-                    if let libp2p::multiaddr::Protocol::P2p(peer_id) = proto {
-                        Some(peer_id)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| format!("boot node '{trimmed}' is missing /p2p/<peer-id>"))?;
-            Ok((peer_id, addr))
+            boot_peer(&addr)
+                .map_err(|e| format!("boot node '{trimmed}' is missing /p2p/<peer-id>: {e}"))?;
+            Ok(addr)
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(nodes)
+}
+
+/// Extracts the peer id a boot-node multiaddr commits to.
+fn boot_peer(address: &libp2p::Multiaddr) -> Result<libp2p::PeerId, String> {
+    address
+        .iter()
+        .find_map(|proto| match proto {
+            libp2p::multiaddr::Protocol::P2p(peer_id) => Some(peer_id),
+            _ => None,
+        })
+        .ok_or_else(|| "no /p2p component".to_string())
+}
+
+/// Boot nodes keyed by the peer id their multiaddr commits to.
+type BootNodes = Vec<(libp2p::PeerId, libp2p::Multiaddr)>;
+
+/// Dialable boot nodes plus the resolver that produced them. The resolver is
+/// kept alive so the bootstrap retry can pick up a rotated seed record.
+type ResolvedBootNodes = (BootNodes, Option<hyphen_network::SeedResolver>);
+
+/// Resolves the DNS hosts of the boot-node set into concrete addresses.
+///
+/// Returns the dialable `(peer, address)` pairs and, when any seed needed DNS,
+/// the live resolver: the bootstrap retry tick re-resolves with it, because a
+/// seed name is exactly the kind of record an operator rotates.
+fn resolve_boot_nodes(
+    addresses: Vec<libp2p::Multiaddr>,
+    upstreams: &[String],
+) -> Result<ResolvedBootNodes, Box<dyn std::error::Error>> {
+    if !addresses.iter().any(hyphen_network::is_dns_seed) {
+        return Ok((pair_with_peers(&addresses)?, None));
+    }
+
+    let resolver = if upstreams.is_empty() {
+        info!("Resolving DNS boot nodes iteratively with DNSSEC validation");
+        hyphen_network::SeedResolver::recursive()?
+    } else {
+        info!(
+            "Resolving DNS boot nodes through {} configured upstream(s)",
+            upstreams.len()
+        );
+        hyphen_network::SeedResolver::with_upstreams(upstreams)?
+    };
+
+    let resolved = resolver.resolve(&addresses)?;
+    for address in &resolved {
+        debug!("Boot node address: {address}");
+    }
+    info!("Resolved {} boot node address(es) from DNS", resolved.len());
+    Ok((pair_with_peers(&resolved)?, Some(resolver)))
+}
+
+fn pair_with_peers(
+    addresses: &[libp2p::Multiaddr],
+) -> Result<BootNodes, Box<dyn std::error::Error>> {
+    addresses
+        .iter()
+        .map(|address| {
+            let peer = boot_peer(address)
+                .map_err(|e| format!("boot node '{address}' is missing /p2p/<peer-id>: {e}"))?;
+            Ok((peer, address.clone()))
+        })
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(Into::into)
 }
 
 fn load_or_create_p2p_identity(

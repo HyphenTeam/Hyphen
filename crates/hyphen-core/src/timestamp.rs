@@ -175,8 +175,9 @@ fn mark_untrusted(reason: &str, responded: usize) {
         .store(UNTRUSTED_POLL_MS, Ordering::Release);
     *NTP_STATE.last_sync.write() = Some(Instant::now());
     tracing::warn!(
-        "NTP sync: {reason} ({responded}/{} servers responded), clock untrusted",
-        NTP_SERVERS.len()
+        "NTP sync: {reason} ({responded}/{} servers responded), clock untrusted; local time {}",
+        NTP_SERVERS.len(),
+        iso8601_utc(ntp_adjusted_timestamp_ms())
     );
 }
 
@@ -222,21 +223,23 @@ pub fn sync_ntp() {
 
     if is_first || status_changed || !trusted {
         tracing::info!(
-            "NTP sync: offset={}ms, trusted={}, servers={}/{}, poll={}s",
+            "NTP sync: offset={}ms, trusted={}, servers={}/{}, poll={}s, local time {}",
             average_offset,
             trusted,
             filtered.len(),
             NTP_SERVERS.len(),
             poll / 1000,
+            iso8601_utc(ntp_adjusted_timestamp_ms()),
         );
     } else {
         tracing::debug!(
-            "NTP sync: offset={}ms, trusted={}, servers={}/{}, poll={}s",
+            "NTP sync: offset={}ms, trusted={}, servers={}/{}, poll={}s, local time {}",
             average_offset,
             trusted,
             filtered.len(),
             NTP_SERVERS.len(),
             poll / 1000,
+            iso8601_utc(ntp_adjusted_timestamp_ms()),
         );
     }
 }
@@ -252,6 +255,29 @@ pub fn ntp_adjusted_timestamp_ms() -> u64 {
 
 pub fn ntp_adjusted_timestamp_secs() -> u64 {
     ntp_adjusted_timestamp_ms() / 1000
+}
+
+/// Formats a Unix millisecond instant as RFC 3339 UTC, for operator surfaces.
+///
+/// Chain bytes carry raw milliseconds, because that is the frozen wire shape;
+/// humans reading a log line or a startup banner should not have to multiply by
+/// 1000 in their head. Calendar rendering comes from `tzcraft`, whose civil
+/// conversions are `const` and tested, rather than from arithmetic written on
+/// the spot.
+pub fn iso8601_utc(unix_ms: u64) -> String {
+    const SECONDS: tzcraft::FractionDigits = tzcraft::FractionDigits::None;
+    match i64::try_from(unix_ms).map(tzcraft::Ticks::from_timestamp_millis) {
+        Ok(Ok(ticks)) => ticks.to_rfc3339(SECONDS),
+        // An instant outside the representable range is a bug in the caller, not
+        // in the calendar: say so instead of printing a wrong date.
+        _ => format!("invalid({unix_ms})"),
+    }
+}
+
+/// The genesis instant as RFC 3339 text: the readable form of
+/// [`crate::config::GENESIS_TIMESTAMP_MS`].
+pub fn genesis_instant_iso8601() -> String {
+    iso8601_utc(crate::config::GENESIS_TIMESTAMP_MS)
 }
 
 pub fn is_clock_trusted() -> bool {
@@ -337,5 +363,24 @@ mod tests {
         let mut bad_stratum = response;
         bad_stratum[1] = 0;
         assert_eq!(parse_offset_ms(&request, &bad_stratum, 0, 0), None);
+    }
+
+    /// The genesis instant is a consensus constant written as a magic number.
+    /// This is the machine-readable statement of what that number *is*: if the
+    /// constant and the calendar the chain claims to start on ever disagree, the
+    /// build fails here instead of shipping a reviewable comment that lies.
+    #[test]
+    fn genesis_instant_is_the_first_second_of_2026() {
+        assert_eq!(super::genesis_instant_iso8601(), "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn iso_form_renders_epoch_and_rejects_unrepresentable_instants() {
+        assert_eq!(super::iso8601_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            super::iso8601_utc(1_800_000_000_123),
+            "2027-01-15T08:00:00Z"
+        );
+        assert!(super::iso8601_utc(u64::MAX).starts_with("invalid("));
     }
 }

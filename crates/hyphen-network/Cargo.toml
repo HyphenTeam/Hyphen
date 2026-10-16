@@ -24,3 +24,7 @@ tracing.workspace          = true
 parking_lot.workspace      = true
 rand.workspace             = true
 hyphen-wire.workspace      = true
+# DNSSEC-validating resolver for `/dns4`, `/dns6` and `/dns` boot nodes. Kept at
+# `std` + encrypted transports: no QUIC, no persistent cache, nothing the
+# bootstrap path does not use. `hickory` still never enters the graph.
+recurse-x = { version = "0.2", default-features = false, features = ["std", "dnssec", "dot", "doh"] }
