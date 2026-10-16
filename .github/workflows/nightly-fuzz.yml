@@ -33,6 +33,15 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
       - name: Run bounded fuzz target
+        # `rust-toolchain.toml` at the repository root pins stable 1.97.0, and
+        # rustup resolves that file *ahead of* `rustup default`. Without this
+        # variable the `cargo build` the fuzzer spawns for `crates/hyphen-fuzz`
+        # runs on stable and dies with
+        # "error: the option `Z` is only accepted on the nightly compiler".
+        # Setting it here outranks the toolchain file for this step and every
+        # process the fuzzer spawns.
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-07-22
         run: >-
           cargo fuzz run
           --fuzz-dir crates/hyphen-fuzz
