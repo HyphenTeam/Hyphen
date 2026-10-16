@@ -856,7 +856,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -882,13 +882,13 @@ dependencies = [
 
 [[package]]
 name = "fastbloom"
-version = "0.14.1"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7f34442dbe69c60fe8eaf58a8cafff81a1f278816d8ab4db255b3bef4ac3c4"
+checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
 dependencies = [
- "getrandom 0.3.4",
+ "foldhash 0.2.0",
  "libm",
- "rand 0.9.2",
+ "portable-atomic",
  "siphasher",
 ]
 
@@ -1166,9 +1166,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.13"
+version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f44da3a8150a6703ed5d34e164b875fd14c2cdab9af1252a9a1020bde2bdc54"
+checksum = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1252,7 +1252,7 @@ dependencies = [
  "idna",
  "ipnet",
  "jni",
- "rand 0.10.2",
+ "rand",
  "thiserror 2.0.19",
  "tinyvec",
  "tokio",
@@ -1272,7 +1272,7 @@ dependencies = [
  "jni",
  "once_cell",
  "prefix-trie",
- "rand 0.10.2",
+ "rand",
  "ring",
  "thiserror 2.0.19",
  "tinyvec",
@@ -1297,7 +1297,7 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "parking_lot 0.12.5",
- "rand 0.10.2",
+ "rand",
  "resolv-conf",
  "smallvec",
  "system-configuration",
@@ -1478,7 +1478,7 @@ dependencies = [
  "hyphen-crypto",
  "hyphen-wire",
  "parking_lot 0.12.5",
- "rand 0.10.2",
+ "rand",
  "rustbinary",
  "serde",
  "thiserror 2.0.19",
@@ -1495,7 +1495,7 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "ed25519-dalek",
  "merlin",
- "rand 0.10.2",
+ "rand",
  "rand_core 0.10.1",
  "rustbinary",
  "serde",
@@ -1572,7 +1572,7 @@ dependencies = [
  "libp2p",
  "parking_lot 0.12.5",
  "prost",
- "rand 0.10.2",
+ "rand",
  "recurse-x",
  "rustbinary",
  "serde",
@@ -1605,7 +1605,7 @@ dependencies = [
  "libp2p",
  "parking_lot 0.12.5",
  "prost",
- "rand 0.10.2",
+ "rand",
  "rustbinary",
  "serde",
  "tokio",
@@ -1621,8 +1621,8 @@ dependencies = [
  "hyphen-core",
  "hyphen-crypto",
  "parking_lot 0.12.5",
- "rand 0.10.2",
- "rand_chacha 0.10.0",
+ "rand",
+ "rand_chacha",
  "rustbinary",
  "serde",
  "thiserror 2.0.19",
@@ -1636,7 +1636,7 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "hyphen-crypto",
  "merlin",
- "rand 0.10.2",
+ "rand",
  "rand_core 0.10.1",
  "rustbinary",
  "serde",
@@ -1681,7 +1681,7 @@ dependencies = [
  "hyphen-vm",
  "hyphen-wire",
  "parking_lot 0.12.5",
- "rand 0.10.2",
+ "rand",
  "rustbinary",
  "serde",
  "serde_json",
@@ -1699,7 +1699,7 @@ dependencies = [
  "hyphen-core",
  "hyphen-crypto",
  "hyphen-proof",
- "rand 0.10.2",
+ "rand",
  "rustbinary",
  "serde",
  "thiserror 2.0.19",
@@ -1712,7 +1712,7 @@ dependencies = [
  "async-trait",
  "hyphen-crypto",
  "prost",
- "rand 0.10.2",
+ "rand",
  "thiserror 2.0.19",
  "tokio",
 ]
@@ -1725,8 +1725,8 @@ dependencies = [
  "hyphen-crypto",
  "hyphen-proof",
  "hyphen-wire",
- "rand 0.10.2",
- "rand_chacha 0.10.0",
+ "rand",
+ "rand_chacha",
  "rand_core 0.10.1",
  "rustbinary",
  "serde",
@@ -1766,7 +1766,7 @@ dependencies = [
  "hyphen-proof",
  "hyphen-tx",
  "hyphen-wire",
- "rand 0.10.2",
+ "rand",
  "rand_core 0.10.1",
  "rustbinary",
  "serde",
@@ -1932,7 +1932,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "log",
- "rand 0.10.2",
+ "rand",
  "tokio",
  "url",
  "xmltree",
@@ -2179,7 +2179,7 @@ dependencies = [
  "libp2p-swarm",
  "prost",
  "prost-codec",
- "rand 0.10.2",
+ "rand",
  "rand_core 0.10.1",
  "thiserror 2.0.19",
  "tracing",
@@ -2214,7 +2214,7 @@ dependencies = [
  "parking_lot 0.12.5",
  "pin-project",
  "prost",
- "rand 0.10.2",
+ "rand",
  "rw-stream-sink",
  "thiserror 2.0.19",
  "tracing",
@@ -2282,7 +2282,7 @@ dependencies = [
  "libp2p-swarm",
  "prost",
  "prost-codec",
- "rand 0.10.2",
+ "rand",
  "regex",
  "serde",
  "sha2 0.11.0",
@@ -2322,7 +2322,7 @@ dependencies = [
  "hkdf",
  "multihash",
  "prost",
- "rand 0.10.2",
+ "rand",
  "serde",
  "sha2 0.11.0",
  "thiserror 2.0.19",
@@ -2348,7 +2348,7 @@ dependencies = [
  "libp2p-swarm",
  "prost",
  "prost-codec",
- "rand 0.10.2",
+ "rand",
  "serde",
  "sha2 0.11.0",
  "smallvec",
@@ -2370,7 +2370,7 @@ dependencies = [
  "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
- "rand 0.10.2",
+ "rand",
  "smallvec",
  "socket2",
  "tokio",
@@ -2413,7 +2413,7 @@ dependencies = [
  "multiaddr",
  "multihash",
  "prost",
- "rand 0.10.2",
+ "rand",
  "snow",
  "static_assertions",
  "thiserror 2.0.19",
@@ -2433,7 +2433,7 @@ dependencies = [
  "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
- "rand 0.10.2",
+ "rand",
  "tracing",
  "web-time",
 ]
@@ -2452,7 +2452,7 @@ dependencies = [
  "libp2p-tls",
  "quinn",
  "quinn-proto",
- "rand 0.10.2",
+ "rand",
  "ring",
  "socket2",
  "thiserror 2.0.19",
@@ -2477,7 +2477,7 @@ dependencies = [
  "libp2p-swarm",
  "prost",
  "prost-codec",
- "rand 0.10.2",
+ "rand",
  "static_assertions",
  "thiserror 2.0.19",
  "tracing",
@@ -2496,7 +2496,7 @@ dependencies = [
  "libp2p-core",
  "libp2p-identity",
  "libp2p-swarm",
- "rand 0.10.2",
+ "rand",
  "serde",
  "smallvec",
  "tracing",
@@ -2518,7 +2518,7 @@ dependencies = [
  "libp2p-identity",
  "libp2p-swarm-derive",
  "multistream-select",
- "rand 0.10.2",
+ "rand",
  "smallvec",
  "tokio",
  "tracing",
@@ -2864,7 +2864,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3224,16 +3224,17 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.15"
+version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
+checksum = "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe"
 dependencies = [
  "aws-lc-rs",
  "bytes",
  "fastbloom",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "lru-slab",
- "rand 0.9.2",
+ "rand",
+ "rand_pcg",
  "ring",
  "rustc-hash",
  "rustls",
@@ -3282,16 +3283,6 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
-dependencies = [
- "rand_chacha 0.9.0",
- "rand_core 0.9.5",
-]
-
-[[package]]
-name = "rand"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
@@ -3299,16 +3290,6 @@ dependencies = [
  "chacha20 0.10.1",
  "getrandom 0.4.3",
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -3332,18 +3313,18 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
-dependencies = [
- "getrandom 0.3.4",
-]
-
-[[package]]
-name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "rcgen"
@@ -3509,14 +3490,14 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.37"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "758025cb5fccfd3bc2fd74708fd4682be41d99e5dff73c377c0646c6012c73a4"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
@@ -3538,9 +3519,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -4440,7 +4421,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -69,12 +69,15 @@ jobs:
       - name: Install RustSec audit tool
         run: cargo install cargo-audit --locked --version 0.22.0
       - name: Reject new RustSec vulnerabilities
-        # libp2p 0.56 retains optional hickory packages in Cargo.lock even with
-        # default features disabled and without DNS/mDNS. The previous step proves
-        # they are absent from the runtime graph.
+        # No advisory is ignored. libp2p keeps optional DNS/TLS/QUIC packages in
+        # Cargo.lock — hickory-*, hyper, h2, rustls, quinn-proto — even though no
+        # feature of this workspace enables them (`cargo tree --all-features`
+        # proves it, and the step above proves it for DNS); those lock entries are
+        # still audited and kept at patched versions, so this step is strict and
+        # stays strict.
         run: |
-          cargo audit --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
-          cargo audit --file crates/hyphen-fuzz/Cargo.lock --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
+          cargo audit
+          cargo audit --file crates/hyphen-fuzz/Cargo.lock
 
   windows-node-smoke:
     runs-on: windows-2022

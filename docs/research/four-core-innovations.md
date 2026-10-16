@@ -301,9 +301,10 @@ nullifier 和分叉 ring 状态。端到端后端测试覆盖较重三块分支�
 | `C(v,r)` | Pedersen commitment `v*G_v + r*G_r` |
 | `pi` | 与上下文对应的密码学证明；不同关系不得复用同一域 |
 
-所有共识对象必须使用规范化、语言无关、长度有界的编码。当前 Rust 实现已改用
-仓库内的 `hyphen-codec` v1；其固定宽度格式、资源上限和 schema-relative
-canonicality 论证见 `crates/hyphen-codec/README.md`。该实现尚未经过独立审计，
+所有共识对象必须使用规范化、语言无关、长度有界的编码。当前 Rust 实现用的是
+仓库内的 `hyphen-wire`（chain identity v6 冻结档）：字段按声明顺序、无字段名与类型标签，
+规范 little-endian varint，容器长度前缀，拒绝尾随字节，并带字节预算与硬性元素上限；其
+profile、容器适配器与冻结向量见 `crates/hyphen-wire/README.md`。该实现尚未经过独立审计，
 跨语言实现也必须以固定测试向量验证，不能仅凭 Rust round-trip 宣称兼容。
 
 ## 3. 候选贡献一：H-WES 可恢复过期状态与见证携带执行
@@ -655,8 +656,8 @@ nonce 和非规范响应标量，避免把公开的零标量误写成排他所�
 `G_r` 间的离散对数关系。
 
 这不是零知识 provenance 证明：金额和 blinding 会明文披露，包本身不加密，
-审计者泄露后任何持包者都可读取。当前交易哈希使用 `hyphen-codec` v1 的固定
-schema 编码；链上包含性和 `global_index` 仍必须由区块/状态证明另行验证。它只证明“该用户拥有并
+审计者泄露后任何持包者都可读取。当前交易哈希使用 `hyphen-wire` 的 schema 驱动
+紧凑档编码；链上包含性和 `global_index` 仍必须由区块/状态证明另行验证。它只证明“该用户拥有并
 正确打开这个输出”，不证明现实资金来源合法，也不披露 ring 中真实输入。
 完整 H-SAC 仍需经审计的通用证明系统、policy credential 语义、正式电路和
 独立审查。

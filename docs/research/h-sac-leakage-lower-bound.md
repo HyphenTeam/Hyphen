@@ -405,7 +405,7 @@ nonce, commitment, one-time public key, amount, blinding, Schnorr proof.
 ## 9. 为什么此时不接入一个新 ZK crate
 
 通用 proof system 的选择会固定 field、curve、trusted setup、proof recursion、
-电路审计和长期兼容性。主链已有 `hyphen-codec` v1，但 H-SAC 关系的公开输入 schema、
+电路审计和长期兼容性。主链已有冻结的 `hyphen-wire` 线格式，但 H-SAC 关系的公开输入 schema、
 版本迁移规则及 provenance policy 尚未固定。
 在这些输入不稳定时接入任意 proving library，只会产生不能证明目标关系的代码。
 

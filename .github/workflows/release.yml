@@ -54,7 +54,7 @@ jobs:
           Copy-Item README.md, README_CN.md, SECURITY.md, LICENSE $stage
           Copy-Item docs (Join-Path $stage 'docs') -Recurse
           Copy-Item test-vectors (Join-Path $stage 'test-vectors') -Recurse
-          Copy-Item crates/hyphen-codec/README.md (Join-Path $stage 'HYPHEN-CODEC.md')
+          Copy-Item crates/hyphen-wire/README.md (Join-Path $stage 'HYPHEN-WIRE.md')
           Get-ChildItem target/release -Filter '*.pdb' -ErrorAction SilentlyContinue |
             Copy-Item -Destination $stage
           @(
