@@ -98,8 +98,12 @@ locators, credentials and transaction payloads are not returned to the
 browser. The application convention is a bounded `hyphen.app` JSON custom
 section with ABI version, category (`defi`, `game`, or `utility`), name and
 version. Classified applications must export `hyphen_query` and
-`hyphen_execute`; queries are consensus-enforced read-only. Rebuild the checked
-in browser module after renderer changes with:
+`hyphen_execute`; queries are consensus-enforced read-only. The page, its
+script, its module and every `/api/…` route are served by Courierust's own
+HTTP/1.1 + HTTP/2 server — no web framework sits between the state and the
+socket, and every answer carries the same media type, `nosniff`,
+`no-referrer` and content-security policy. Rebuild the checked in browser
+module after renderer changes with:
 
 ```powershell
 .\scripts\build-explorer-wasm.ps1
@@ -140,8 +144,15 @@ forty lines of byte shuffling. The crates the chain does take from outside the
 repository are the ones that answer a question the repository should not answer
 itself — the bounded binary codec (`rustbinary`, frozen in `hyphen-wire`), the
 DNSSEC-validating resolver for seed names (`recurse-x`), the calendar behind
-operator-facing timestamps (`tzcraft`), and, in the miner, the proxy engine that
-carries a pool link across a locked-down network (`corduit`).
+operator-facing timestamps (`tzcraft`), and the HTTP/1.1 + HTTP/2 stack that
+serves the explorer, the pool's accounting API and both ends of the payout link
+(`courierust`, which has no dependencies of its own and replaced axum, tower and
+hyper in this workspace).
+
+The miner carries no proxy engine: `--via-proxy` performs the SOCKS5 or HTTP
+`CONNECT` handshake itself, so whatever proxy the operator runs — including a
+`corduit` service with its `socks5` or `http` inbound — stays an external
+process that the miner dials rather than a library it links.
 
 The contract VM is Wasmi 2.0, a pure-Rust interpreter with built-in fuel
 metering, rather than a JIT runtime. That choice is deliberate:

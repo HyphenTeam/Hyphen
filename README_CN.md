@@ -17,7 +17,7 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 4 启�
 - H-SAC 已实现单输出 opening 和绑定 auditor/scope 的所有权证明；冻结的合规关系、provenance ZK 电路、证明器/验证器接线和独立审计仍未完成。
 - AetherCompute 的任务状态机已接入区块执行、RPC/P2P、mempool、状态根和重组回滚。用户任务结算默认使用拒绝验证器；没有真实且审计过的电路/VK 时不会结算。
 - WASM 支持签名部署和调用，失败执行原子回滚。hyphen.app ABI 支持 defi、game、utility 分类，并强制 hyphen_query 只读。
-- Explorer 的核心渲染器由 Rust 编译为 WASM；浏览器 API 不返回科学对象 locator、凭证或私有交易 payload。
+- Explorer 的核心渲染器由 Rust 编译为 WASM；浏览器 API 不返回科学对象 locator、凭证或私有交易 payload。页面、脚本、模块和所有 `/api/…` 路由都由 Courierust 自带的 HTTP/1.1 + HTTP/2 服务端提供，状态与 socket 之间没有 Web 框架，且每个响应都带同一套 media type、`nosniff`、`no-referrer` 与 CSP。
 
 ## 科学计算 PoUW v3
 
@@ -78,11 +78,13 @@ Explorer 使用 HTTP；RPC、P2P 和模板端口是二进制协议。修改 Expl
 .\scripts\build-explorer-wasm.ps1
 ```
 
-共识和持久化编码使用 RustBinary 0.1.2 的固定宽度、小端、限制字节/集合长度并拒绝尾随字节的配置。格式迁移必须显式失败，禁止在共识哈希、签名或授权路径中自动回退。
+共识和持久化编码使用 RustBinary 0.1.8 的 schema 驱动紧凑档：字段按声明顺序、无字段名、无类型标签，规范的 little-endian varint，容器长度前缀，并拒绝尾随字节。每次调用都设置字节与集合上限，一个值只有唯一被接受的编码。格式迁移必须显式失败，禁止在共识哈希、签名或授权路径中自动回退。
 
 ### 依赖策略
 
-本仓库不保留依赖镜像，也没有任何 `[patch.crates-io]` 覆盖：每个依赖都是 crates.io 正式发布版本，由提交的锁文件固定。对"这个 crate 要不要引"的默认答案是不引——hex 编解码、base58 编解码、SNTP 客户端和 NTP 校正时钟都实现在 `hyphen-crypto` 与 `hyphen-core` 内部，因为共识 crate 不该为几十行字节处理引入一条供应链。
+本仓库不保留依赖镜像，也没有任何 `[patch.crates-io]` 覆盖：每个依赖都是 crates.io 正式发布版本，由提交的锁文件固定。对"这个 crate 要不要引"的默认答案是不引——hex 编解码、base58 编解码、SNTP 客户端和 NTP 校正时钟都实现在 `hyphen-crypto` 与 `hyphen-core` 内部，因为共识 crate 不该为几十行字节处理引入一条供应链。真正引入的外部 crate 只回答本仓库不该自己回答的问题：有界二进制编解码（`rustbinary`，在 `hyphen-wire` 中冻结）、种子名字的 DNSSEC 校验解析（`recurse-x`）、面向运营者的时间戳日历（`tzcraft`），以及服务 Explorer、矿池结算 API 与付款链路两端的 HTTP/1.1 + HTTP/2 栈（`courierust`——它自身零依赖，替换掉了本工作区里的 axum、tower 与 hyper）。
+
+Miner 不携带任何代理引擎：`--via-proxy` 自己完成 SOCKS5 或 HTTP `CONNECT` 握手，所以运营者运行的任何代理——包括带 `socks5` 或 `http` inbound 的 `corduit` 服务——都是 Miner 去拨号的外部进程，而不是它链接进来的库。
 
 合约 VM 使用 Wasmi 2.0（纯 Rust 解释器，内建 fuel 计量），不再是 JIT 运行时。这是刻意的取舍：
 

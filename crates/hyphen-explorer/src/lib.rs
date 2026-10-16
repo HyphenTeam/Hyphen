@@ -1,15 +1,16 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::body::Body;
-use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
-use axum::{Json, Router};
+use courierust::courierust_body::Body;
+use courierust::courierust_http::request::Request;
+use courierust::courierust_http::response::Response;
+use courierust::courierust_http::{Method, StatusCode};
+use courierust::courierust_server::{Server, ServerConfig};
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use tracing::info;
+use serde::Serialize;
+use tracing::{info, warn};
 
 use hyphen_compute::{ArithmeticProfile, ScientificDomain, TaskRecord, TaskStatus};
 use hyphen_consensus::Blockchain;
@@ -29,6 +30,30 @@ const INDEX_HTML: &str = include_str!("index.html");
 const APP_JS: &str = include_str!("app.js");
 const EXPLORER_WASM: &[u8] = include_bytes!("hyphen_explorer_web.wasm");
 const ATOMIC_UNITS: u64 = 1_000_000_000_000;
+
+/// Largest request accepted. Every route is a `GET` with no body.
+const MAX_REQUEST_BYTES: usize = 4 * 1024;
+
+/// Largest header list accepted.
+const MAX_HEADER_LIST: usize = 32 * 1024;
+
+/// Absolute deadline for a complete request head.
+const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Per-connection read budget; queries never take this long, and a stalled
+/// client must not hold a worker.
+const READ_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Close a parked connection after this long.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Concurrent connections kept open.
+const MAX_CONNECTIONS: usize = 512;
+
+/// Page size bounds, so a single request cannot ask the state for an unbounded
+/// slice.
+const PAGE_LIMIT_DEFAULT: usize = 20;
+const PAGE_LIMIT_MAX: usize = 100;
 
 fn format_hpn(atomic: u64) -> String {
     let whole = atomic / ATOMIC_UNITS;
@@ -170,16 +195,6 @@ struct MinerBlocksResponse {
     blocks: Vec<MinerBlockEvent>,
 }
 
-#[derive(Deserialize)]
-struct MinerBlocksQuery {
-    limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-struct UpdatesQuery {
-    since: Option<u64>,
-}
-
 #[derive(Serialize)]
 struct ExplorerUpdatesResponse {
     changed: bool,
@@ -228,12 +243,6 @@ struct ScientificTasksResponse {
     limit: usize,
 }
 
-#[derive(Deserialize)]
-struct ScientificTasksQuery {
-    offset: Option<usize>,
-    limit: Option<usize>,
-}
-
 #[derive(Serialize)]
 struct ContractResponse {
     address: String,
@@ -252,12 +261,6 @@ struct ContractsResponse {
     limit: usize,
 }
 
-#[derive(Deserialize)]
-struct ContractsQuery {
-    offset: Option<usize>,
-    limit: Option<usize>,
-}
-
 fn contract_response(contract: Contract) -> ContractResponse {
     let application = application_manifest(&contract.code).ok().flatten();
     ContractResponse {
@@ -270,40 +273,35 @@ fn contract_response(contract: Contract) -> ContractResponse {
     }
 }
 
-async fn get_contracts(
-    State(state): State<Arc<ExplorerState>>,
-    Query(params): Query<ContractsQuery>,
-) -> impl IntoResponse {
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+fn get_contracts(state: &ExplorerState, params: &QueryParams) -> Result<Response<Body>, Rejection> {
+    let offset = params.number::<usize>("offset")?.unwrap_or(0);
+    let limit = params
+        .number::<usize>("limit")?
+        .unwrap_or(PAGE_LIMIT_DEFAULT)
+        .clamp(1, PAGE_LIMIT_MAX);
     let (contracts, total) = state.blockchain.vm_contracts(offset, limit);
-    (
+    Ok(json_response(
         StatusCode::OK,
-        Json(ContractsResponse {
+        &ContractsResponse {
             contracts: contracts.into_iter().map(contract_response).collect(),
             total,
             offset,
             limit,
-        }),
-    )
+        },
+    ))
 }
 
-async fn get_contract(
-    State(state): State<Arc<ExplorerState>>,
-    Path(address): Path<String>,
-) -> impl IntoResponse {
-    let Some(hash) = parse_hash(&address) else {
-        return error_json(
-            StatusCode::BAD_REQUEST,
+fn get_contract(state: &ExplorerState, address: &str) -> Result<Response<Body>, Rejection> {
+    let Some(hash) = parse_hash(address) else {
+        return Err(Rejection::bad_request(
             "contract address must be 64 hex characters",
-        )
-        .into_response();
+        ));
     };
     let address = ContractAddress(*hash.as_bytes());
     let Some(contract) = state.blockchain.vm_contract(address) else {
-        return error_json(StatusCode::NOT_FOUND, "WASM contract not found").into_response();
+        return Ok(error_json(StatusCode::NOT_FOUND, "WASM contract not found"));
     };
-    (StatusCode::OK, Json(contract_response(contract))).into_response()
+    Ok(json_response(StatusCode::OK, &contract_response(contract)))
 }
 
 #[derive(Default)]
@@ -546,40 +544,45 @@ fn scientific_task(task_id: Hash256, record: TaskRecord) -> ScientificTaskRespon
     }
 }
 
-async fn get_scientific_tasks(
-    State(state): State<Arc<ExplorerState>>,
-    Query(params): Query<ScientificTasksQuery>,
-) -> impl IntoResponse {
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+fn get_scientific_tasks(
+    state: &ExplorerState,
+    params: &QueryParams,
+) -> Result<Response<Body>, Rejection> {
+    let offset = params.number::<usize>("offset")?.unwrap_or(0);
+    let limit = params
+        .number::<usize>("limit")?
+        .unwrap_or(PAGE_LIMIT_DEFAULT)
+        .clamp(1, PAGE_LIMIT_MAX);
     let (records, total) = state.blockchain.compute_tasks(offset, limit);
     let tasks = records
         .into_iter()
         .map(|(task_id, record)| scientific_task(task_id, record))
         .collect();
-    (
+    Ok(json_response(
         StatusCode::OK,
-        Json(ScientificTasksResponse {
+        &ScientificTasksResponse {
             tasks,
             total,
             offset,
             limit,
-        }),
-    )
+        },
+    ))
 }
 
-async fn get_scientific_task(
-    State(state): State<Arc<ExplorerState>>,
-    Path(task_id): Path<String>,
-) -> impl IntoResponse {
-    let Some(task_id) = parse_hash(&task_id) else {
-        return error_json(StatusCode::BAD_REQUEST, "task ID must be 64 hex characters")
-            .into_response();
+fn get_scientific_task(state: &ExplorerState, task_id: &str) -> Result<Response<Body>, Rejection> {
+    let Some(task_id) = parse_hash(task_id) else {
+        return Err(Rejection::bad_request("task ID must be 64 hex characters"));
     };
     let Some(record) = state.blockchain.compute_task(task_id) else {
-        return error_json(StatusCode::NOT_FOUND, "scientific task not found").into_response();
+        return Ok(error_json(
+            StatusCode::NOT_FOUND,
+            "scientific task not found",
+        ));
     };
-    (StatusCode::OK, Json(scientific_task(task_id, record))).into_response()
+    Ok(json_response(
+        StatusCode::OK,
+        &scientific_task(task_id, record),
+    ))
 }
 
 fn parse_hash(s: &str) -> Option<Hash256> {
@@ -593,85 +596,186 @@ fn parse_hash(s: &str) -> Option<Hash256> {
     Some(Hash256::from_bytes(arr))
 }
 
-fn error_json(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
-    (
-        status,
-        Json(ErrorResponse {
-            error: msg.to_string(),
-        }),
-    )
+/// A request the explorer will not serve, with what the caller should be told.
+#[derive(Debug)]
+struct Rejection {
+    status: StatusCode,
+    message: String,
 }
 
-fn security_headers(content_type: &'static str) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
+impl Rejection {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+}
+
+/// Decoded query-string parameters.
+///
+/// Values are percent-decoded once, on the way in, so a handler never sees an
+/// escape sequence. Unknown parameters are ignored: the explorer's links carry
+/// things like `#/block/7` fragments and cache-busting values, and refusing a
+/// request because a client added one would be pedantry, not safety.
+#[derive(Debug)]
+struct QueryParams {
+    pairs: Vec<(String, String)>,
+}
+
+impl QueryParams {
+    fn parse(query: Option<&str>) -> Result<Self, Rejection> {
+        let mut pairs = Vec::new();
+        if let Some(query) = query {
+            for pair in query.split('&') {
+                if pair.is_empty() {
+                    continue;
+                }
+                let (name, value) = match pair.split_once('=') {
+                    Some((name, value)) => (name, value),
+                    None => (pair, ""),
+                };
+                pairs.push((percent_decode(name)?, percent_decode(value)?));
+            }
+        }
+        Ok(Self { pairs })
+    }
+
+    fn get(&self, name: &str) -> Option<&str> {
+        self.pairs
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// A required parameter, or `400`.
+    fn require(&self, name: &str) -> Result<&str, Rejection> {
+        self.get(name)
+            .ok_or_else(|| Rejection::bad_request(format!("missing query parameter '{name}'")))
+    }
+
+    /// A numeric parameter, or `400` when it is present and not a number.
+    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>, Rejection> {
+        match self.get(name) {
+            None => Ok(None),
+            Some(value) => match value.trim().parse::<T>() {
+                Ok(parsed) => Ok(Some(parsed)),
+                Err(_) => Err(Rejection::bad_request(format!(
+                    "query parameter '{name}' is not a number: '{value}'"
+                ))),
+            },
+        }
+    }
+}
+
+/// Decodes `%XX` escapes in a path segment or query parameter.
+fn percent_decode(input: &str) -> Result<String, Rejection> {
+    if !input.contains('%') {
+        return Ok(input.to_string());
+    }
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let escape = bytes.get(index + 1..index + 3).ok_or_else(|| {
+            Rejection::bad_request("percent-encoding is truncated in the request target")
+        })?;
+        let text = std::str::from_utf8(escape).map_err(|_| {
+            Rejection::bad_request("percent-encoding is not valid ASCII in the request target")
+        })?;
+        decoded.push(u8::from_str_radix(text, 16).map_err(|_| {
+            Rejection::bad_request(format!("'%{text}' is not a valid percent-encoding"))
+        })?);
+        index += 3;
+    }
+    String::from_utf8(decoded)
+        .map_err(|_| Rejection::bad_request("request target is not valid UTF-8 once decoded"))
+}
+
+/// Response headers every route carries.
+///
+/// The page, its script and its WebAssembly module are all served from this
+/// origin, so the policy can stay as tight as it was: no remote scripts, no
+/// framing, no referrer, and a media type that cannot be sniffed into anything
+/// else.
+fn secure_response(
+    status: StatusCode,
+    content_type: &'static str,
+    body: impl Into<Body>,
+) -> Response<Body> {
+    Response::<Body>::with_status(status)
+        .header("content-type", content_type)
+        .header("x-content-type-options", "nosniff")
+        .header("referrer-policy", "no-referrer")
+        .header(
+            "content-security-policy",
             "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-    );
-    headers
+        )
+        .with_body(body.into())
 }
 
-async fn serve_frontend() -> (HeaderMap, Html<&'static str>) {
-    (
-        security_headers("text/html; charset=utf-8"),
-        Html(INDEX_HTML),
+fn json_response<T: Serialize>(status: StatusCode, payload: &T) -> Response<Body> {
+    match serde_json::to_vec(payload) {
+        Ok(bytes) => secure_response(status, "application/json", Body::from(bytes)),
+        Err(error) => {
+            warn!("Encoding an explorer payload failed: {error}");
+            secure_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application/json",
+                Body::from(&b"{\"error\":\"internal error\"}"[..]),
+            )
+        }
+    }
+}
+
+fn error_json(status: StatusCode, msg: &str) -> Response<Body> {
+    json_response(
+        status,
+        &ErrorResponse {
+            error: msg.to_string(),
+        },
     )
 }
 
-async fn serve_app_js() -> Response {
-    let mut response = Response::new(Body::from(APP_JS));
-    *response.headers_mut() = security_headers("text/javascript; charset=utf-8");
-    response
+fn serve_frontend() -> Response<Body> {
+    secure_response(StatusCode::OK, "text/html; charset=utf-8", INDEX_HTML)
 }
 
-async fn serve_wasm() -> Response {
-    let mut response = Response::new(Body::from(EXPLORER_WASM));
-    *response.headers_mut() = security_headers("application/wasm");
-    response
+fn serve_app_js() -> Response<Body> {
+    secure_response(StatusCode::OK, "text/javascript; charset=utf-8", APP_JS)
 }
 
-async fn get_info(State(state): State<Arc<ExplorerState>>) -> impl IntoResponse {
+fn serve_wasm() -> Response<Body> {
+    secure_response(StatusCode::OK, "application/wasm", EXPLORER_WASM)
+}
+
+fn get_info(state: &ExplorerState) -> Response<Body> {
     let tip = match state.blockchain.tip() {
         Ok(t) => t,
         Err(e) => {
-            return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
+            return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
         }
     };
-
-    (StatusCode::OK, Json(build_info_response(&state, tip))).into_response()
+    json_response(StatusCode::OK, &build_info_response(state, tip))
 }
 
-#[derive(Deserialize)]
-struct BlocksQuery {
-    page: Option<u64>,
-    limit: Option<u64>,
-}
+fn get_blocks(state: &ExplorerState, params: &QueryParams) -> Result<Response<Body>, Rejection> {
+    let tip = state.blockchain.tip().map_err(|error| Rejection {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error.to_string(),
+    })?;
 
-async fn get_blocks(
-    State(state): State<Arc<ExplorerState>>,
-    Query(params): Query<BlocksQuery>,
-) -> impl IntoResponse {
-    let tip = match state.blockchain.tip() {
-        Ok(t) => t,
-        Err(e) => {
-            return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
-        }
-    };
-
-    let page = params.page.unwrap_or(0);
-    let limit = params.limit.unwrap_or(20).min(100);
-    let skip = page * limit;
+    let page = params.number::<u64>("page")?.unwrap_or(0);
+    let limit = params
+        .number::<u64>("limit")?
+        .unwrap_or(PAGE_LIMIT_DEFAULT as u64)
+        .min(PAGE_LIMIT_MAX as u64);
+    let skip = page.saturating_mul(limit);
     let mut blocks = Vec::new();
 
     if tip.height >= skip {
@@ -687,25 +791,21 @@ async fn get_blocks(
         }
     }
 
-    (
+    Ok(json_response(
         StatusCode::OK,
-        Json(BlocksResponse {
+        &BlocksResponse {
             blocks,
             total_height: tip.height,
             page,
             limit,
-        }),
-    )
-        .into_response()
+        },
+    ))
 }
 
-async fn get_block_handler(
-    State(state): State<Arc<ExplorerState>>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+fn get_block_handler(state: &ExplorerState, id: &str) -> Response<Body> {
     let block = if let Ok(height) = id.parse::<u64>() {
         state.blockchain.blocks.get_block_by_height(height).ok()
-    } else if let Some(hash) = parse_hash(&id) {
+    } else if let Some(hash) = parse_hash(id) {
         state.blockchain.blocks.get_block_by_hash(&hash).ok()
     } else {
         None
@@ -714,8 +814,7 @@ async fn get_block_handler(
     let block = match block {
         Some(block) => block,
         None => {
-            return error_json(StatusCode::NOT_FOUND, &format!("Block not found: {id}"))
-                .into_response()
+            return error_json(StatusCode::NOT_FOUND, &format!("Block not found: {id}"));
         }
     };
 
@@ -731,28 +830,24 @@ async fn get_block_handler(
         .map(|uncle| uncle.hash().to_string())
         .collect();
 
-    (
+    json_response(
         StatusCode::OK,
-        Json(BlockDetail {
+        &BlockDetail {
             hash: block.hash().to_string(),
             header: header_detail(&block.header),
             tx_count: block.transactions.len(),
             tx_hashes,
             uncle_count: block.uncle_headers.len(),
             uncle_hashes,
-        }),
+        },
     )
-        .into_response()
 }
 
-async fn get_tx(
-    State(state): State<Arc<ExplorerState>>,
-    Path(hash_str): Path<String>,
-) -> impl IntoResponse {
-    let tx_hash = match parse_hash(&hash_str) {
+fn get_tx(state: &ExplorerState, hash_str: &str) -> Response<Body> {
+    let tx_hash = match parse_hash(hash_str) {
         Some(hash) => hash,
         None => {
-            return error_json(StatusCode::BAD_REQUEST, "Invalid transaction hash").into_response()
+            return error_json(StatusCode::BAD_REQUEST, "Invalid transaction hash");
         }
     };
 
@@ -762,8 +857,7 @@ async fn get_tx(
             return error_json(
                 StatusCode::NOT_FOUND,
                 &format!("Transaction not found: {hash_str}"),
-            )
-            .into_response()
+            );
         }
     };
 
@@ -772,78 +866,55 @@ async fn get_tx(
         Err(_) => 0,
     };
 
-    (
+    json_response(
         StatusCode::OK,
-        Json(TxLocationResponse {
+        &TxLocationResponse {
             tx_hash: tx_hash.to_string(),
             block_hash: block_hash.to_string(),
             block_height,
             index_in_block: idx,
-        }),
+        },
     )
-        .into_response()
 }
 
-#[derive(Deserialize)]
-struct SearchQuery {
-    q: String,
-}
+fn search_handler(
+    state: &ExplorerState,
+    params: &QueryParams,
+) -> Result<Response<Body>, Rejection> {
+    let query = params.require("q")?.trim();
 
-async fn search_handler(
-    State(state): State<Arc<ExplorerState>>,
-    Query(params): Query<SearchQuery>,
-) -> impl IntoResponse {
-    let query = params.q.trim();
+    let hit = |result_type: &'static str, height: Option<u64>, hash: Option<String>| {
+        json_response(
+            StatusCode::OK,
+            &SearchResponse {
+                result_type: result_type.to_string(),
+                height,
+                hash,
+            },
+        )
+    };
 
     if let Ok(height) = query.parse::<u64>() {
         if state.blockchain.blocks.get_block_by_height(height).is_ok() {
-            return (
-                StatusCode::OK,
-                Json(SearchResponse {
-                    result_type: "block".into(),
-                    height: Some(height),
-                    hash: None,
-                }),
-            )
-                .into_response();
+            return Ok(hit("block", Some(height), None));
         }
     }
 
     if let Some(hash) = parse_hash(query) {
         if let Ok(block) = state.blockchain.blocks.get_block_by_hash(&hash) {
-            return (
-                StatusCode::OK,
-                Json(SearchResponse {
-                    result_type: "block".into(),
-                    height: Some(block.header.height),
-                    hash: Some(hash.to_string()),
-                }),
-            )
-                .into_response();
+            return Ok(hit(
+                "block",
+                Some(block.header.height),
+                Some(hash.to_string()),
+            ));
         }
 
         if state.blockchain.blocks.get_tx_location(&hash).is_ok() {
-            return (
-                StatusCode::OK,
-                Json(SearchResponse {
-                    result_type: "tx".into(),
-                    height: None,
-                    hash: Some(hash.to_string()),
-                }),
-            )
-                .into_response();
+            return Ok(hit("tx", None, Some(hash.to_string())));
         }
 
         if state.blockchain.compute_task(hash).is_some() {
-            return (
-                StatusCode::OK,
-                Json(SearchResponse {
-                    result_type: "science_task".into(),
-                    height: None,
-                    hash: Some(hash.to_string()),
-                }),
-            )
-                .into_response();
+            return Ok(hit("science_task", None, Some(hash.to_string())));
         }
 
         if state
@@ -851,42 +922,19 @@ async fn search_handler(
             .vm_contract(ContractAddress(*hash.as_bytes()))
             .is_some()
         {
-            return (
-                StatusCode::OK,
-                Json(SearchResponse {
-                    result_type: "app".into(),
-                    height: None,
-                    hash: Some(hash.to_string()),
-                }),
-            )
-                .into_response();
+            return Ok(hit("app", None, Some(hash.to_string())));
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(SearchResponse {
-            result_type: "none".into(),
-            height: None,
-            hash: None,
-        }),
-    )
-        .into_response()
+    Ok(hit("none", None, None))
 }
 
-async fn get_miner_rewards(
-    State(state): State<Arc<ExplorerState>>,
-    Path(pubkey): Path<String>,
-) -> impl IntoResponse {
-    let normalized = pubkey.trim().to_ascii_lowercase();
-    if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return error_json(StatusCode::BAD_REQUEST, "miner pubkey must be 64 hex chars")
-            .into_response();
-    }
-
-    if let Err(error) = state.refresh_cache() {
-        return error_json(StatusCode::INTERNAL_SERVER_ERROR, &error).into_response();
-    }
+fn get_miner_rewards(state: &ExplorerState, pubkey: &str) -> Result<Response<Body>, Rejection> {
+    let normalized = normalized_pubkey(pubkey)?;
+    state.refresh_cache().map_err(|error| Rejection {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error,
+    })?;
 
     let cache = state.cache.read();
     let events = cache.miner_blocks.get(&normalized);
@@ -896,35 +944,30 @@ async fn get_miner_rewards(
         .unwrap_or(0);
     let latest_height = events.and_then(|items| items.last().map(|event| event.height));
 
-    (
+    Ok(json_response(
         StatusCode::OK,
-        Json(MinerRewardsResponse {
+        &MinerRewardsResponse {
             miner_pubkey: normalized,
             blocks_found,
             total_reward: format_hpn_128(total_reward_atomic),
             total_reward_atomic: total_reward_atomic.to_string(),
             latest_height,
-        }),
-    )
-        .into_response()
+        },
+    ))
 }
 
-async fn get_miner_blocks(
-    State(state): State<Arc<ExplorerState>>,
-    Path(pubkey): Path<String>,
-    Query(params): Query<MinerBlocksQuery>,
-) -> impl IntoResponse {
-    let normalized = pubkey.trim().to_ascii_lowercase();
-    if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return error_json(StatusCode::BAD_REQUEST, "miner pubkey must be 64 hex chars")
-            .into_response();
-    }
+fn get_miner_blocks(
+    state: &ExplorerState,
+    pubkey: &str,
+    params: &QueryParams,
+) -> Result<Response<Body>, Rejection> {
+    let normalized = normalized_pubkey(pubkey)?;
+    state.refresh_cache().map_err(|error| Rejection {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error,
+    })?;
 
-    if let Err(error) = state.refresh_cache() {
-        return error_json(StatusCode::INTERNAL_SERVER_ERROR, &error).into_response();
-    }
-
-    let limit = params.limit.unwrap_or(16).clamp(1, 128);
+    let limit = params.number::<usize>("limit")?.unwrap_or(16).clamp(1, 128);
     let cache = state.cache.read();
     let blocks = cache
         .miner_blocks
@@ -932,26 +975,29 @@ async fn get_miner_blocks(
         .map(|items| items.iter().rev().take(limit).cloned().collect())
         .unwrap_or_default();
 
-    (
+    Ok(json_response(
         StatusCode::OK,
-        Json(MinerBlocksResponse {
+        &MinerBlocksResponse {
             miner_pubkey: normalized,
             blocks,
-        }),
-    )
-        .into_response()
+        },
+    ))
 }
 
-async fn get_updates(
-    State(state): State<Arc<ExplorerState>>,
-    Query(params): Query<UpdatesQuery>,
-) -> impl IntoResponse {
-    let tip = match state.blockchain.tip() {
-        Ok(t) => t,
-        Err(e) => {
-            return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()).into_response()
-        }
-    };
+/// A miner pubkey must be exactly 32 bytes of hex, in lowercase for the cache.
+fn normalized_pubkey(pubkey: &str) -> Result<String, Rejection> {
+    let normalized = pubkey.trim().to_ascii_lowercase();
+    if normalized.len() != 64 || !normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Rejection::bad_request("miner pubkey must be 64 hex chars"));
+    }
+    Ok(normalized)
+}
+
+fn get_updates(state: &ExplorerState, params: &QueryParams) -> Result<Response<Body>, Rejection> {
+    let tip = state.blockchain.tip().map_err(|error| Rejection {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error.to_string(),
+    })?;
 
     let latest_block = state
         .blockchain
@@ -959,51 +1005,325 @@ async fn get_updates(
         .get_block_by_height(tip.height)
         .ok()
         .map(|block| block_summary(&block));
-    let changed = params.since.map(|since| since < tip.height).unwrap_or(true);
+    let changed = params
+        .number::<u64>("since")?
+        .map(|since| since < tip.height)
+        .unwrap_or(true);
 
-    (
+    Ok(json_response(
         StatusCode::OK,
-        Json(ExplorerUpdatesResponse {
+        &ExplorerUpdatesResponse {
             changed,
-            info: build_info_response(&state, tip),
+            info: build_info_response(state, tip),
             latest_block,
-        }),
-    )
-        .into_response()
+        },
+    ))
 }
 
-pub fn explorer_router(blockchain: Arc<Blockchain>, cfg: ChainConfig) -> Router {
+/// The routes the explorer serves.
+#[derive(Debug)]
+enum Route {
+    Index,
+    AppJs,
+    Wasm,
+    Info,
+    Updates,
+    Blocks,
+    Block(String),
+    Tx(String),
+    ScienceTasks,
+    ScienceTask(String),
+    Apps,
+    App(String),
+    MinerRewards(String),
+    MinerBlocks(String),
+    Search,
+}
+
+impl Route {
+    /// Resolves a request target, or `None` when no route matches.
+    ///
+    /// Path parameters are percent-decoded here and nowhere else: a handler
+    /// receives the value a client meant, and a malformed escape is `400`
+    /// rather than a silently different address.
+    fn resolve(path: &str) -> Result<Option<Self>, Rejection> {
+        let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        let route = match segments.as_slice() {
+            [""] => Route::Index,
+            ["app.js"] => Route::AppJs,
+            ["hyphen_explorer_web.wasm"] => Route::Wasm,
+            ["api", "info"] => Route::Info,
+            ["api", "updates"] => Route::Updates,
+            ["api", "blocks"] => Route::Blocks,
+            ["api", "search"] => Route::Search,
+            ["api", "apps"] => Route::Apps,
+            ["api", "science", "tasks"] => Route::ScienceTasks,
+            ["api", "block", id] => Route::Block(percent_decode(id)?),
+            ["api", "tx", hash] => Route::Tx(percent_decode(hash)?),
+            ["api", "app", address] => Route::App(percent_decode(address)?),
+            ["api", "science", "task", id] => Route::ScienceTask(percent_decode(id)?),
+            ["api", "miner", pubkey, "rewards"] => Route::MinerRewards(percent_decode(pubkey)?),
+            ["api", "miner", pubkey, "blocks"] => Route::MinerBlocks(percent_decode(pubkey)?),
+            _ => return Ok(None),
+        };
+        Ok(Some(route))
+    }
+}
+
+/// Serves one request; the whole explorer surface lives here.
+struct ExplorerService {
+    state: Arc<ExplorerState>,
+}
+
+impl ExplorerService {
+    fn respond(&self, request: Request<Body>) -> Response<Body> {
+        let route = match Route::resolve(request.uri.path()) {
+            Ok(Some(route)) => route,
+            Ok(None) => return error_json(StatusCode::NOT_FOUND, "no such endpoint"),
+            Err(rejection) => return error_json(rejection.status, &rejection.message),
+        };
+
+        // `HEAD` is served like `GET`; the server suppresses the body.
+        if request.method != Method::GET && request.method != Method::HEAD {
+            let mut response = error_json(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "the explorer serves GET and HEAD",
+            );
+            response.headers.insert("allow".into(), "GET, HEAD".into());
+            return response;
+        }
+
+        let params = match QueryParams::parse(request.uri.query()) {
+            Ok(params) => params,
+            Err(rejection) => return error_json(rejection.status, &rejection.message),
+        };
+
+        let state = &self.state;
+        let outcome = match route {
+            Route::Index => Ok(serve_frontend()),
+            Route::AppJs => Ok(serve_app_js()),
+            Route::Wasm => Ok(serve_wasm()),
+            Route::Info => Ok(get_info(state)),
+            Route::Updates => get_updates(state, &params),
+            Route::Blocks => get_blocks(state, &params),
+            Route::Block(id) => Ok(get_block_handler(state, &id)),
+            Route::Tx(hash) => Ok(get_tx(state, &hash)),
+            Route::ScienceTasks => get_scientific_tasks(state, &params),
+            Route::ScienceTask(id) => get_scientific_task(state, &id),
+            Route::Apps => get_contracts(state, &params),
+            Route::App(address) => get_contract(state, &address),
+            Route::MinerRewards(pubkey) => get_miner_rewards(state, &pubkey),
+            Route::MinerBlocks(pubkey) => get_miner_blocks(state, &pubkey, &params),
+            Route::Search => search_handler(state, &params),
+        };
+
+        match outcome {
+            Ok(response) => response,
+            Err(rejection) => error_json(rejection.status, &rejection.message),
+        }
+    }
+}
+
+/// Serves the explorer until the process stops.
+///
+/// Courierust owns the listener and its workers; the chain state is shared
+/// read-mostly behind its own lock, so handlers stay synchronous and the page,
+/// its script, its WebAssembly module and every JSON route come from one HTTP
+/// stack.
+pub fn serve_explorer(
+    bind_addr: SocketAddr,
+    blockchain: Arc<Blockchain>,
+    cfg: ChainConfig,
+) -> Result<(), String> {
     let state = Arc::new(ExplorerState {
         blockchain,
         cfg,
         cache: RwLock::new(ExplorerCache::default()),
     });
-    Router::new()
-        .route("/", get(serve_frontend))
-        .route("/app.js", get(serve_app_js))
-        .route("/hyphen_explorer_web.wasm", get(serve_wasm))
-        .route("/api/info", get(get_info))
-        .route("/api/updates", get(get_updates))
-        .route("/api/blocks", get(get_blocks))
-        .route("/api/block/{id}", get(get_block_handler))
-        .route("/api/tx/{hash}", get(get_tx))
-        .route("/api/science/tasks", get(get_scientific_tasks))
-        .route("/api/science/task/{id}", get(get_scientific_task))
-        .route("/api/apps", get(get_contracts))
-        .route("/api/app/{address}", get(get_contract))
-        .route("/api/miner/{pubkey}/rewards", get(get_miner_rewards))
-        .route("/api/miner/{pubkey}/blocks", get(get_miner_blocks))
-        .route("/api/search", get(search_handler))
-        .with_state(state)
+    let config = ServerConfig {
+        http2: true,
+        max_body: MAX_REQUEST_BYTES,
+        max_header_list: MAX_HEADER_LIST,
+        request_header_timeout: Some(REQUEST_HEAD_TIMEOUT),
+        read_timeout: Some(READ_TIMEOUT),
+        idle_timeout: Some(IDLE_TIMEOUT),
+        max_connections: MAX_CONNECTIONS,
+        ..ServerConfig::default()
+    };
+    let server = Server::bind_with_config(bind_addr, config)
+        .map_err(|error| format!("bind block explorer: {error}"))?;
+    let local_addr = server
+        .local_addr()
+        .map_err(|error| format!("block explorer address: {error}"))?;
+    info!("Block explorer listening on http://{local_addr}");
+
+    let service = ExplorerService { state };
+    server
+        .serve(move |request: Request<Body>| service.respond(request))
+        .map_err(|error| format!("serve block explorer: {error}"))
 }
 
 pub async fn start_explorer(
-    bind_addr: std::net::SocketAddr,
+    bind_addr: SocketAddr,
     blockchain: Arc<Blockchain>,
     cfg: ChainConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    info!("Block explorer listening on http://{}", bind_addr);
-    axum::serve(listener, explorer_router(blockchain, cfg)).await?;
+    // Serving blocks its calling thread, so it runs on the blocking pool rather
+    // than on the node's reactor.
+    tokio::task::spawn_blocking(move || serve_explorer(bind_addr, blockchain, cfg)).await??;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_route_resolves_and_nothing_else_does() {
+        let cases = [
+            ("/", Some(Route::Index)),
+            ("/app.js", Some(Route::AppJs)),
+            ("/hyphen_explorer_web.wasm", Some(Route::Wasm)),
+            ("/api/info", Some(Route::Info)),
+            ("/api/updates", Some(Route::Updates)),
+            ("/api/blocks", Some(Route::Blocks)),
+            ("/api/search", Some(Route::Search)),
+            ("/api/apps", Some(Route::Apps)),
+            ("/api/science/tasks", Some(Route::ScienceTasks)),
+        ];
+        for (path, expected) in cases {
+            let resolved = Route::resolve(path).expect("well-formed target");
+            assert_eq!(
+                resolved.is_some(),
+                expected.is_some(),
+                "unexpected route for {path}"
+            );
+            assert_eq!(
+                resolved.map(|route| std::mem::discriminant(&route)),
+                expected.map(|route| std::mem::discriminant(&route)),
+                "unexpected route for {path}"
+            );
+        }
+
+        // Parameters are carried, not dropped.
+        match Route::resolve("/api/block/7").unwrap() {
+            Some(Route::Block(id)) => assert_eq!(id, "7"),
+            _ => panic!("block height must resolve to a block route"),
+        }
+        match Route::resolve("/api/tx/ab%63d").unwrap() {
+            Some(Route::Tx(hash)) => assert_eq!(hash, "abcd"),
+            _ => panic!("a percent-encoded hash must decode"),
+        }
+        match Route::resolve("/api/miner/aa/rewards").unwrap() {
+            Some(Route::MinerRewards(pubkey)) => assert_eq!(pubkey, "aa"),
+            _ => panic!("miner rewards must resolve"),
+        }
+        match Route::resolve("/api/science/task/ab").unwrap() {
+            Some(Route::ScienceTask(id)) => assert_eq!(id, "ab"),
+            _ => panic!("scientific task must resolve"),
+        }
+        match Route::resolve("/api/app/ab").unwrap() {
+            Some(Route::App(address)) => assert_eq!(address, "ab"),
+            _ => panic!("contract must resolve"),
+        }
+
+        for path in [
+            "/favicon.ico",
+            "/api",
+            "/api/info/",
+            "/api/block",
+            "/api/block/a/b",
+            "/api/miner/aa",
+            "/index.html",
+        ] {
+            assert!(
+                Route::resolve(path).expect("well-formed target").is_none(),
+                "{path} must not match a route"
+            );
+        }
+
+        // A malformed escape is a client error, not a route.
+        let rejection = Route::resolve("/api/block/%zz").unwrap_err();
+        assert_eq!(rejection.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn query_parameters_are_decoded_and_validated() {
+        let params = QueryParams::parse(Some("page=2&limit=50&q=hello%20world")).unwrap();
+        assert_eq!(params.number::<u64>("page").unwrap(), Some(2));
+        assert_eq!(params.number::<u64>("limit").unwrap(), Some(50));
+        assert_eq!(params.require("q").unwrap(), "hello world");
+        assert_eq!(params.get("absent"), None);
+
+        // Unknown parameters are ignored rather than refused.
+        let params = QueryParams::parse(Some("since=9&cachebuster=1")).unwrap();
+        assert_eq!(params.number::<u64>("since").unwrap(), Some(9));
+
+        // A missing required parameter and a non-numeric one are both 400s.
+        let params = QueryParams::parse(Some("")).unwrap();
+        assert_eq!(
+            params.require("q").unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+        let params = QueryParams::parse(Some("page=abc")).unwrap();
+        assert_eq!(
+            params.number::<u64>("page").unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            QueryParams::parse(Some("q=%zz")).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn every_answer_carries_the_security_headers() {
+        let response = serve_frontend();
+        let header = |name: &str| {
+            response
+                .headers
+                .get(name)
+                .map(|value| value.as_bytes().to_vec())
+        };
+        assert_eq!(
+            header("content-type"),
+            Some(b"text/html; charset=utf-8".to_vec())
+        );
+        assert_eq!(header("x-content-type-options"), Some(b"nosniff".to_vec()));
+        assert_eq!(header("referrer-policy"), Some(b"no-referrer".to_vec()));
+        let policy = header("content-security-policy").expect("the CSP is set");
+        let policy = String::from_utf8(policy).unwrap();
+        assert!(policy.contains("default-src 'self'"));
+        assert!(policy.contains("frame-ancestors 'none'"));
+        assert!(policy.contains("object-src 'none'"));
+
+        let json = error_json(StatusCode::NOT_FOUND, "no such endpoint");
+        assert_eq!(
+            json.headers.get("content-type").map(|v| v.as_bytes()),
+            Some(&b"application/json"[..])
+        );
+        assert_eq!(json.status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn static_assets_are_served_with_their_own_media_types() {
+        assert!(!INDEX_HTML.is_empty());
+        assert!(!APP_JS.is_empty());
+        assert!(!EXPLORER_WASM.is_empty());
+        assert!(
+            EXPLORER_WASM.starts_with(b"\0asm"),
+            "the WASM module is real"
+        );
+
+        let script = serve_app_js();
+        assert_eq!(
+            script.headers.get("content-type").map(|v| v.as_bytes()),
+            Some(&b"text/javascript; charset=utf-8"[..])
+        );
+        let wasm = serve_wasm();
+        assert_eq!(
+            wasm.headers.get("content-type").map(|v| v.as_bytes()),
+            Some(&b"application/wasm"[..])
+        );
+    }
 }
