@@ -34,7 +34,7 @@ impl PedersenGens {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Commitment(pub [u8; 32]);
 
 #[derive(Debug, Error)]

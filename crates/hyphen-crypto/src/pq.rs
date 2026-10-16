@@ -57,19 +57,19 @@ fn msg_base_w(msg_hash: &[u8; 32]) -> Vec<u8> {
     base_w
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct WotsPublicKey {
     pub key_hash: [u8; 32],
     pub addr_seed: [u8; 32],
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct WotsSecretKey {
     pub seed: [u8; 32],
     pub addr_seed: [u8; 32],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct WotsSignature {
     pub chains: Vec<[u8; 32]>,
     pub addr_seed: [u8; 32],
@@ -185,13 +185,13 @@ impl WotsSignature {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct HybridPublicKey {
     pub ed25519: crate::keys::PublicKey,
     pub wots: WotsPublicKey,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct HybridSecretKey {
     pub ed25519: crate::keys::SecretKey,
     pub wots: WotsSecretKey,
@@ -219,7 +219,7 @@ impl std::fmt::Debug for HybridSecretKey {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct HybridSignature {
     pub ed25519: crate::keys::Signature,
     pub wots: WotsSignature,

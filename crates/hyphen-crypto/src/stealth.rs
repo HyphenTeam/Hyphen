@@ -16,18 +16,18 @@ pub enum StealthError {
     DecompressionFailed,
 }
 
-#[derive(Clone, Serialize, Deserialize, Zeroize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, rustbinary::CompactBinary)]
 #[zeroize(drop)]
 pub struct ViewKey(pub [u8; 32]);
 
-#[derive(Clone, Serialize, Deserialize, Zeroize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, rustbinary::CompactBinary)]
 #[zeroize(drop)]
 pub struct SpendKey(pub [u8; 32]);
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct EphemeralKey(pub [u8; 32]);
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct StealthAddress {
     pub view_public: [u8; 32],
     pub spend_public: [u8; 32],

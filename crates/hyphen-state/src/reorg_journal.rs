@@ -18,13 +18,13 @@ const JOURNAL_VERSION: u16 = 1;
 pub const MAX_REORG_PATH_BLOCKS: usize = 4_096;
 pub const MAX_REJECTION_REASON_BYTES: usize = 1_024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum ReorgMode {
     ApplyingCandidate,
     RestoringOriginal,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ReorgJournal {
     pub version: u16,
     pub common_ancestor: Hash256,

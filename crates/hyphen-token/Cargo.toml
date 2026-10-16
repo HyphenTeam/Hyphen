@@ -12,5 +12,6 @@ hyphen-proof.workspace     = true
 blake3.workspace           = true
 curve25519-dalek.workspace = true
 serde.workspace            = true
+rustbinary.workspace       = true
 thiserror.workspace        = true
 rand.workspace             = true

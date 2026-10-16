@@ -20,14 +20,25 @@ const D_VOTE: &[u8] = b"HYPHEN_FOC_PHASE_VOTE_V0";
 const D_TIMEOUT: &[u8] = b"HYPHEN_FOC_TIMEOUT_VOTE_V0";
 const D_HANDOFF: &[u8] = b"HYPHEN_FOC_HANDOFF_V0";
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rustbinary::CompactBinary,
+)]
 #[repr(u8)]
 pub enum FinalityPhase {
     Prepare = 0,
     Commit = 1,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct FairFinalityValue {
     pub chain_id: Hash256,
     pub epoch: u64,
@@ -59,7 +70,7 @@ impl FairFinalityValue {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct PhaseVoteStatement {
     pub chain_id: Hash256,
     pub epoch: u64,
@@ -89,13 +100,13 @@ impl PhaseVoteStatement {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct PhaseVote {
     pub seat: u16,
     pub signature: Signature,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct PhaseCertificate {
     pub statement: PhaseVoteStatement,
     pub votes: Vec<PhaseVote>,
@@ -115,7 +126,7 @@ impl PhaseCertificate {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct TimeoutStatement {
     pub chain_id: Hash256,
     pub epoch: u64,
@@ -147,14 +158,14 @@ impl TimeoutStatement {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct TimeoutVote {
     pub seat: u16,
     pub statement: TimeoutStatement,
     pub signature: Signature,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct TimeoutCertificate {
     pub chain_id: Hash256,
     pub epoch: u64,
@@ -164,7 +175,7 @@ pub struct TimeoutCertificate {
     pub votes: Vec<TimeoutVote>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct FairFinalityProposal {
     pub view: u64,
     pub value: FairFinalityValue,
@@ -215,7 +226,7 @@ pub enum FairFinalityError {
     Storage(String),
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize, rustbinary::CompactBinary)]
 struct SlotState {
     revision: u64,
     locked: Option<(u64, Hash256)>,
@@ -720,14 +731,25 @@ fn storage_error(error: impl std::fmt::Display) -> FairFinalityError {
     FairFinalityError::Storage(error.to_string())
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rustbinary::CompactBinary,
+)]
 #[repr(u8)]
 pub enum HandoffRole {
     Old = 0,
     New = 1,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct HandoffStatement {
     pub chain_id: Hash256,
     pub from_epoch: u64,
@@ -765,13 +787,13 @@ impl HandoffStatement {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct HandoffVote {
     pub seat: u16,
     pub signature: Signature,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct DualHandoffCertificate {
     pub statement: HandoffStatement,
     pub old_votes: Vec<HandoffVote>,

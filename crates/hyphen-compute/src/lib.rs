@@ -7,7 +7,9 @@
 //! recognizes the task's versioned circuit. No signature, checkpoint sample,
 //! or storage certificate is treated as proof of correct execution.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
+use hyphen_wire::CanonicalSet;
 
 use hyphen_crypto::{blake3_hash_many, Hash256, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
@@ -16,13 +18,12 @@ use thiserror::Error;
 const DEFAULT_WIRE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WIRE_COLLECTION_ITEMS: usize = 1_000_000;
 
-fn wire_config(max_bytes: usize) -> rustbinary::Config {
-    rustbinary::legacy_options()
-        .with_little_endian()
-        .with_fixint_encoding()
+fn wire_config(max_bytes: usize) -> rustbinary::CompactConfig {
+    rustbinary::options()
         .with_limit(max_bytes as u64)
         .with_collection_limit(max_bytes.min(MAX_WIRE_COLLECTION_ITEMS) as u64)
         .reject_trailing_bytes()
+        .with_compact_format()
 }
 
 pub const ENVELOPE_MAGIC: &[u8; 8] = b"AETHWRK1";
@@ -43,7 +44,7 @@ const D_STATE_LEAF: &[u8] = b"AETHER_COMPUTE_STATE_LEAF_V1";
 const D_STATE_NODE: &[u8] = b"AETHER_COMPUTE_STATE_NODE_V1";
 const D_STATE_ROOT: &[u8] = b"AETHER_COMPUTE_STATE_ROOT_V1";
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 #[repr(u8)]
 pub enum ScientificDomain {
     QuantumChromodynamics = 1,
@@ -51,7 +52,7 @@ pub enum ScientificDomain {
     Connectomics = 3,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 #[repr(u8)]
 pub enum ArithmeticProfile {
     /// Bit-exact integer and fixed-point semantics. Floating-point contraction,
@@ -60,7 +61,7 @@ pub enum ArithmeticProfile {
     DeterministicFixedPointV1 = 1,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct DataCommitment {
     pub object_hash: Hash256,
     pub byte_len: u64,
@@ -108,7 +109,7 @@ impl DataCommitment {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct TaskSpec {
     pub chain_id: Hash256,
     pub scientist: PublicKey,
@@ -166,7 +167,7 @@ impl TaskSpec {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedTask {
     pub spec: TaskSpec,
     pub signature: Signature,
@@ -193,7 +194,7 @@ impl SignedTask {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct ExecutionClaim {
     pub task_id: Hash256,
     pub worker: PublicKey,
@@ -220,7 +221,7 @@ impl ExecutionClaim {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedResult {
     pub claim: ExecutionClaim,
     pub signature: Signature,
@@ -243,7 +244,7 @@ impl SignedResult {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct FraudClaim {
     pub task_id: Hash256,
     pub result_digest: Hash256,
@@ -265,7 +266,7 @@ impl FraudClaim {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedFraudClaim {
     pub claim: FraudClaim,
     pub signature: Signature,
@@ -281,7 +282,7 @@ impl SignedFraudClaim {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct RetentionAttestation {
     pub task_id: Hash256,
     pub result_digest: Hash256,
@@ -306,7 +307,7 @@ impl RetentionAttestation {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedRetentionAttestation {
     pub attestation: RetentionAttestation,
     pub signature: Signature,
@@ -328,7 +329,7 @@ impl SignedRetentionAttestation {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub enum ComputeTransaction {
     Publish(SignedTask),
     Submit(SignedResult),
@@ -362,7 +363,7 @@ impl ComputeTransaction {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub enum TaskStatus {
     Open,
     Submitted {
@@ -382,7 +383,7 @@ pub enum TaskStatus {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct TaskRecord {
     pub task: SignedTask,
     pub published_height: u64,
@@ -390,10 +391,12 @@ pub struct TaskRecord {
     pub retention: BTreeMap<PublicKey, RetentionAttestation>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary,
+)]
 pub struct ComputeState {
     tasks: BTreeMap<Hash256, TaskRecord>,
-    scientist_nonces: BTreeSet<(PublicKey, u64)>,
+    scientist_nonces: CanonicalSet<(PublicKey, u64)>,
 }
 
 pub trait ProofVerifier: Send + Sync {

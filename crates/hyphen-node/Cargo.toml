@@ -25,6 +25,7 @@ hyphen-explorer.workspace  = true
 hyphen-rpc.workspace       = true
 hyphen-compute.workspace   = true
 hyphen-vm.workspace        = true
+hyphen-wire.workspace      = true
 
 
 tokio.workspace            = true

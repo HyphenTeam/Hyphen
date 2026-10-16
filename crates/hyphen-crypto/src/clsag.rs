@@ -21,7 +21,7 @@ pub enum ClsagError {
     VerificationFailed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ClsagSignature {
     pub c0: [u8; 32],
     pub s: Vec<[u8; 32]>,

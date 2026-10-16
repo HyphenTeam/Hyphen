@@ -15,7 +15,7 @@ pub enum IssuanceError {
     InvalidSignature,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum IssuancePolicy {
     Fixed,
     Mintable {
@@ -37,7 +37,7 @@ impl IssuancePolicy {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct MintRecord {
     pub asset_id: AssetId,
     pub amount: u64,

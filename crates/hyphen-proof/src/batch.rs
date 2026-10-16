@@ -194,7 +194,7 @@ pub fn prove_multiple_with_rng<R: CryptoRng>(
 
     Ok((
         AggregatedRangeProof {
-            m,
+            m: m as u64,
             proof: RangeProof {
                 a: a_point.compress().to_bytes(),
                 s: s_point.compress().to_bytes(),

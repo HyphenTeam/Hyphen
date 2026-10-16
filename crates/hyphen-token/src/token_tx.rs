@@ -14,7 +14,7 @@ pub enum TokenTxError {
     EmptyTransfer,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TokenInput {
     pub asset_id: AssetId,
     pub commitment: Commitment,
@@ -22,7 +22,7 @@ pub struct TokenInput {
     pub ring_members: Vec<Commitment>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TokenOutput {
     pub asset_id: AssetId,
     pub commitment: Commitment,
@@ -31,7 +31,7 @@ pub struct TokenOutput {
     pub output_index: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TokenTransfer {
     pub asset_id: AssetId,
     pub inputs: Vec<TokenInput>,

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::authorization::BlockAuthorization;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct BlockHeader {
     pub version: u32,
     pub height: u64,
@@ -42,7 +42,7 @@ impl BlockHeader {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Block {
     pub header: BlockHeader,
     /// Single-use mathematical witnesses claimed by this block. The header's
@@ -111,7 +111,7 @@ pub fn merkle_root(hashes: &[Hash256]) -> Hash256 {
     current[0]
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TransactionReceipt {
     pub tx_hash: Hash256,
     pub success: bool,
@@ -130,7 +130,7 @@ impl TransactionReceipt {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ReceiptLog {
     pub contract: [u8; 32],
     pub topics: Vec<Hash256>,

@@ -8,7 +8,7 @@ pub const APP_QUERY_EXPORT: &str = "hyphen_query";
 pub const APP_EXECUTE_EXPORT: &str = "hyphen_execute";
 const MAX_MANIFEST_BYTES: usize = 1_024;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 #[serde(rename_all = "snake_case")]
 pub enum AppCategory {
     Defi,
@@ -26,7 +26,7 @@ impl std::fmt::Display for AppCategory {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 #[serde(deny_unknown_fields)]
 pub struct AppManifest {
     pub abi: u16,

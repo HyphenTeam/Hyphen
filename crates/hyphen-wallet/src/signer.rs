@@ -17,7 +17,7 @@ pub const MAX_SIGNER_INPUTS: usize = 16;
 pub const MAX_SIGNER_OUTPUTS: usize = 16;
 pub const MAX_SIGNER_RING_SIZE: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum DeviceFamily {
     Software,
     Ledger,
@@ -26,7 +26,7 @@ pub enum DeviceFamily {
     Other,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum SignerTransport {
     InProcess,
     UsbHid,
@@ -35,13 +35,13 @@ pub enum SignerTransport {
     Qr,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct NetworkBinding {
     pub network_magic: [u8; 4],
     pub genesis_hash: [u8; 32],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct KeyLocator {
     pub derivation_scheme: String,
     pub account: u32,
@@ -60,13 +60,13 @@ impl Default for KeyLocator {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ReviewOutput {
     pub address: String,
     pub amount: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ClsagSigningInput {
     pub amount: u64,
     pub ring_public_keys: Vec<[u8; 32]>,
@@ -75,7 +75,7 @@ pub struct ClsagSigningInput {
     pub expected_key_image: [u8; 32],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct SigningRequest {
     pub protocol_version: u32,
     pub request_id: [u8; 32],
@@ -87,14 +87,14 @@ pub struct SigningRequest {
     pub inputs: Vec<ClsagSigningInput>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct SigningResponse {
     pub protocol_version: u32,
     pub request_id: [u8; 32],
     pub signatures: Vec<ClsagSignature>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct SignerCapabilities {
     pub protocol_version: u32,
     pub family: DeviceFamily,

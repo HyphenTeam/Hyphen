@@ -14,7 +14,7 @@ const RECEIPT_VERSION: u8 = 0;
 const D_RECEIPT: &[u8] = b"HYPHEN_FAIR_INCLUSION_RECEIPT_V0";
 pub const MAX_RECEIPT_VOTES: usize = 4096;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct InclusionReceiptStatement {
     pub chain_id: Hash256,
     pub epoch: u64,
@@ -55,20 +55,20 @@ impl InclusionReceiptStatement {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct InclusionReceiptVote {
     pub seat: u16,
     pub observed_at: u64,
     pub signature: Signature,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct QuorumInclusionReceipt {
     pub statement: InclusionReceiptStatement,
     pub votes: Vec<InclusionReceiptVote>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct InclusionReceiptVoteGossip {
     pub statement: InclusionReceiptStatement,
     pub metadata: VisibleMetadata,
@@ -108,7 +108,7 @@ impl InclusionReceiptVoteGossip {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct QuorumInclusionReceiptGossip {
     pub metadata: VisibleMetadata,
     pub receipt: QuorumInclusionReceipt,
@@ -399,7 +399,7 @@ impl ReceiptObligationSet {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 struct PersistedReceiptVote {
     statement_digest: Hash256,
     observed_at: u64,

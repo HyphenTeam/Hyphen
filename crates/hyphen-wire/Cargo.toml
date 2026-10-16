@@ -1,0 +1,10 @@
+[package]
+name = "hyphen-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Frozen chain wire profile, canonical container adapters and byte budgets"
+
+[dependencies]
+rustbinary.workspace = true
+serde.workspace = true

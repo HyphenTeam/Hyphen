@@ -14,7 +14,7 @@ const AUTHORIZATION_DOMAIN: &[u8] = b"Hyphen/NCAP/block-authorization/v1";
 ///
 /// The pool may relay this object, but cannot change the final header or the
 /// reward keys without invalidating the miner signature.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct BlockAuthorization {
     pub version: u16,
     pub reward_view_public: [u8; 32],

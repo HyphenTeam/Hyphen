@@ -14,3 +14,4 @@ rand_chacha.workspace   = true
 thiserror.workspace     = true
 parking_lot.workspace   = true
 serde.workspace         = true
+rustbinary.workspace    = true

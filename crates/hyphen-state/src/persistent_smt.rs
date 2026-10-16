@@ -30,7 +30,7 @@ pub struct SmtMutation {
     pub value: Option<Hash256>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SparseMerkleProof {
     pub namespace: Hash256,
     pub key: Hash256,

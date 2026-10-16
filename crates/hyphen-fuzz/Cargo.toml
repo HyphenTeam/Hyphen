@@ -11,7 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
-rustbinary = { version = "0.1.2", features = ["derive"] }
+rustbinary = { version = "0.1.8", features = ["derive"] }
 hyphen-network = { path = "../hyphen-network" }
 hyphen-rpc = { path = "../hyphen-rpc" }
 hyphen-tx = { path = "../hyphen-tx" }

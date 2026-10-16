@@ -3,7 +3,7 @@ use curve25519_dalek::scalar::Scalar;
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct InnerProductProof {
     pub l_vec: Vec<[u8; 32]>,
     pub r_vec: Vec<[u8; 32]>,

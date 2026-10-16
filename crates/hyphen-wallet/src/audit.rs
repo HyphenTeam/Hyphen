@@ -26,7 +26,7 @@ const D_CAPABILITY: &[u8] = b"HYPHEN_SAC_CAPABILITY_ID_V0";
 /// This list is part of the API so callers cannot mistake audience binding in
 /// the proof for encryption of the package. Transport confidentiality remains
 /// the caller's responsibility.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub enum DisclosedField {
     ChainId,
     TransactionId,
@@ -59,13 +59,13 @@ pub const DISCLOSED_FIELDS_V0: &[DisclosedField] = &[
     DisclosedField::OwnershipProof,
 ];
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct OwnershipProof {
     pub nonce_point: [u8; 32],
     pub response: [u8; 32],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SelectiveDisclosure {
     pub version: u8,
     pub chain_id: Hash256,

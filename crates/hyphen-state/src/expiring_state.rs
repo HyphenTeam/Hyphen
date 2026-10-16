@@ -6,9 +6,10 @@
 //! clarity over production performance; a production implementation may use
 //! different storage as long as it reproduces these roots and transitions.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use hyphen_crypto::Hash256;
+use hyphen_wire::CanonicalSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,7 +45,18 @@ const D_STATE_ROOT: &[u8] = b"HYPHEN_STATE_V1";
 ///
 /// Shielded notes are intentionally absent: expiring them safely requires a
 /// zero-knowledge relation that binds ownership and nullifier non-membership.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    rustbinary::CompactBinary,
+)]
 #[repr(u8)]
 pub enum StateClass {
     PublicAccount = 1,
@@ -52,7 +64,18 @@ pub enum StateClass {
     AssetMetadata = 3,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    rustbinary::CompactBinary,
+)]
 #[repr(u8)]
 pub enum StateStatus {
     Live = 1,
@@ -61,7 +84,7 @@ pub enum StateStatus {
     Consumed = 4,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct StateRecord {
     pub chain_id: Hash256,
     pub class: StateClass,
@@ -98,7 +121,7 @@ impl StateRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct LatestEntry {
     pub version: u64,
     pub status: StateStatus,
@@ -216,7 +239,7 @@ pub trait RestorePolicy {
     ) -> bool;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct StateRoots {
     pub live: Hash256,
     pub latest: Hash256,
@@ -347,14 +370,14 @@ pub enum WesError {
 
 /// Pure H-WES transition model. It does not persist archived record bodies;
 /// only their MMR hashes remain in validator state.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ReferenceExpiringState {
     chain_id: Hash256,
     live: BTreeMap<Hash256, StateRecord>,
     latest: BTreeMap<Hash256, LatestEntry>,
-    expiry_queue: BTreeMap<u64, BTreeSet<Hash256>>,
+    expiry_queue: BTreeMap<u64, CanonicalSet<Hash256>>,
     archive: ArchiveMmr,
-    nullifiers: BTreeSet<Hash256>,
+    nullifiers: CanonicalSet<Hash256>,
     availability_root: Hash256,
 }
 
@@ -366,7 +389,7 @@ impl ReferenceExpiringState {
             latest: BTreeMap::new(),
             expiry_queue: BTreeMap::new(),
             archive: ArchiveMmr::default(),
-            nullifiers: BTreeSet::new(),
+            nullifiers: CanonicalSet::new(),
             availability_root,
         }
     }
@@ -836,7 +859,7 @@ pub fn verify_lifecycle_receipt(
     shape_is_valid && verify_mmr_proof(event.hash(), proof, archive_root)
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, rustbinary::CompactBinary)]
 struct ArchiveMmr {
     leaves: Vec<Hash256>,
 }

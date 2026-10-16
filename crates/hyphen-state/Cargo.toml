@@ -20,6 +20,7 @@ hyphen-vm.workspace      = true
 thiserror.workspace     = true
 parking_lot.workspace   = true
 rand.workspace          = true
+hyphen-wire.workspace      = true
 
 [dev-dependencies]
 serde_json.workspace = true

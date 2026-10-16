@@ -14,7 +14,7 @@ const D_DEPLOY: &[u8] = b"HYPHEN_VM_DEPLOY_V1";
 const D_CALL: &[u8] = b"HYPHEN_VM_CALL_V1";
 const D_ROOT: &[u8] = b"HYPHEN_VM_STATE_ROOT_V1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedDeploy {
     pub chain_id: Hash256,
     pub params: DeployParams,
@@ -39,7 +39,7 @@ impl SignedDeploy {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedCall {
     pub chain_id: Hash256,
     pub nonce: u64,
@@ -67,7 +67,7 @@ impl SignedCall {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub enum VmTransaction {
     Deploy(SignedDeploy),
     Call(SignedCall),
@@ -98,7 +98,7 @@ impl VmTransaction {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct VmLedger {
     contracts: BTreeMap<ContractAddress, Contract>,
     storage: BTreeMap<(ContractAddress, Vec<u8>), Vec<u8>>,

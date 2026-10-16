@@ -16,7 +16,7 @@ use crate::fast_ordering::Committee;
 const AVAILABILITY_VERSION: u8 = 0;
 const D_AVAILABILITY: &[u8] = b"HYPHEN_DA_ATTESTATION_V0";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct AvailabilityStatement {
     pub chain_id: Hash256,
     pub epoch: u64,
@@ -44,13 +44,13 @@ impl AvailabilityStatement {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct AvailabilityVote {
     pub seat: u16,
     pub signature: Signature,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct AvailabilityCertificate {
     pub statement: AvailabilityStatement,
     pub votes: Vec<AvailabilityVote>,

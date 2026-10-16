@@ -25,7 +25,7 @@ pub enum WalletError {
     InsufficientBalance { have: u64, need: u64 },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Wallet {
     master: MasterKey,
     #[serde(default)]
@@ -36,7 +36,7 @@ pub struct Wallet {
     scan_height: u64,
 }
 
-#[derive(Clone, Serialize, Deserialize, Zeroize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, rustbinary::CompactBinary)]
 #[zeroize(drop)]
 struct SerializableOwnedNote {
     commitment: [u8; 32],

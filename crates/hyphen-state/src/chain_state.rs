@@ -18,7 +18,7 @@ pub enum StateError {
 
 type Result<T> = std::result::Result<T, StateError>;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct ChainTip {
     pub height: u64,
     pub hash: Hash256,

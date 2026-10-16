@@ -52,7 +52,7 @@ pub struct AtomicStateStores<'a> {
     pub wes_state: &'a mut WesStateStore,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 struct BlockUndo {
     block_hash: Hash256,
     height: u64,

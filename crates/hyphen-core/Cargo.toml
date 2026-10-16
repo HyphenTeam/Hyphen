@@ -9,6 +9,7 @@ description = "Core types and configuration for the Hyphen blockchain"
 hyphen-crypto.workspace = true
 serde.workspace         = true
 rustbinary.workspace    = true
+hyphen-wire.workspace   = true
 thiserror.workspace     = true
 rand.workspace          = true
 parking_lot.workspace   = true

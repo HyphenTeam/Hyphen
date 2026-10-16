@@ -16,7 +16,7 @@ const CHUNK_PREFIX: u8 = 0x21;
 const D_BLOB: &[u8] = b"HYPHEN_PROOF_BLOB_V1";
 const D_CHUNK: &[u8] = b"HYPHEN_PROOF_BLOB_CHUNK_V1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct BlobMetadata {
     pub object_hash: Hash256,
     pub byte_len: u64,
@@ -50,7 +50,7 @@ impl BlobMetadata {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct BlobChunkProof {
     pub metadata: BlobMetadata,
     pub chunk_index: u32,

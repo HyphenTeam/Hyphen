@@ -13,4 +13,5 @@ merlin.workspace           = true
 rand.workspace             = true
 rand_core.workspace        = true
 serde.workspace            = true
+rustbinary.workspace       = true
 thiserror.workspace        = true

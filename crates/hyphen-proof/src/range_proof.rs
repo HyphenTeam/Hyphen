@@ -34,7 +34,7 @@ pub enum ProofError {
     Decompression,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct RangeProof {
     pub a: [u8; 32],
     pub s: [u8; 32],
@@ -323,9 +323,12 @@ fn decompress_pt(bytes: &[u8; 32]) -> Result<RistrettoPoint, ProofError> {
         .ok_or(ProofError::Decompression)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct AggregatedRangeProof {
-    pub m: usize,
+    /// Number of aggregated commitments. Stored as `u64` because the field is
+    /// part of the transaction wire image: a platform-sized integer would let a
+    /// 32-bit peer disagree with a 64-bit peer about the encoded length.
+    pub m: u64,
     pub proof: RangeProof,
 }
 
@@ -463,7 +466,7 @@ impl AggregatedRangeProof {
 
         Ok((
             AggregatedRangeProof {
-                m,
+                m: m as u64,
                 proof: RangeProof {
                     a: a_point.compress().to_bytes(),
                     s: s_point.compress().to_bytes(),
@@ -481,7 +484,7 @@ impl AggregatedRangeProof {
 
     #[allow(clippy::needless_range_loop)]
     pub fn verify(&self, commitments: &[RistrettoPoint]) -> Result<(), ProofError> {
-        let m = self.m;
+        let m = self.m as usize;
         if commitments.len() != m {
             return Err(ProofError::InvalidProofLength);
         }

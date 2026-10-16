@@ -105,12 +105,20 @@ in browser module after renderer changes with:
 .\scripts\build-explorer-wasm.ps1
 ```
 
-Consensus and storage serialization uses RustBinary 0.1.2 with the explicit
-fixed-width little-endian legacy profile. Every call sets byte and collection
-limits and rejects trailing bytes. Consensus maps use ordered containers because
-the binary codec preserves map iteration order. PoUW changed the block version,
-consensus parameters and genesis hashes. Normative identities are in
-`test-vectors/chain-identity-v5.json`; old databases are rejected before state
+Consensus and storage serialization uses RustBinary 0.1.8 with the
+schema-guided compact profile: fields in declaration order with no field names
+and no type tags, canonical little-endian varints, length-prefixed containers
+and trailing bytes rejected. Every call sets byte and collection limits, so one
+value has exactly one accepted encoding. The profile lives in the `hyphen-wire`
+crate; the node, pool, miner and wallet take it from there instead of
+re-implementing it, and ordered sets travel through `CanonicalSet`, which
+rejects duplicate or descending elements on decode. Consensus maps use ordered
+containers because the binary codec preserves map iteration order. PoUW changed
+the block version, consensus parameters and genesis hashes, and the compact
+profile changed them again. Normative identities are in
+`test-vectors/chain-identity-v6.json`; `chain-identity-v1.json` and
+`chain-identity-v5.json` are kept as historical records of superseded
+identities. Old databases are rejected before state
 mutation. Both the identity and the genesis block are computed inside `hyphen-core` from
 `ChainConfig` alone, so there is exactly one implementation: `ChainIdentity::of`
 and `build_genesis_block`. The miner and the pool link these crates by path and

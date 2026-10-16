@@ -12,7 +12,7 @@ fn empty_hashes() -> [Hash256; MERKLE_DEPTH + 1] {
     e
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct MerkleProof {
     pub leaf_index: u64,
     pub siblings: Vec<Hash256>, // length == MERKLE_DEPTH
@@ -37,12 +37,15 @@ impl MerkleProof {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct MerkleTree {
     count: u64,
     frontier: Vec<Option<Hash256>>,
     root: Hash256,
-    filled: std::collections::BTreeMap<(usize, u64), Hash256>,
+    /// `(level, index)` map. The level is stored as `u64` rather than `usize`
+    /// because it is part of the persisted wire image: a platform-sized integer
+    /// on the wire would let a 32-bit node disagree with a 64-bit node.
+    filled: std::collections::BTreeMap<(u64, u64), Hash256>,
 }
 
 impl Default for MerkleTree {
@@ -80,11 +83,11 @@ impl MerkleTree {
         let mut pos = idx;
 
         for level in 0..MERKLE_DEPTH {
-            self.filled.insert((level, pos), cur);
+            self.filled.insert((level as u64, pos), cur);
             let sibling_pos = pos ^ 1;
             let sibling = self
                 .filled
-                .get(&(level, sibling_pos))
+                .get(&(level as u64, sibling_pos))
                 .copied()
                 .unwrap_or(empties[level]);
             if pos & 1 == 0 {
@@ -95,7 +98,7 @@ impl MerkleTree {
                 self.frontier[level] = None;
             }
             pos >>= 1;
-            self.filled.insert((level + 1, pos), cur);
+            self.filled.insert((level as u64 + 1, pos), cur);
         }
         self.root = cur;
         idx
@@ -114,7 +117,7 @@ impl MerkleTree {
             let sib_pos = pos ^ 1;
             let sib = self
                 .filled
-                .get(&(level, sib_pos))
+                .get(&(level as u64, sib_pos))
                 .copied()
                 .unwrap_or(empties[level]);
             siblings.push(sib);

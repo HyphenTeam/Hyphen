@@ -3,7 +3,7 @@ use hyphen_crypto::pedersen::Commitment;
 use hyphen_crypto::Hash256;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Note {
     pub commitment: Commitment,
     pub one_time_pubkey: [u8; 32],
@@ -24,7 +24,7 @@ impl Note {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct OwnedNote {
     pub note: Note,
     pub value: u64,

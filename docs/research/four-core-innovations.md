@@ -53,10 +53,12 @@ OS-level kill tests and formal state-machine checks are still release blockers.
 | `C(v,r)` | Pedersen commitment `v*G_v + r*G_r` |
 
 Consensus objects require canonical, language-neutral, bounded encoding. Rust
-uses the repository-owned `hyphen-codec` v1. Its fixed-width format, limits and
-schema-relative canonicality are documented in the codec README. It remains
-unaudited; cross-language implementations need fixed vectors, not just Rust
-round trips.
+uses the repository's `hyphen-wire` profile over RustBinary 0.1.8: schema-guided
+compact, fields in declaration order with no names or tags, canonical
+little-endian varints, length-prefixed containers, trailing bytes rejected. The
+profile, its byte/element budgets and the `CanonicalSet` adapter are documented
+in the crate. RustBinary remains unaudited by a third party; cross-language
+implementations need fixed vectors, not just Rust round trips.
 
 ## 3. Candidate contribution one: H-WES
 

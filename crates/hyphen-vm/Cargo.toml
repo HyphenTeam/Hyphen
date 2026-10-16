@@ -20,3 +20,4 @@ wasmi.workspace         = true
 wasmparser.workspace    = true
 sled.workspace          = true
 zstd.workspace          = true
+hyphen-wire.workspace   = true

@@ -1,0 +1,10 @@
+# Keep this in sync with the toolchain installed by .github/workflows/ci.yml.
+#
+# `rust-src` matters on developer workstations: rust-analyzer resolves the
+# standard library from the *active* sysroot, and a sysroot without rust-src
+# degrades to "can't load standard library" instead of real diagnostics.
+# `wasm32-unknown-unknown` is the target used by scripts/build-explorer-wasm.ps1.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt", "rust-src"]
+targets = ["wasm32-unknown-unknown"]

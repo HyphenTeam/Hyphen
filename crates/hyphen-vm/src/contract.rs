@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::ContractAddress;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Contract {
     pub address: ContractAddress,
     pub code_hash: hyphen_crypto::Hash256,

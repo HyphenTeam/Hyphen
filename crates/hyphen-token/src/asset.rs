@@ -1,7 +1,7 @@
 use hyphen_crypto::Hash256;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct AssetId(pub [u8; 32]);
 
 impl AssetId {
@@ -42,14 +42,14 @@ impl std::fmt::Display for AssetId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum AssetType {
     Fungible,
     NonFungible,
     Confidential,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct AssetMetadata {
     pub asset_id: AssetId,
     pub asset_type: AssetType,

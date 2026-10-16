@@ -88,7 +88,7 @@ pub struct ProtoError {
     pub message: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub enum NetworkMessage {
     NewTransaction(Vec<u8>),
     NewBlock(Vec<u8>),
@@ -179,7 +179,10 @@ impl NetworkMessage {
     }
 }
 
-fn encode_receipt_payload<T: Serialize>(tag: u8, value: &T) -> Result<Vec<u8>, NetworkDecodeError> {
+fn encode_receipt_payload<T: rustbinary::compact::CompactEncode>(
+    tag: u8,
+    value: &T,
+) -> Result<Vec<u8>, NetworkDecodeError> {
     use prost::Message;
     let data = crate::wire_config(MAX_GOSSIP_RECEIPT_SIZE).serialize(value)?;
     let mut encoded = vec![tag];
@@ -196,7 +199,7 @@ fn decode_receipt_payload(data: &[u8]) -> Result<Vec<u8>, NetworkDecodeError> {
     Ok(payload)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum SyncRequest {
     GetBlocks {
         start_height: u64,
@@ -220,7 +223,7 @@ pub enum SyncRequest {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum SyncResponse {
     Blocks(Vec<Vec<u8>>),
     Tip {

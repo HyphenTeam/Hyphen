@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/hyphen-crypto",
+    "crates/hyphen-wire",
     "crates/hyphen-core",
     "crates/hyphen-pow",
     "crates/hyphen-proof",
@@ -33,6 +34,7 @@ description = "Privacy-focused research blockchain with scientific computational
 [workspace.dependencies]
 # ── internal crates ──
 hyphen-crypto = { path = "crates/hyphen-crypto" }
+hyphen-wire = { path = "crates/hyphen-wire" }
 hyphen-core = { path = "crates/hyphen-core" }
 hyphen-pow = { path = "crates/hyphen-pow" }
 hyphen-proof = { path = "crates/hyphen-proof" }
@@ -52,9 +54,7 @@ hyphen-explorer = { path = "crates/hyphen-explorer" }
 hyphen-explorer-web = { path = "crates/hyphen-explorer-web" }
 hyphen-compute = { path = "crates/hyphen-compute" }
 
-# ── external crates ──
-# ── cryptography ──
-blake3 = "1.8.5"
+blake3 = "1.8.7"
 curve25519-dalek = { version = "5.0.0", features = [
     "serde",
     "digest",
@@ -70,9 +70,7 @@ prost-types = "0.14.4"
 
 # ── storage ──
 sled = "0.34"
-zstd = "0.13.3"
-# Audited pure-Rust Wasm interpreter: deterministic execution, built-in fuel
-# metering, no JIT, no C toolchain, no proc-macro-error2.
+zstd = "0.14.2"
 wasmi = { version = "2.0.0", default-features = false, features = [
     "stable",
     "std",
@@ -81,14 +79,14 @@ wasmi = { version = "2.0.0", default-features = false, features = [
     "deterministic",
     "extra-checks",
 ] }
-wasmparser = "0.255.0"
-wat = "1.254.0"
+wasmparser = "0.262.0"
+wat = "1.262.0"
 
 # ── async / networking ──
 tokio = { version = "1.53.1", features = ["full"] }
-futures = "0.3.33"
+futures = "0.3"
 axum = "0.8.9"
-libp2p = { version = "0.56.0", default-features = false, features = [
+libp2p = { version = "0.57", default-features = false, features = [
     "tcp",
     "noise",
     "yamux",
@@ -105,23 +103,23 @@ libp2p = { version = "0.56.0", default-features = false, features = [
     "serde",
     "autonat",
 ] }
-async-trait = "0.1.91"
+async-trait = "0.1.92"
 tower-http = { version = "0.7.0", features = ["cors"] }
 
 # ── utilities ──
-rand = "0.10.2"
+rand = "0.10"
 rand_core = "0.10.1"
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 rand_chacha = "0.10.0"
-thiserror = "2.0.19"
+thiserror = "2.0"
 env_logger = "0.11"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde_json = "1.0.151"
+serde_json = "1.0"
 parking_lot = "0.12.5"
-clap = { version = "4.6.4", features = ["derive"] }
-rustbinary = { version = "0.1.2", features = ["derive"] }
-zeroize = { version = "1.9.0", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
+rustbinary = { version = "0.1.8", features = ["derive"] }
+zeroize = { version = "1.9.1", features = ["derive"] }
 
 [package]
 name = "hyphen"

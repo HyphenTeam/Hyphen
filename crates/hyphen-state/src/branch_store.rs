@@ -13,13 +13,13 @@ use thiserror::Error;
 
 use crate::compress::{compress, CompressedTree};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum BranchValidation {
     HeaderValidated,
     StateValidated,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct BranchMetadata {
     pub hash: Hash256,
     pub parent: Option<Hash256>,

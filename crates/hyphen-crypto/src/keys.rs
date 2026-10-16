@@ -14,7 +14,18 @@ pub enum KeyError {
     VerificationFailed,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    rustbinary::CompactBinary,
+)]
 pub struct PublicKey(pub [u8; 32]);
 
 impl PublicKey {
@@ -45,7 +56,7 @@ impl std::fmt::Display for PublicKey {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Zeroize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, rustbinary::CompactBinary)]
 #[zeroize(drop)]
 pub struct SecretKey(pub [u8; 32]);
 
@@ -77,7 +88,7 @@ impl std::fmt::Debug for SecretKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct Signature(pub [u8; 64]);
 
 impl serde::Serialize for Signature {
@@ -108,7 +119,7 @@ impl std::fmt::Debug for Signature {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct KeyPair {
     pub secret: SecretKey,
     pub public: PublicKey,

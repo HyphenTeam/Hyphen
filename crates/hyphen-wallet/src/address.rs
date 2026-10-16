@@ -23,7 +23,7 @@ pub enum AddressError {
     UnknownVersion(u8),
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct HyphenAddress {
     pub version: u8,
     pub view_public: [u8; 32],

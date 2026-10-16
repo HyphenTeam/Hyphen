@@ -27,7 +27,18 @@ const D_ORDER_ROOT: &[u8] = b"HYPHEN_PRIVATE_FAIR_ORDER_ROOT_V0";
 /// `conflict_tag` may contain a public nullifier/conflict class. It must never
 /// contain a sender, receiver, amount or plaintext application payload unless
 /// a future profile explicitly declares that leakage.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    rustbinary::CompactBinary,
+)]
 pub struct VisibleMetadata {
     pub transaction_id: Hash256,
     pub fee_class: u32,

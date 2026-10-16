@@ -28,7 +28,10 @@ changes:
 7. H-WES, H-BFM, H-FOC and H-SAC remain inactive research mechanisms.
 
 The exact network magic, parameter hash and genesis hash are normative only in
-`test-vectors/chain-identity-v5.json`. Authorization remains version 1.
+`test-vectors/chain-identity-v6.json`. Authorization remains version 1, but the
+binary profile moved to the schema-guided compact encoding (see the README
+section on serialization), which is why the genesis hashes changed with this
+identity and why `chain-identity-v5.json` is now a historical record.
 
 The state library contains atomic one-block commit/rollback, immutable branch
 body storage, persistent reorg journals and a real `Blockchain` reorg backend.
@@ -56,6 +59,6 @@ Devnet v2 继承历史 [devnet v1 profile](devnet-v1.md) 的数值参数表和�
 6. 移除 v1 遗留参数 `arena_size`、`scratchpad_size`、`page_size`、`pow_rounds`、`writeback_interval`、`kernel_count` 和 `merkle_depth`。现行内核从不读取这些字段，把它们承诺进 `consensus_params_hash` 只会对外公布一个不影响执行的链身份。交易、授权与归档编码保持不变。
 7. H-WES、H-BFM、H-FOC 和 H-SAC 仍为未激活的研究机制。
 
-精确 network magic、参数哈希和创世哈希仅以 `test-vectors/chain-identity-v5.json` 为规范依据。授权格式仍为版本 1。
+精确 network magic、参数哈希和创世哈希仅以 `test-vectors/chain-identity-v6.json` 为规范依据。授权格式仍为版本 1，但二进制编码已切换到 schema 驱动的紧凑档（见 README 序列化一节），这正是本次身份下创世哈希发生变化、且 `chain-identity-v5.json` 转为历史记录的原因。
 
 状态库包含原子单区块提交/回滚、不可变分支区块体存储、持久化 reorg journal 和真实的 `Blockchain` reorg 后端。后端重算计划工作量，持有独占状态转换锁，在分叉状态上验证每个候选区块，失败时恢复旧分支，并在数据库打开期间恢复 journal。自动 P2P 竞争分支接入、fork-choice 触发以及 mempool/wallet/explorer/pool 对账尚未实现，因此完整实时 reorg 处理仍是发布阻断项。

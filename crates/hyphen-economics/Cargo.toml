@@ -8,4 +8,5 @@ description = "Block rewards, emission schedule and fee model for the Hyphen blo
 [dependencies]
 hyphen-core.workspace = true
 serde.workspace       = true
+rustbinary.workspace  = true
 thiserror.workspace   = true

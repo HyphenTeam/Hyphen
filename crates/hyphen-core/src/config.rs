@@ -54,6 +54,9 @@ pub enum DifficultyAlgorithm {
     MomentumDampedLwmaV2 = 2,
 }
 
+/// Chain configuration. Not a wire type: it is the *source* of the consensus
+/// parameters hash, which is folded field-by-field below. Configuration is
+/// exchanged as human-readable documents, never as chain bytes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChainConfig {
     pub network_name: String,

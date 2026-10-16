@@ -18,6 +18,7 @@ rand_core.workspace        = true
 getrandom.workspace        = true
 thiserror.workspace        = true
 zeroize.workspace          = true
+hyphen-wire.workspace      = true
 
 [dev-dependencies]
 serde_json.workspace = true

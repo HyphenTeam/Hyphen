@@ -7,7 +7,7 @@ use crate::{build_genesis_block, BlockValidator, Blockchain};
 
 pub const CHAIN_ARCHIVE_VERSION: u16 = 1;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ChainArchive {
     pub version: u16,
     pub network_magic: [u8; 4],
@@ -196,11 +196,18 @@ mod tests {
         assert_eq!(report.final_hash, genesis.hash());
     }
 
+    /// The live chain identity contract.
+    ///
+    /// `chain-identity-v6.json` is the identity this build must derive. The
+    /// `v1` and `v5` files stay in `test-vectors/` as historical records of
+    /// superseded identities: they were frozen under the fixed-width
+    /// serialization profile and cannot be reproduced by a build that speaks the
+    /// compact profile, so only the current file is asserted here.
     #[test]
     fn published_chain_identity_vectors_match_the_implementation() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../test-vectors/chain-identity-v5.json"
+            "/../../test-vectors/chain-identity-v6.json"
         );
         let bytes = std::fs::read(path).expect("read published chain identity vectors");
         let vectors: Vec<ChainIdentityVector> =

@@ -371,12 +371,11 @@ fn e2e_wallet_hex_roundtrip_verify() {
 
     // Step 4: Serialize/Deserialize round-trip (like RPC transmission)
     let tx_bytes = tx.serialise();
-    let tx2: hyphen_tx::transaction::Transaction = rustbinary::legacy_options()
-        .with_little_endian()
-        .with_fixint_encoding()
+    let tx2: hyphen_tx::transaction::Transaction = rustbinary::options()
         .with_limit((64 * 1024 * 1024) as u64)
         .with_collection_limit(1_000_000)
         .reject_trailing_bytes()
+        .with_compact_format()
         .deserialize(&tx_bytes)
         .expect("deserialize must succeed");
 

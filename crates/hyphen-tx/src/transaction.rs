@@ -6,12 +6,12 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_TRANSACTION_SIZE: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, rustbinary::CompactBinary)]
 pub struct OutputRef {
     pub global_index: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TxInput {
     pub ring: Vec<OutputRef>,
     pub key_image: [u8; 32],
@@ -36,7 +36,7 @@ pub struct TxInput {
     pub causal_binding: [u8; 32],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TxOutput {
     pub commitment: Commitment,
     pub one_time_pubkey: [u8; 32],
@@ -57,7 +57,7 @@ impl TxOutput {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct CoinbaseOutput {
     pub commitment: Commitment,
     pub one_time_pubkey: [u8; 32],
@@ -78,13 +78,13 @@ impl CoinbaseOutput {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct TxPrunable {
     pub clsag_signatures: Vec<ClsagSignature>,
     pub range_proof: AggregatedRangeProof,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Transaction {
     pub version: u8,
     pub inputs: Vec<TxInput>,

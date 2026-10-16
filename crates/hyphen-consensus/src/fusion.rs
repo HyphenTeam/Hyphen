@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hyphen_crypto::Hash256;
+use hyphen_wire::CanonicalSet;
 use thiserror::Error;
 
 const D_FRONTIER: &[u8] = b"HYPHEN_BFM_FRONTIER_V0";
@@ -55,7 +56,7 @@ pub struct FusionInput {
     pub selected_frontier: Vec<FrontierTip>,
     pub blocks: Vec<FusionBlock>,
     /// IDs with a certificate accepted by the selected DA verifier.
-    pub certified_blocks: BTreeSet<Hash256>,
+    pub certified_blocks: CanonicalSet<Hash256>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,8 +96,8 @@ pub struct FusionResult {
     pub order_root: Hash256,
     pub receipt_root: Hash256,
     pub block_order: Vec<Hash256>,
-    pub included_blocks: BTreeSet<Hash256>,
-    pub excluded_blocks: BTreeSet<Hash256>,
+    pub included_blocks: CanonicalSet<Hash256>,
+    pub excluded_blocks: CanonicalSet<Hash256>,
     pub receipts: Vec<TransactionReceipt>,
 }
 
@@ -215,7 +216,7 @@ fn validate_frontier_tips(
 fn reachable_closure(
     input: &FusionInput,
     blocks: &BTreeMap<Hash256, &FusionBlock>,
-) -> Result<BTreeSet<Hash256>, FusionError> {
+) -> Result<CanonicalSet<Hash256>, FusionError> {
     let mut stack = input
         .selected_frontier
         .iter()
@@ -224,7 +225,7 @@ fn reachable_closure(
             FrontierTip::Block(id) => Some(*id),
         })
         .collect::<Vec<_>>();
-    let mut reachable = BTreeSet::new();
+    let mut reachable = CanonicalSet::new();
     while let Some(id) = stack.pop() {
         if !reachable.insert(id) {
             continue;

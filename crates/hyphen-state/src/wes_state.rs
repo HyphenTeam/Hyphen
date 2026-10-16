@@ -12,7 +12,7 @@ pub const MAX_WES_TRANSACTION_BYTES: usize = 256 * 1024;
 const D_WES_CREATE: &[u8] = b"HYPHEN_WES_CREATE_V1";
 const D_WES_OWNER: &[u8] = b"HYPHEN_WES_OWNER_POLICY_V1";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedStateCreate {
     pub record: StateRecord,
     pub owner: PublicKey,
@@ -34,7 +34,7 @@ impl SignedStateCreate {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub enum WesTransaction {
     Create(SignedStateCreate),
 }

@@ -1,7 +1,19 @@
 use hyphen_crypto::Hash256;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    rustbinary::CompactBinary,
+)]
 pub struct ContractAddress(pub [u8; 32]);
 
 impl ContractAddress {
@@ -39,7 +51,7 @@ pub struct ContractResult {
     pub state_changes: Vec<StateChange>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct ContractLog {
     pub contract: ContractAddress,
     pub topics: Vec<Hash256>,
@@ -54,7 +66,7 @@ pub struct StateChange {
     pub new_value: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct ContractCall {
     pub caller: [u8; 32],
     pub contract: ContractAddress,
@@ -64,7 +76,7 @@ pub struct ContractCall {
     pub value: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct DeployParams {
     pub deployer: [u8; 32],
     pub code: Vec<u8>,
