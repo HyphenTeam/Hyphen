@@ -1430,7 +1430,7 @@ fn build_template(
 
     let mut tx_blobs: Vec<Vec<u8>> = {
         let pool = mempool.read();
-        pool.get_block_candidate_blobs(cfg.max_block_size)
+        pool.get_block_candidate_blobs_reserved(cfg.max_block_size, cfg.max_block_size / 4)
     };
     tx_blobs.sort_unstable_by_key(|transaction| hyphen_crypto::blake3_hash(transaction));
 

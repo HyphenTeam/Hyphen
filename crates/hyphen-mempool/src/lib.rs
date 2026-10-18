@@ -282,6 +282,9 @@ pub struct Mempool {
     total_bytes: usize,
     protocol_bytes: usize,
     total_fees: u64,
+    replacements: u64,
+    evictions: u64,
+    expirations: u64,
 }
 
 /// Snapshot of pool occupancy. Cheap enough to compute on every RPC poll.
@@ -295,6 +298,9 @@ pub struct MempoolStats {
     pub protocol_bytes: usize,
     pub key_images: usize,
     pub total_fees: u64,
+    pub replacements: u64,
+    pub evictions: u64,
+    pub expirations: u64,
 }
 
 impl Mempool {
@@ -316,6 +322,9 @@ impl Mempool {
             total_bytes: 0,
             protocol_bytes: 0,
             total_fees: 0,
+            replacements: 0,
+            evictions: 0,
+            expirations: 0,
         }
     }
 
@@ -345,6 +354,9 @@ impl Mempool {
             protocol_bytes: self.protocol_bytes,
             key_images: self.key_images.len(),
             total_fees: self.total_fees,
+            replacements: self.replacements,
+            evictions: self.evictions,
+            expirations: self.expirations,
         }
     }
 
@@ -453,6 +465,10 @@ impl Mempool {
                 inserted_at_ms: now_ms,
             },
         );
+        if !conflicts.is_empty() {
+            self.replacements = self.replacements.saturating_add(1);
+        }
+        self.evictions = self.evictions.saturating_add(additional.len() as u64);
 
         Ok(tx_hash)
     }
@@ -508,6 +524,7 @@ impl Mempool {
         for hash in &evictions {
             self.remove_internal(hash);
         }
+        self.evictions = self.evictions.saturating_add(evictions.len() as u64);
 
         self.protocol_bytes = self.protocol_bytes.saturating_add(payload.len());
         self.total_bytes = self.total_bytes.saturating_add(payload.len());
@@ -560,8 +577,34 @@ impl Mempool {
     /// best-first; protocol payloads follow in hash order. The block builder
     /// applies its own canonical transaction ordering before committing.
     pub fn get_block_candidate_blobs(&self, max_size: usize) -> Vec<Vec<u8>> {
+        self.get_block_candidate_blobs_reserved(max_size, 0)
+    }
+
+    /// Canonical bytes for block assembly with a protocol reserve.
+    ///
+    /// Protocol payloads are selected first up to `protocol_reserve` bytes, so
+    /// a payment-heavy pool cannot starve state transitions. Any unused reserve
+    /// is then available to payments; protocol payloads that did not fit the
+    /// reserve are retried after the payment pass if block space remains.
+    pub fn get_block_candidate_blobs_reserved(
+        &self,
+        max_size: usize,
+        protocol_reserve: usize,
+    ) -> Vec<Vec<u8>> {
+        let reserve = protocol_reserve.min(max_size);
         let mut result = Vec::new();
+        let mut included_protocol = BTreeSet::new();
         let mut total_size = 0usize;
+
+        for (hash, entry) in &self.protocol_entries {
+            let next = total_size.saturating_add(entry.payload.len());
+            if next > reserve {
+                continue;
+            }
+            total_size = next;
+            included_protocol.insert(*hash);
+            result.push(entry.payload.clone());
+        }
 
         for tx_hash in self.by_priority.values().rev() {
             let Some(entry) = self.entries.get(tx_hash) else {
@@ -575,7 +618,10 @@ impl Mempool {
             result.push(entry.tx.serialise());
         }
 
-        for entry in self.protocol_entries.values() {
+        for (hash, entry) in &self.protocol_entries {
+            if included_protocol.contains(hash) {
+                continue;
+            }
             let next = total_size.saturating_add(entry.payload.len());
             if next > max_size {
                 continue;
@@ -644,6 +690,7 @@ impl Mempool {
                 removed += 1;
             }
         }
+        self.expirations = self.expirations.saturating_add(removed as u64);
         removed
     }
 
@@ -722,6 +769,40 @@ impl Mempool {
             .chain(self.protocol_entries.keys())
             .copied()
             .collect()
+    }
+
+    /// Suggested fee per byte for inclusion within `target_blocks` blocks of
+    /// `block_bytes` each.
+    ///
+    /// The estimate is the lowest fee density among the best transactions that
+    /// fit the target window, rounded up to a whole base unit per byte. It is
+    /// `None` when the pool is empty or the target window is zero. The value is
+    /// a relay-policy hint, never a consensus rule.
+    pub fn fee_rate_estimate(&self, target_blocks: u32, block_bytes: usize) -> Option<u64> {
+        if target_blocks == 0 || block_bytes == 0 || self.by_priority.is_empty() {
+            return None;
+        }
+        let target_bytes = (target_blocks as u128)
+            .saturating_mul(block_bytes as u128)
+            .min(self.config.max_bytes as u128) as usize;
+        let mut selected_bytes = 0usize;
+        let mut lowest_density = None;
+        for (priority, hash) in self.by_priority.iter().rev() {
+            let Some(entry) = self.entries.get(hash) else {
+                continue;
+            };
+            lowest_density = Some(priority.fee_density);
+            selected_bytes = selected_bytes.saturating_add(entry.serialised_size);
+            if selected_bytes >= target_bytes {
+                break;
+            }
+        }
+        lowest_density.map(|density| {
+            density
+                .saturating_add(999_999)
+                .checked_div(1_000_000)
+                .unwrap_or(0) as u64
+        })
     }
 
     fn validate_payment_shape(&self, tx: &Transaction) -> Result<()> {
@@ -1012,6 +1093,7 @@ mod tests {
         assert!(!pool.contains(&original_hash));
         assert!(pool.contains(&replacement_hash));
         assert!(pool.has_key_image(&[1; 32]));
+        assert_eq!(pool.stats().replacements, 1);
     }
 
     #[test]
@@ -1028,6 +1110,7 @@ mod tests {
         assert_eq!(hashes(&pool), vec![expensive_hash, middle_hash]);
         assert!(!pool.contains(&cheap_hash));
         assert!(!pool.has_key_image(&[1; 32]));
+        assert_eq!(pool.stats().evictions, 1);
     }
 
     #[test]
@@ -1155,6 +1238,7 @@ mod tests {
         assert_eq!(pool.prune_expired(1_101), 2);
         assert!(pool.is_empty());
         assert_eq!(pool.total_bytes(), 0);
+        assert_eq!(pool.stats().expirations, 2);
     }
 
     #[test]
@@ -1226,6 +1310,50 @@ mod tests {
         assert_eq!(pool.stats().protocol_transactions, 1);
         assert_eq!(pool.stats().protocol_bytes, 32);
         assert_eq!(pool.protocol_iter().count(), 1);
+    }
+
+    #[test]
+    fn fee_estimate_tracks_the_highest_value_window() {
+        let mut pool = Mempool::new(8);
+        let low = payment(&[[1; 32]], 1_000, 0);
+        let high = payment(&[[2; 32]], 5_000, 0);
+        let size = low.serialise().len();
+        pool.insert(low, Validated::new(0)).unwrap();
+        pool.insert(high, Validated::new(0)).unwrap();
+
+        let one_tx = pool.fee_rate_estimate(1, size).unwrap();
+        let both = pool.fee_rate_estimate(1, size * 2).unwrap();
+        assert!(one_tx > both, "one_tx={one_tx}, both={both}");
+        assert!(both > 0);
+        assert_eq!(pool.fee_rate_estimate(0, size), None);
+        assert_eq!(Mempool::new(8).fee_rate_estimate(1, 1_000), None);
+    }
+
+    #[test]
+    fn protocol_reserve_prevents_payment_starvation() {
+        let first = payment(&[[1; 32]], 5_000, 0);
+        let second = payment(&[[2; 32]], 4_000, 0);
+        let first_size = first.serialise().len();
+        let second_size = second.serialise().len();
+        let protocol = vec![7u8; 128];
+        let budget = first_size + second_size;
+
+        let mut pool = Mempool::new(8);
+        pool.insert(first, Validated::new(0)).unwrap();
+        pool.insert(second, Validated::new(0)).unwrap();
+        pool.insert_protocol(protocol.clone(), ValidatedProtocol::new())
+            .unwrap();
+
+        let without_reserve = pool.get_block_candidate_blobs(budget);
+        assert!(!without_reserve.contains(&protocol));
+
+        let with_reserve = pool.get_block_candidate_blobs_reserved(budget, protocol.len());
+        assert!(with_reserve.contains(&protocol));
+        assert!(with_reserve.iter().any(|blob| blob != &protocol));
+        assert!(
+            with_reserve.iter().map(Vec::len).sum::<usize>() <= budget,
+            "reserved template exceeded its budget"
+        );
     }
 
     #[test]

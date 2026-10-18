@@ -52,6 +52,7 @@ impl RpcHandler {
             METHOD_GET_VM_STORAGE => self.handle_get_vm_storage(&request.payload),
             METHOD_GET_H_WES_ROOTS => self.handle_get_h_wes_roots(&request.payload),
             METHOD_LIST_COMPUTE_TASKS => self.handle_list_compute_tasks(&request.payload),
+            METHOD_ESTIMATE_FEE => self.handle_estimate_fee(&request.payload),
             _ => Err(HandlerError::InvalidRequest(format!(
                 "unknown method: {}",
                 request.method
@@ -485,7 +486,6 @@ impl RpcHandler {
             }
         }
 
-        // ── Full transaction validation (balance, CLSAG, TERA, MD-VRE) ──
         let tip = self
             .chain
             .tip()
@@ -551,6 +551,21 @@ impl RpcHandler {
                 Ok(resp.encode_to_vec())
             }
         }
+    }
+
+    fn handle_estimate_fee(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        let request = EstimateFeeRequest::decode(payload)?;
+        let block_bytes = usize::try_from(request.block_bytes).unwrap_or(usize::MAX);
+        let estimate = self
+            .mempool
+            .read()
+            .fee_rate_estimate(request.target_blocks, block_bytes);
+        let response = EstimateFeeResponse {
+            available: estimate.is_some(),
+            fee_per_byte: estimate.unwrap_or(0),
+            target_blocks: request.target_blocks,
+        };
+        Ok(response.encode_to_vec())
     }
 
     fn handle_get_mempool(&self) -> Result<Vec<u8>, HandlerError> {
@@ -702,6 +717,23 @@ mod tests {
             method,
             payload: payload.encode_to_vec(),
         }
+    }
+
+    #[test]
+    fn empty_mempool_fee_estimate_is_reported_as_unavailable() {
+        let (_db, handler) = handler();
+        let response = handler.handle_request(&request(
+            METHOD_ESTIMATE_FEE,
+            EstimateFeeRequest {
+                target_blocks: 1,
+                block_bytes: 64 * 1024,
+            },
+        ));
+        assert!(response.success, "{}", response.error);
+        let estimate = EstimateFeeResponse::decode(response.payload.as_slice()).unwrap();
+        assert!(!estimate.available);
+        assert_eq!(estimate.fee_per_byte, 0);
+        assert_eq!(estimate.target_blocks, 1);
     }
 
     #[test]

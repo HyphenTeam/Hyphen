@@ -52,9 +52,17 @@ introduce for small transactions. VRE quality breaks fee ties in favour of
 better ring entropy. The hash makes the order total, so every node chooses the
 same eviction victim. Collections are ordered (`BTreeMap`), not hash-seeded.
 
-`get_block_candidates` and `get_block_candidate_blobs` emit payments best-first,
-then protocol payloads in hash order. The node applies its canonical transaction
+`get_block_candidates` and `get_block_candidate_blobs` emit payments best-first.
+`get_block_candidate_blobs_reserved(max_size, protocol_reserve)` gives protocol
+payloads first claim on a reserve, then fills the remaining block budget with
+payments, then retries protocol payloads that did not fit the reserve. The
+reference node reserves one quarter of `max_block_size`, so a payment-heavy pool
+cannot starve state transitions. The node applies its canonical transaction
 ordering before committing the block.
+
+`fee_rate_estimate(target_blocks, block_bytes)` returns the lowest fee density
+among the best transactions that fit the target window, rounded up to whole base
+units per byte. It is a relay-policy hint, never a consensus rule.
 
 ## Replacement and eviction
 
@@ -109,6 +117,8 @@ consensus-light embedder does not.
 - `total_bytes` is the sum of payment and protocol payload sizes.
 - `total_fees` is the sum of fees of every payment currently in the pool,
   updated on insert, replacement, eviction, purge and clear.
+- `replacements`, `evictions` and `expirations` are cumulative counters for
+  operators; they are not reset by `clear`.
 - Removing an entry removes its priority, bytes, and every key image whose map
   value still points at it.
 - A failed replacement, eviction plan, or protocol plan performs no mutation.

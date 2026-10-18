@@ -87,6 +87,24 @@ pub struct MempoolResponse {
 }
 
 #[derive(Clone, prost::Message)]
+pub struct EstimateFeeRequest {
+    #[prost(uint32, tag = "1")]
+    pub target_blocks: u32,
+    #[prost(uint64, tag = "2")]
+    pub block_bytes: u64,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct EstimateFeeResponse {
+    #[prost(bool, tag = "1")]
+    pub available: bool,
+    #[prost(uint64, tag = "2")]
+    pub fee_per_byte: u64,
+    #[prost(uint32, tag = "3")]
+    pub target_blocks: u32,
+}
+
+#[derive(Clone, prost::Message)]
 pub struct GetTxLocationRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub tx_hash: Vec<u8>,
@@ -139,6 +157,7 @@ pub const METHOD_GET_VM_CONTRACT: u32 = 10;
 pub const METHOD_GET_VM_STORAGE: u32 = 11;
 pub const METHOD_GET_H_WES_ROOTS: u32 = 12;
 pub const METHOD_LIST_COMPUTE_TASKS: u32 = 13;
+pub const METHOD_ESTIMATE_FEE: u32 = 14;
 
 #[derive(Clone, prost::Message)]
 pub struct GetComputeTaskRequest {
