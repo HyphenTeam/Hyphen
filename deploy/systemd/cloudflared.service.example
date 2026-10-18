@@ -1,0 +1,48 @@
+# Hyphen explorer tunnel — systemd unit example.
+#
+# Install to /etc/systemd/system/cloudflared.service after
+# `cloudflared tunnel create hyphen-explorer` and a config at
+# /etc/cloudflared/config.yml pointing at http://127.0.0.1:8080.
+#
+# Why this unit exists: Cloudflare error 1033 means the edge has no live
+# connection for the tunnel. That is the tunnel process, not the node — the
+# origin keeps answering /healthz with 200 while the site is down. A tunnel
+# that dies with the terminal it was started in produces exactly this page.
+#
+# Do not run `cloudflared tunnel --url ...` in production: a quick tunnel gets
+# a random hostname and stops when the process stops.
+
+[Unit]
+Description=Cloudflare tunnel for the Hyphen explorer
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+After=network-online.target hyphen-node.service
+Wants=network-online.target
+# Start after the node so the first request after a reboot is not refused.
+# The tunnel reconnects on its own if the origin is briefly unavailable.
+Requires=hyphen-node.service
+
+[Service]
+Type=notify
+User=cloudflared
+Group=cloudflared
+ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run
+Restart=always
+RestartSec=5s
+# cloudflared keeps its own metrics endpoint on loopback.
+Environment=TUNNEL_METRICS=127.0.0.1:20241
+
+# Outbound only: QUIC/UDP 7844 and TCP 7844, plus DNS. No inbound listener
+# besides the metrics port above.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

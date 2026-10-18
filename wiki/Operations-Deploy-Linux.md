@@ -177,10 +177,10 @@ cloudflared tunnel --url http://127.0.0.1:8080
 
 That quick tunnel is for testing. A production deployment uses a named tunnel
 with a credentials file and an ingress rule pointing at
-`http://127.0.0.1:8080`, run as its own `cloudflared` systemd service. Keep the
-tunnel and node restarts independent: restarting the node must not require
-recreating the tunnel, and a dead tunnel must be visible in
-`journalctl -u cloudflared`.
+`http://127.0.0.1:8080`, run as its own `cloudflared` systemd service
+(`deploy/systemd/cloudflared.service.example`). Keep the tunnel and node
+restarts independent: restarting the node must not require recreating the
+tunnel, and a dead tunnel must be visible in `journalctl -u cloudflared`.
 
 Before touching Cloudflare, prove the origin answers locally:
 
@@ -198,18 +198,29 @@ health checks and supervisors. `/api/info` additionally reads the chain tip.
 Point the tunnel at `127.0.0.1`, not `localhost`: if `localhost` resolves to
 `::1` first and the node is bound to IPv4, every request is refused.
 
-Cloudflare edge errors are origin diagnostics, not a Cloudflare crash:
+### Error 1033 while mining
 
-| Error | Meaning |
+Error 1033 is Cloudflare saying it has no live connection for the tunnel. The
+origin is irrelevant to it: a node whose explorer answers `/healthz` in 1 ms is
+healthy while the page still shows 1033. Measured on a devnet box that was
+mining, pool and node co-located, the origin served 400 concurrent requests with
+100% `200` and single-digit millisecond latency. So:
+
+| Check | Meaning |
 | --- | --- |
-| 521 / 522 / 523 | The edge cannot reach the origin: node stopped, tunnel down, wrong port or firewall |
-| 1033 | The tunnel process is not connected to Cloudflare |
-| 502 | The tunnel reached a listener but the HTTP exchange failed |
-| 524 | The origin accepted the connection but did not answer before the edge timeout |
+| `systemctl status cloudflared` is not `active (running)` | The tunnel process stopped. Start it as a service, not in a terminal |
+| `journalctl -u cloudflared` shows repeated reconnects | Egress problem: UDP 7844 blocked, or the network drops long-lived QUIC |
+| `dmesg -T \| grep -i 'killed process'` mentions `cloudflared` | The OOM killer took it. Give the box headroom |
+| `uptime` shows load above the core count while mining | CPU starvation; see below |
+| `/healthz` fails locally too | Then and only then is it the node |
 
-A node whose explorer port is already held by another process now fails at
-startup with `bind block explorer …: address in use`; it no longer runs with a
-silently dead public surface. If the port was held by a previous node instance,
+A miner started with `--threads 0` now leaves one core free for exactly this
+reason; pass an explicit `--threads` to claim every core on a dedicated mining
+host.
+
+A node whose explorer port is already held by another process fails at startup
+with `bind block explorer …: address in use`; it no longer runs with a silently
+dead public surface. If the port was held by a previous node instance,
 `systemctl restart` is the wrong fix — stop the old process first.
 
 ## 8. Stop, restart, upgrade
@@ -475,8 +486,9 @@ cloudflared tunnel --url http://127.0.0.1:8080
 ```
 
 快速隧道只用于测试。生产环境使用带 credentials 文件和 ingress 规则的命名隧道，指向
-`http://127.0.0.1:8080`，并作为独立的 `cloudflared` systemd 服务运行。隧道与节点重启必须
-相互独立：重启节点不应要求重建隧道，隧道失效必须能在 `journalctl -u cloudflared` 中看到。
+`http://127.0.0.1:8080`，并作为独立的 `cloudflared` systemd 服务运行
+（见 `deploy/systemd/cloudflared.service.example`）。隧道与节点重启必须相互独立：重启节点
+不应要求重建隧道，隧道失效必须能在 `journalctl -u cloudflared` 中看到。
 
 在怀疑 Cloudflare 之前，先证明源站本地可用：
 
@@ -493,14 +505,22 @@ journalctl -u cloudflared --since '30 min ago' --no-pager
 `/api/info` 还会读取链尖。隧道指向 `127.0.0.1`，不要写 `localhost`：如果 `localhost`
 优先解析到 `::1`，而节点只绑定 IPv4，所有请求都会被拒绝。
 
-Cloudflare 边缘错误是源站诊断，不是 Cloudflare 崩溃：
+### 挖矿期间的 Error 1033
 
-| 错误 | 含义 |
+Error 1033 的含义是 Cloudflare 找不到这条隧道的活跃连接。它与源站无关：节点探针在 1 ms 内
+返回 `/healthz`，页面照样会显示 1033。在同时在挖矿的 devnet 机器上实测，源站处理 400 个并发
+请求全部 `200`、延迟个位数毫秒。所以按下面顺序判断：
+
+| 检查 | 含义 |
 | --- | --- |
-| 521 / 522 / 523 | 边缘无法连接源站：节点停止、隧道断开、端口错误或防火墙 |
-| 1033 | 隧道进程未连接 Cloudflare |
-| 502 | 隧道连到了监听器，但 HTTP 交换失败 |
-| 524 | 源站接受连接，但在边缘超时前没有响应 |
+| `systemctl status cloudflared` 不是 `active (running)` | 隧道进程已停止。要用服务运行，不要挂在终端里 |
+| `journalctl -u cloudflared` 反复重连 | 出口问题：UDP 7844 被封，或网络断开长连接 QUIC |
+| `dmesg -T \| grep -i 'killed process'` 出现 `cloudflared` | OOM killer 杀掉了它，需要给机器留余量 |
+| 挖矿时 `uptime` 的负载高于核数 | CPU 饥饿，见下 |
+| 本地 `/healthz` 也失败 | 只有这时才是节点的问题 |
+
+`--threads 0` 启动的矿工现在会留一个核给节点、矿池和隧道；在专用矿机上要占满所有核请显式传
+`--threads`。
 
 浏览器端口被其他进程占用时，节点现在会在启动阶段以
 `bind block explorer …: address in use` 失败，不再带着一个静默失效的公开接口继续运行。如果

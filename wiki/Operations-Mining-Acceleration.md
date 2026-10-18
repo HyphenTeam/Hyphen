@@ -123,4 +123,66 @@ for every `n < 2^64`. It has no architecture-specific intrinsics, no big-integer
 dependency, and no endianness assumption. It builds for x86, x86_64, armv7,
 aarch64, and riscv64 with the same source.
 
+## Several miners, one pool
+
+A share is a witness list, and the pool enforces chain-wide single use. Two
+miners that scan the same candidates therefore produce the same chains, and the
+second one is rejected with `witness … was already claimed by another miner on
+this pool`. The same thing happens to a single miner after a restart if it
+begins again at the first candidate.
+
+Each miner instance draws a random search lane at startup and logs it:
+
+```text
+Search lane 1710774470014140419..1710774474309107715 is private to this miner instance
+```
+
+A lane is a half-open window whose width is `2^32` candidates. Threads inside
+the process take disjoint odd residue classes of it, so the whole instance covers
+its lane exactly once. Lanes are drawn from the space where the last chain
+element still fits in `u64`:
+
+```text
+n * 2^(length-1) + (2^(length-1) - 1) <= u64::MAX
+```
+
+That bound is not cosmetic. A lane above it scans numbers whose chain cannot be
+represented; the search rejects every candidate and runs at full speed finding
+nothing while the operator waits for a share that cannot exist. The bound is
+derived from the configured chain length, and a unit test pins it.
+
+When a lane is exhausted the worker draws a new one and logs the move. Two
+processes collide only if they draw the same slot, which is one chance in
+roughly `2^32` per draw.
+
+## Block time and difficulty
+
+`difficulty` is a witness count: a block candidate must carry that many
+single-use chains. The controller moves it by at most the configured clamp
+(three times up or down on the devnet profiles) per block, and the consensus
+call site clamps every retarget to `MAX_WITNESSES_PER_BLOCK` (4096).
+
+Two consequences an operator must expect:
+
+1. **The first blocks are near-instant.** The devnet starts at difficulty 1 and
+   needs `1 → 2 → 4 → 12 → …` blocks to climb. A run measured on 2 CPU threads
+   reached difficulty 1199 at height 11, with the first two blocks found within
+   milliseconds. This is the controller working, not a retarget failure.
+2. **Difficulty saturates at 4096 witnesses.** If the hardware produces that
+   many witnesses faster than the 30 s target, block time stays below target
+   forever. On the same run the pool settled at 2–13 s blocks with difficulty
+   between 2000 and 4096. Raising the ceiling is a consensus change: it must be
+   a new profile with a new chain identity, never an in-place edit.
+
+## Pool job thresholds
+
+The pool adjusts the share threshold so a share arrives roughly every 15 s. A
+threshold change re-sends the job, and the miner keeps its accumulated witnesses
+across it: only the job id invalidates work in progress. The pool is rate-limited
+to one threshold change per 20 s; a faster controller re-issues jobs faster than
+they can be mined and no block candidate is ever completed.
+
+A share rejected with `stale job` is the race between two workers of the same
+miner: one already produced the block. It is logged at debug by the miner.
+
 Hashing is BLAKE3 throughout the miner and pool protocol; SHA-256 is not used.
