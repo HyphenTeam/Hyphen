@@ -1551,12 +1551,6 @@ dependencies = [
  "blake3",
  "hyphen-core",
  "hyphen-crypto",
- "parking_lot 0.12.5",
- "rand",
- "rand_chacha",
- "rustbinary",
- "serde",
- "thiserror 2.0.21",
 ]
 
 [[package]]
