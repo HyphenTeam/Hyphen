@@ -225,8 +225,6 @@ fn manipulation_strength_bps(times: &[i128]) -> i128 {
         return 0;
     }
 
-    // ac1 = n*S1 / ((n-1)*V) < -2/sqrt(n)  <=>  n^(3/2)*(-S1) > 2*(n-1)*V
-    // <=>  n^3*S1^2 > 4*(n-1)^2*V^2 once both positive sides are squared.
     let lhs = n
         .saturating_mul(n)
         .saturating_mul(n)
@@ -393,8 +391,6 @@ pub fn run_ablation_simulation(
         let rate = work_rate_at_block(height).max(0.01);
         let current = *difficulties.last().expect("seeded history");
 
-        // At equilibrium `genesis_difficulty` units of work take exactly the
-        // target block time; a higher work rate solves the same target sooner.
         let solve_time = ((current as f64 / genesis) * target_ms as f64 / rate) as u64;
         let previous = *timestamps.last().expect("seeded history");
         timestamps.push(previous + solve_time.max(1));

@@ -221,7 +221,7 @@ impl SigningRequest {
 
         let expect_mainnet = match self.network.network_magic {
             [0x48, 0x59, 0x50, 0x4e] => true,
-            [0x48, 0x59, 0x54, 0x53] => false,
+            [0x48, 0x59, 0x54, 0x53] | [0x48, 0x59, 0x44, 0x56] | [0x48, 0x59, 0x4e, 0x4e] => false,
             _ => return Err(SignerError::InvalidRequest("unknown network magic".into())),
         };
         let mut output_total = 0u64;
@@ -393,7 +393,7 @@ mod tests {
             message,
             1,
             vec![ReviewOutput {
-                address,
+                address: address.clone(),
                 amount: 10,
             }],
             vec![ClsagSigningInput {
@@ -421,5 +421,25 @@ mod tests {
         let mut wrong_network = request.clone();
         wrong_network.network.network_magic = [0x48, 0x59, 0x54, 0x53];
         assert!(wrong_network.validate().is_err());
+
+        // Devnet families are not mainnet, so a mainnet address must be rejected
+        // and a devnet address must be accepted.
+        let devnet_address = HyphenAddress::new_testnet([3u8; 32], [4u8; 32]).encode();
+        for magic in [[0x48, 0x59, 0x44, 0x56], [0x48, 0x59, 0x4e, 0x4e]] {
+            let mut devnet = request.clone();
+            devnet.network.network_magic = magic;
+            devnet.outputs[0].address = devnet_address.clone();
+            devnet.request_id = devnet.compute_request_id();
+            devnet
+                .validate()
+                .expect("devnet address must be accepted on a devnet network");
+
+            devnet.outputs[0].address = address.clone();
+            devnet.request_id = devnet.compute_request_id();
+            assert!(
+                devnet.validate().is_err(),
+                "mainnet address accepted on {magic:?}"
+            );
+        }
     }
 }

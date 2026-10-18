@@ -1,8 +1,9 @@
-//! Deterministic settlement for the Alice neural challenge.
+//! Settlement for the fixed-point neural circuits.
 //!
 //! The block proof of work is PoUW v3 and stays in `hyphen-pow`; this module is
-//! only the AetherCompute path for the fixed-point neural challenge that the
-//! Alice contract and the Bob miners share.
+//! only the AetherCompute path. Two circuits live here: the inverse challenge
+//! the Alice contract publishes, and the one-way work challenge that is safe to
+//! gate a block on.
 //!
 //! # Proof layout
 //!
@@ -12,15 +13,20 @@
 //!
 //! # What this proves, and what it does not
 //!
-//! One forward pass shows the submitted vector lands inside the descriptor's
-//! tolerance of `A(x*)`. It does **not** prove that the submitter searched:
-//! [`hyphen_neural::ChallengeDescriptor::derive_preimage`] recomputes `x*` from
-//! the public `chain_seed`, so the target is reachable without any search. This
-//! verifier makes neural tasks settle deterministically in AetherCompute; it is
-//! not a work measurement, and the block PoW is untouched.
+//! [`NeuralChallengeVerifier`] re-checks one forward pass against a target that
+//! `ChallengeDescriptor::derive_preimage` recomputes from the public
+//! `chain_seed`. That makes the result *deterministic* but not *worked for*: a
+//! prover can derive `x*` instead of searching, so that circuit must never gate
+//! a block.
+//!
+//! [`NeuralWorkVerifier`] is the one-way counterpart: the seed fixes the
+//! network, a threshold fixes the difficulty, and only a candidate whose
+//! `score(A(x))` falls below the threshold is accepted. The task commits to the
+//! exact descriptor through its `program_hash`, so the threshold cannot be
+//! relaxed after publication.
 
 use hyphen_crypto::Hash256;
-use hyphen_neural::{decode_descriptor, decode_values_into, DESCRIPTOR_BYTES};
+use hyphen_neural::{decode_descriptor, decode_values_into, WorkDescriptor, DESCRIPTOR_BYTES};
 
 use crate::{
     DataCommitment, ExecutionClaim, FraudClaim, ProofVerifier, RetentionAttestation, TaskSpec,
@@ -29,11 +35,103 @@ use crate::{
 /// Proof-system identifier for a neural preimage.
 pub const NEURAL_PROOF_SYSTEM: u16 = 1;
 
+/// Proof-system identifier for a one-way neural work solution.
+pub const NEURAL_WORK_PROOF_SYSTEM: u16 = 2;
+
 const D_NEURAL_CIRCUIT: &[u8] = b"HYPHEN_NEURAL_ALICE_V1";
+const D_NEURAL_WORK_CIRCUIT: &[u8] = b"HYPHEN_NEURAL_WORK_V1";
+const D_NEURAL_WORK_PARAMS: &[u8] = b"HYPHEN_NEURAL_WORK_PARAMS_V1";
 
 /// Circuit identifier a task must name to settle through this verifier.
 pub fn neural_circuit_id() -> Hash256 {
     crate::hash(D_NEURAL_CIRCUIT, &[])
+}
+
+/// Circuit identifier of the one-way neural work challenge.
+pub fn neural_work_circuit_id() -> Hash256 {
+    crate::hash(D_NEURAL_WORK_CIRCUIT, &[])
+}
+
+/// Commitment a task must carry in `program_hash` to pin one exact work
+/// descriptor — shape, acceptance threshold and seed. Without it a miner could
+/// pick a trivial threshold after the task was published.
+pub fn neural_work_program_hash(descriptor: &WorkDescriptor) -> Result<Hash256, String> {
+    let mut bytes = [0_u8; DESCRIPTOR_BYTES];
+    descriptor
+        .encode(&mut bytes)
+        .map_err(|error| format!("neural work descriptor rejected: {error}"))?;
+    Ok(crate::hash(D_NEURAL_WORK_PARAMS, &bytes))
+}
+
+/// Settles tasks whose circuit is the one-way neural work challenge.
+///
+/// The proof is `descriptor(56) || solution(input_dim * 8)`. The seed determines
+/// the network and the task commits to the descriptor, so the only way to
+/// produce an accepted solution is to run forward passes until the score drops
+/// below the committed threshold. Verification is exactly one forward pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NeuralWorkVerifier;
+
+impl ProofVerifier for NeuralWorkVerifier {
+    fn supports(&self, circuit_id: Hash256, proof_system: u16) -> bool {
+        circuit_id == neural_work_circuit_id() && proof_system == NEURAL_WORK_PROOF_SYSTEM
+    }
+
+    fn verify_execution(&self, task: &TaskSpec, claim: &ExecutionClaim) -> Result<(), String> {
+        if !self.supports(task.circuit_id, claim.proof_system) {
+            return Err("task does not name the neural work circuit".into());
+        }
+        let (descriptor_bytes, values_bytes) = claim
+            .proof
+            .split_at_checked(DESCRIPTOR_BYTES)
+            .ok_or_else(|| "neural work proof is shorter than its descriptor".to_string())?;
+        let descriptor = WorkDescriptor::decode(descriptor_bytes)
+            .map_err(|error| format!("neural work descriptor rejected: {error}"))?;
+        if task.program_hash != neural_work_program_hash(&descriptor)? {
+            return Err("task does not commit to this work descriptor".into());
+        }
+
+        let input_dim = descriptor.spec.input_dim as usize;
+        let mut solution = vec![0_i64; input_dim];
+        let decoded = decode_values_into(values_bytes, &mut solution)
+            .map_err(|error| format!("neural work solution rejected: {error}"))?;
+        if decoded != input_dim {
+            return Err(format!(
+                "neural work solution carries {decoded} values, descriptor wants {input_dim}"
+            ));
+        }
+
+        let mut weights = vec![0_i64; descriptor.spec.weight_count()];
+        descriptor
+            .derive_weights(&mut weights)
+            .map_err(|error| format!("neural work weight derivation failed: {error}"))?;
+        let mut hidden = vec![0_i64; descriptor.spec.hidden_dim as usize];
+        let mut output = vec![0_i64; descriptor.spec.output_dim as usize];
+        if !descriptor
+            .verify(&weights, &solution, &mut hidden, &mut output)
+            .map_err(|error| format!("neural work verification failed: {error}"))?
+        {
+            return Err("neural work solution does not meet the committed threshold".into());
+        }
+        Ok(())
+    }
+
+    fn verify_fraud(
+        &self,
+        _task: &TaskSpec,
+        _result: &ExecutionClaim,
+        _fraud: &FraudClaim,
+    ) -> Result<(), String> {
+        Err("neural work is re-verified on submission; no fraud proof is accepted".into())
+    }
+
+    fn verify_retention(
+        &self,
+        _output: &DataCommitment,
+        _attestation: &RetentionAttestation,
+    ) -> Result<(), String> {
+        Err("proof of custody is not implemented for retained neural outputs".into())
+    }
 }
 
 /// Settles tasks whose circuit is the Alice neural challenge.
@@ -244,6 +342,116 @@ mod tests {
             .verify_execution(
                 &task(),
                 &claim(vec![0_u8; DESCRIPTOR_BYTES - 1], NEURAL_PROOF_SYSTEM)
+            )
+            .is_err());
+    }
+
+    fn work_descriptor(threshold: u64) -> WorkDescriptor {
+        WorkDescriptor {
+            epoch: 3,
+            spec: hyphen_neural::MlpSpec {
+                input_dim: 16,
+                hidden_dim: 20,
+                output_dim: 16,
+            },
+            threshold,
+            chain_seed: [4; 32],
+        }
+    }
+
+    fn work_task(descriptor: &WorkDescriptor) -> TaskSpec {
+        TaskSpec {
+            circuit_id: neural_work_circuit_id(),
+            program_hash: neural_work_program_hash(descriptor).unwrap(),
+            ..task()
+        }
+    }
+
+    /// Searches one accepted solution and returns `descriptor || solution`.
+    fn work_proof(descriptor: &WorkDescriptor) -> Vec<u8> {
+        let mut weights = vec![0_i64; descriptor.spec.weight_count()];
+        descriptor.derive_weights(&mut weights).unwrap();
+        let mut solution = vec![0_i64; descriptor.spec.input_dim as usize];
+        let mut hidden = vec![0_i64; descriptor.spec.hidden_dim as usize];
+        let mut output = vec![0_i64; descriptor.spec.output_dim as usize];
+        let mut scratch = vec![0_i64; descriptor.spec.input_dim as usize];
+        let outcome = hyphen_neural::search_work(
+            descriptor,
+            &weights,
+            0,
+            1,
+            4_096,
+            &mut solution,
+            &mut hidden,
+            &mut output,
+            &mut scratch,
+        )
+        .unwrap();
+        assert!(outcome.found, "an easy threshold must be reachable");
+
+        let mut proof = vec![0_u8; DESCRIPTOR_BYTES + solution.len() * 8];
+        descriptor.encode(&mut proof).unwrap();
+        for (index, value) in solution.iter().enumerate() {
+            let offset = DESCRIPTOR_BYTES + index * 8;
+            proof[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        proof
+    }
+
+    #[test]
+    fn a_searched_work_solution_is_accepted() {
+        let descriptor = work_descriptor(u64::MAX / 8);
+        let verifier = NeuralWorkVerifier;
+        assert!(verifier
+            .verify_execution(
+                &work_task(&descriptor),
+                &claim(work_proof(&descriptor), NEURAL_WORK_PROOF_SYSTEM)
+            )
+            .is_ok());
+    }
+
+    /// The task commits to the descriptor, so a prover cannot swap in a softer
+    /// threshold after the task was published.
+    #[test]
+    fn a_relaxed_threshold_is_rejected() {
+        let committed = work_descriptor(u64::MAX / 8);
+        let relaxed = work_descriptor(u64::MAX);
+        let verifier = NeuralWorkVerifier;
+        assert!(verifier
+            .verify_execution(
+                &work_task(&committed),
+                &claim(work_proof(&relaxed), NEURAL_WORK_PROOF_SYSTEM)
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn a_solution_for_a_different_seed_is_rejected() {
+        let committed = work_descriptor(u64::MAX / 8);
+        let mut other = committed;
+        other.chain_seed[0] ^= 0xFF;
+        let verifier = NeuralWorkVerifier;
+        assert!(verifier
+            .verify_execution(
+                &work_task(&committed),
+                &claim(work_proof(&other), NEURAL_WORK_PROOF_SYSTEM)
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn the_work_verifier_refuses_the_inverse_circuit() {
+        let verifier = NeuralWorkVerifier;
+        assert!(verifier.supports(neural_work_circuit_id(), NEURAL_WORK_PROOF_SYSTEM));
+        assert!(!verifier.supports(neural_circuit_id(), NEURAL_WORK_PROOF_SYSTEM));
+        assert!(!verifier.supports(neural_work_circuit_id(), NEURAL_PROOF_SYSTEM));
+        assert!(verifier
+            .verify_execution(
+                &task(),
+                &claim(
+                    work_proof(&work_descriptor(u64::MAX / 8)),
+                    NEURAL_WORK_PROOF_SYSTEM
+                )
             )
             .is_err());
     }

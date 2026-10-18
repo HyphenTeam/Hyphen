@@ -3,7 +3,8 @@ name = "hyphen-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
-license = "PolyForm-Strict-1.0.0"
+authors = ["blueokanna <blueokanna@gmail.com>", "HyphenTeam"]
+license-file = "LICENSE"
 
 [package.metadata]
 cargo-fuzz = true

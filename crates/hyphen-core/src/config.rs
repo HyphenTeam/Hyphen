@@ -32,6 +32,7 @@ pub const FEATURE_CANONICAL_TX_ORDER: u32 = 1 << 4;
 pub const FEATURE_USEFUL_WORK: u32 = 1 << 5;
 pub const FEATURE_WASM: u32 = 1 << 6;
 pub const FEATURE_H_WES: u32 = 1 << 7;
+pub const FEATURE_NEURAL_WORK: u32 = 1 << 8;
 pub const RESEARCH_CONSENSUS_FEATURES: u32 = FEATURE_UNCLES
     | FEATURE_TERA
     | FEATURE_VRE
@@ -40,17 +41,12 @@ pub const RESEARCH_CONSENSUS_FEATURES: u32 = FEATURE_UNCLES
     | FEATURE_USEFUL_WORK
     | FEATURE_WASM
     | FEATURE_H_WES;
-/// Version 2 replaces node-local random coinbase construction with a
-/// deterministic, block-bound state transition.
 pub const STATE_TRANSITION_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DifficultyAlgorithm {
-    /// Frozen, integer-only linear weighted moving average.
     LwmaV1 = 1,
-    /// Integer-only LWMA with a significance gate, a momentum term and an
-    /// alternating-pattern dampener. Research profiles only.
     MomentumDampedLwmaV2 = 2,
 }
 
@@ -65,9 +61,6 @@ pub struct ChainConfig {
     pub difficulty_algorithm: DifficultyAlgorithm,
     pub block_time: Duration,
     pub epoch_length: u64,
-    /// Epoch-invariant Cunningham chain length required of every witness.
-    /// Chain length is the coarse difficulty axis: each additional link
-    /// multiplies the expected search cost by roughly `ln(n) / 2`.
     pub pouw_chain_length: u32,
     pub ring_size: usize,
     pub difficulty_window: u64,
@@ -96,6 +89,12 @@ pub struct ChainConfig {
     pub mse_gamma: u64,
     pub mse_floor_bps: u64,
     pub mse_ceil_bps: u64,
+    /// Acceptance threshold of the first neural-work retarget window. Unused by
+    /// every other profile and only hashed when [`FEATURE_NEURAL_WORK`] is set.
+    pub neural_work_initial_threshold: u64,
+    /// Ceiling the neural-work retarget is clamped to. Also unused outside the
+    /// neural profile.
+    pub neural_work_max_threshold: u64,
     pub p2p_port: u16,
     pub rpc_port: u16,
     pub discovery_port: u16,
@@ -148,8 +147,6 @@ impl ChainConfig {
             return 0;
         }
         let max_bps = (total_outputs - 1).saturating_mul(10_000) / total_outputs;
-
-        // Logistic sigmoid via u128 to avoid overflow on large output sets.
         let k = (self.ring_size as u128).saturating_mul(64);
         let n = total_outputs as u128;
         let n2 = n.saturating_mul(n);
@@ -205,6 +202,15 @@ impl ChainConfig {
         buf.extend_from_slice(&self.mse_floor_bps.to_le_bytes());
         buf.extend_from_slice(&self.mse_ceil_bps.to_le_bytes());
         buf.extend_from_slice(&GENESIS_TIMESTAMP_MS.to_le_bytes());
+        // The neural profile replaces the witness rule entirely, so its
+        // parameters are consensus-critical. They are hashed only when the
+        // feature is on: appending them unconditionally would mint a new
+        // identity for every network that does not use the profile.
+        if self.feature_enabled(FEATURE_NEURAL_WORK) {
+            buf.extend_from_slice(b"neural-work/v1");
+            buf.extend_from_slice(&self.neural_work_initial_threshold.to_le_bytes());
+            buf.extend_from_slice(&self.neural_work_max_threshold.to_le_bytes());
+        }
         *hyphen_crypto::blake3_hash(&buf).as_bytes()
     }
 
@@ -219,8 +225,6 @@ impl ChainConfig {
             pouw_chain_length: 4,
             ring_size: 16,
             difficulty_window: 60,
-            // PoUW v3 difficulty is the number of distinct single-use witnesses
-            // a block must claim; each witness costs a chain search.
             genesis_difficulty: 8,
             max_block_size: 2 * 1024 * 1024,
             initial_reward: 100_000_000_000_000,
@@ -246,6 +250,8 @@ impl ChainConfig {
             mse_gamma: 100,
             mse_floor_bps: 8000,
             mse_ceil_bps: 12000,
+            neural_work_initial_threshold: 0,
+            neural_work_max_threshold: 0,
             p2p_port: MAINNET_P2P_PORT,
             rpc_port: MAINNET_RPC_PORT,
             discovery_port: MAINNET_DISCOVERY_PORT,
@@ -288,6 +294,8 @@ impl ChainConfig {
             mse_gamma: 100,
             mse_floor_bps: 8000,
             mse_ceil_bps: 12000,
+            neural_work_initial_threshold: 0,
+            neural_work_max_threshold: 0,
             p2p_port: TESTNET_P2P_PORT,
             rpc_port: TESTNET_RPC_PORT,
             discovery_port: TESTNET_DISCOVERY_PORT,
@@ -334,9 +342,31 @@ impl ChainConfig {
             mse_gamma: 0,
             mse_floor_bps: 10_000,
             mse_ceil_bps: 10_000,
+            neural_work_initial_threshold: 0,
+            neural_work_max_threshold: 0,
             p2p_port: DEVNET_P2P_PORT,
             rpc_port: DEVNET_RPC_PORT,
             discovery_port: DEVNET_DISCOVERY_PORT,
+        }
+    }
+
+    /// Devnet profile whose block rule is the one-way neural work challenge
+    /// instead of Cunningham witnesses.
+    ///
+    /// The profile differs from [`ChainConfig::devnet`] in its name, its magic,
+    /// the feature bit, and the two neural-work thresholds. In particular
+    /// `pouw_chain_length` is inert here — no Cunningham witness is ever checked
+    /// — and is kept only because the field is part of the parameter hash.
+    /// Activating this profile is therefore a new chain identity, never an
+    /// in-place upgrade.
+    pub fn neural_devnet() -> Self {
+        Self {
+            network_name: "hyphen-neural-devnet-v1".into(),
+            network_magic: *b"HYNN",
+            consensus_features: FEATURE_NEURAL_WORK,
+            neural_work_initial_threshold: 1 << 56,
+            neural_work_max_threshold: 1 << 62,
+            ..Self::devnet()
         }
     }
 }

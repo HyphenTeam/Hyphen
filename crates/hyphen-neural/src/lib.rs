@@ -50,6 +50,7 @@ pub mod fixed;
 pub mod mlp;
 pub mod rng;
 pub mod wire;
+pub mod work;
 
 #[cfg(feature = "std")]
 mod linalg;
@@ -69,6 +70,9 @@ pub use wire::{
     decode_descriptor, decode_open, decode_status, decode_submit, decode_values_into,
     encode_descriptor, encode_open, encode_submit, Operation, DESCRIPTOR_BYTES,
     SUBMISSION_HEADER_BYTES,
+};
+pub use work::{
+    search as search_work, WorkDescriptor, WorkSearch, PROFILE_SPEC, WORK_DESCRIPTOR_VERSION,
 };
 
 #[cfg(feature = "std")]

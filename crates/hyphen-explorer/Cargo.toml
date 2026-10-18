@@ -2,8 +2,8 @@
 name = "hyphen-explorer"
 version.workspace = true
 edition.workspace = true
+license-file.workspace = true
 authors.workspace = true
-license.workspace = true
 description = "Blockchain explorer for the Hyphen blockchain"
 
 [dependencies]

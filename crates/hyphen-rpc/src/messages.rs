@@ -82,6 +82,8 @@ pub struct MempoolResponse {
     pub total_size: u64,
     #[prost(bytes = "vec", repeated, tag = "3")]
     pub tx_hashes: Vec<Vec<u8>>,
+    #[prost(uint64, tag = "4")]
+    pub total_fees: u64,
 }
 
 #[derive(Clone, prost::Message)]

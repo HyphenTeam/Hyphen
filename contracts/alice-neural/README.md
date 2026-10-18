@@ -1,7 +1,7 @@
 # Alice: on-chain neural challenge
 
 `alice-neural-contract` is the contract half of the [neural-cryptography
-challenge](../../docs/research/neural-cryptography.md). It stores one challenge
+challenge](../../wiki/Research-Neural-Cryptography.md). It stores one challenge
 descriptor per epoch, verifies a submitted preimage with a single forward pass,
 and records the first accepted solution. It performs no floating-point
 arithmetic, allocates nothing, and compiles the same fixed-point code the miners
@@ -14,7 +14,7 @@ run.
 ```
 
 The script installs the `wasm32-unknown-unknown` target if needed, builds
-`--release --locked`, and prints the artifact size and SHA-256. The build uses the
+`--release --locked`, and prints the artifact size and BLAKE3 digest. The build uses the
 repository-pinned toolchain from `rust-toolchain.toml`.
 
 The module is intentionally small (about 11 KiB). `.cargo/config.toml` sets the
@@ -42,7 +42,7 @@ a skip.
 `hyphen_execute` accepts `Open`, `Submit` and `Status`; `hyphen_query` accepts
 `Status` only and performs no write. The exact request and response encoding,
 storage keys and status codes are specified in the
-[research note](../../docs/research/neural-cryptography.md#contract-abi).
+[research note](../../wiki/Research-Neural-Cryptography.md#contract-abi).
 
 ## Deploying
 

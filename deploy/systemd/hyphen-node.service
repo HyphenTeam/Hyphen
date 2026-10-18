@@ -2,7 +2,7 @@
 #
 # Install to /etc/systemd/system/hyphen-node.service and configure the
 # operator-specific values in /etc/hyphen/node.env (see
-# deploy/systemd/node.env.example and docs/operations/deploy-linux.md).
+# deploy/systemd/node.env.example and wiki/Operations-Deploy-Linux.md).
 #
 # The defaults below are the devnet profile. Override them in
 # /etc/hyphen/node.env; that file is read after `Environment=` and wins.
@@ -36,7 +36,7 @@ ExecStartPre=/opt/hyphen/bin/hyphen-node --network ${HYPHEN_NETWORK} --print-cha
 
 # Only the P2P port is bound publicly. RPC, the template provider and the
 # explorer stay on loopback: none of them authenticates or rate-limits clients
-# yet (see docs/operations/incentivized-testnet.md).
+# yet (see wiki/Operations-Incentivized-Testnet.md).
 ExecStart=/opt/hyphen/bin/hyphen-node \
     --network ${HYPHEN_NETWORK} \
     --data-dir /var/lib/hyphen/data \

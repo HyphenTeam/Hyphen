@@ -181,7 +181,7 @@ scalar field. Reducing a 256-bit digest into one signal is non-injective. A
 sound relation must constrain bit decomposition, BLAKE3 and Ristretto
 encoding/group equations, or prove binding to a versioned field-friendly
 relation. See
-[`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md).
+[`cryptographic-activation-gates.md`](Security-Cryptographic-Activation-Gates).
 
 The repository has no H-SAC Circom source, R1CS, proving/verifying key, Rust
 verifier, cross-implementation vectors or external audit report. An "audited
@@ -423,7 +423,7 @@ nonce, commitment, one-time public key, amount, blinding, Schnorr proof.
 256-bit digest 直接取模为一个 signal 不是单射，无法证明原始 digest 相等。必须
 约束完整 bit decomposition、BLAKE3 和 Ristretto 编码/群等式，或引入一个与现有
 commitment 有严格 binding proof 的版本化 field-friendly relation。详细门槛见
-[`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md)。
+[`cryptographic-activation-gates.md`](Security-Cryptographic-Activation-Gates)。
 
 仓库当前没有 H-SAC Circom 源、R1CS、proving/verifying key、Rust verifier 或正负向
 跨实现向量，也没有外部审计报告。因此“经过审计的 H-SAC ZK 电路”这一项当前明确

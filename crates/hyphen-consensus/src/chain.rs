@@ -2,8 +2,8 @@ use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 use tracing::info;
 
-use hyphen_compute::{ComputeTransaction, NeuralChallengeVerifier, ProofVerifier, TaskRecord};
-use hyphen_core::block::Block;
+use hyphen_compute::{ComputeTransaction, NeuralWorkVerifier, ProofVerifier, TaskRecord};
+use hyphen_core::block::{Block, BlockHeader};
 use hyphen_core::config::ChainConfig;
 use hyphen_core::error::CoreError;
 use hyphen_core::timestamp::ntp_adjusted_timestamp_ms;
@@ -53,7 +53,10 @@ pub struct Blockchain {
 impl Blockchain {
     pub fn open(path: &str, cfg: ChainConfig) -> Result<Self, CoreError> {
         let db = sled::open(path).map_err(|e| CoreError::Storage(e.to_string()))?;
-        Self::open_db_with_verifier(db, cfg, Arc::new(NeuralChallengeVerifier))
+        // Only the one-way work circuit may settle by default: the inverse
+        // challenge derives its own answer from the public seed, so a default
+        // node must never pay for it.
+        Self::open_db_with_verifier(db, cfg, Arc::new(NeuralWorkVerifier))
     }
 
     /// Tests that exercise unrelated consensus rules keep the fail-closed
@@ -263,7 +266,35 @@ impl Blockchain {
         Ok(hyphen_crypto::blake3_hash(hash.as_bytes()))
     }
 
+    /// Headers of up to `count` most recent canonical blocks, oldest first.
+    fn recent_headers(&self, count: usize) -> Result<Vec<BlockHeader>, CoreError> {
+        let tip = self.tip()?;
+        let count = count.max(1) as u64;
+        let start = tip.height.saturating_sub(count - 1);
+        let mut headers = Vec::with_capacity((tip.height - start + 1) as usize);
+        for height in start..=tip.height {
+            headers.push(
+                self.blocks
+                    .get_block_by_height(height)
+                    .map_err(|error| CoreError::Storage(error.to_string()))?
+                    .header,
+            );
+        }
+        Ok(headers)
+    }
+
     pub fn next_difficulty(&self) -> Result<u64, CoreError> {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            // The header field is an acceptance threshold in this profile, and
+            // the retarget window is the only thing that sets it.
+            let history =
+                self.recent_headers(crate::neural_work::WORK_RETARGET_WINDOW as usize + 1)?;
+            return Ok(crate::neural_work::expected_threshold(
+                &history,
+                &crate::neural_work::neural_work_params(&self.cfg),
+            ));
+        }
+
         let tip = self.tip()?;
         let window = self.cfg.difficulty_window.min(tip.height) as usize;
         if window < 2 {
@@ -289,6 +320,26 @@ impl Blockchain {
         )
     }
 
+    /// Fork-choice weight of one block under this profile.
+    ///
+    /// Witness-count profiles add the header field directly. The neural profile
+    /// stores a threshold there, so it must add the expected number of attempts
+    /// instead — the two scales are not comparable and mixing them would invert
+    /// the choice between branches.
+    fn block_weight(&self, header: &BlockHeader) -> u128 {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            // Genesis is not mined, so it must not carry work weight. Its
+            // `difficulty` is a profile constant, not a threshold, and reading
+            // it as one would let the genesis value dominate fork choice.
+            if header.height == 0 {
+                return 0;
+            }
+            crate::neural_work::block_weight(header.difficulty)
+        } else {
+            header.difficulty as u128
+        }
+    }
+
     /// Checks a block's mathematical witnesses and its chained commitment.
     ///
     /// Order matters: the pure predicate is checked first so a malformed list is
@@ -300,6 +351,18 @@ impl Blockchain {
         parent_commitment: &Hash256,
         required: u64,
     ) -> Result<(), CoreError> {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            let history =
+                self.recent_headers(crate::neural_work::WORK_RETARGET_WINDOW as usize + 1)?;
+            return crate::neural_work::verify(
+                block,
+                &block.header.prev_hash,
+                &history,
+                &crate::neural_work::neural_work_params(&self.cfg),
+            )
+            .map_err(|error| CoreError::Validation(format!("neural work rejected: {error:?}")));
+        }
+
         verify_witnesses(&block.pow_witnesses, self.cfg.pouw_chain_length, required)
             .map_err(|error| CoreError::Validation(format!("proof of work rejected: {error}")))?;
 
@@ -332,6 +395,12 @@ impl Blockchain {
     /// that a crash leaves extra claims rather than missing ones: rejecting a
     /// valid witness is a liveness problem, accepting a spent one is unsound.
     fn claim_witnesses(&self, block: &Block) -> Result<(), CoreError> {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            // Neural work needs no single-use set: the seed binds the solution
+            // to this parent, height and miner, so it cannot be replayed into
+            // any other block.
+            return Ok(());
+        }
         let mut claimed = Vec::with_capacity(block.pow_witnesses.len());
         for witness in &block.pow_witnesses {
             match self.witnesses.insert(*witness, block.header.height) {
@@ -350,6 +419,9 @@ impl Blockchain {
     /// Releases the witnesses of a block that is being detached. Failure here
     /// leaves the set stricter than the chain, which is fail-closed.
     fn release_witnesses(&self, block: &Block) {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            return;
+        }
         for witness in &block.pow_witnesses {
             if let Err(error) = self.witnesses.remove(*witness) {
                 tracing::error!(
@@ -368,7 +440,7 @@ impl Blockchain {
             .get_tip()
             .map_err(|e| CoreError::Storage(e.to_string()))?;
         let cum_diff = prev_tip.map(|t| t.cumulative_difficulty).unwrap_or(0)
-            + block.header.difficulty as u128;
+            + self.block_weight(&block.header);
 
         let mut commitment_tree = self.commitment_tree.write();
         let mut compute_store = self.compute_state.write();
@@ -479,6 +551,7 @@ impl Blockchain {
             },
             AtomicBlockUpdate {
                 block,
+                block_weight: self.block_weight(&block.header),
                 commitment_tree: prepared_tree,
                 outputs,
                 nullifiers,
@@ -880,7 +953,7 @@ impl Blockchain {
                 ));
             }
             detached_work = detached_work
-                .checked_add(block.header.difficulty as u128)
+                .checked_add(self.block_weight(&block.header))
                 .ok_or_else(|| CoreError::Validation("reorg work overflow".into()))?;
             cursor = block.header.prev_hash;
             cursor_height = cursor_height
@@ -917,7 +990,7 @@ impl Blockchain {
                 ));
             }
             candidate_work = candidate_work
-                .checked_add(block.header.difficulty as u128)
+                .checked_add(self.block_weight(&block.header))
                 .ok_or_else(|| CoreError::Validation("reorg work overflow".into()))?;
             parent = *expected;
         }
@@ -1379,6 +1452,148 @@ mod tests {
         assert_eq!(reopened.tip().unwrap().hash, new[2].hash());
         assert_eq!(reopened.tip().unwrap().cumulative_difficulty, 6);
         assert!(reopened.reorg.pending().unwrap().is_none());
+    }
+
+    /// Builds a block that satisfies the neural work rule for `parent`.
+    fn neural_child(cfg: &ChainConfig, parent: &Block, marker: u8) -> Block {
+        let params = crate::neural_work::neural_work_params(cfg);
+        let miner = SecretKey([marker; 32]);
+        let miner_pubkey = *miner.public_key().as_bytes();
+        let height = parent.header.height + 1;
+        let parent_hash = parent.hash();
+        let threshold = params.initial_threshold;
+        let seed = crate::neural_work::work_seed(&parent_hash, height, &miner_pubkey);
+        let descriptor = hyphen_neural::WorkDescriptor {
+            epoch: height,
+            spec: params.spec,
+            threshold,
+            chain_seed: *seed.as_bytes(),
+        };
+        let mut weights = vec![0_i64; params.spec.weight_count()];
+        descriptor.derive_weights(&mut weights).unwrap();
+        let mut solution = vec![0_i64; params.spec.input_dim as usize];
+        let mut hidden = vec![0_i64; params.spec.hidden_dim as usize];
+        let mut output = vec![0_i64; params.spec.output_dim as usize];
+        let mut scratch = vec![0_i64; params.spec.input_dim as usize];
+        let outcome = hyphen_neural::search_work(
+            &descriptor,
+            &weights,
+            0,
+            1,
+            1_000_000,
+            &mut solution,
+            &mut hidden,
+            &mut output,
+            &mut scratch,
+        )
+        .unwrap();
+        assert!(outcome.found, "the compiled-in threshold must be reachable");
+
+        let witnesses: Vec<u64> = solution
+            .iter()
+            .copied()
+            .map(crate::neural_work::encode_component)
+            .collect();
+        let header = BlockHeader {
+            version: FROZEN_BLOCK_VERSION,
+            height,
+            timestamp: parent.header.timestamp + 1,
+            prev_hash: parent_hash,
+            tx_root: Hash256::ZERO,
+            commitment_root: Hash256::ZERO,
+            nullifier_root: Hash256::ZERO,
+            state_root: Hash256::ZERO,
+            receipt_root: Hash256::ZERO,
+            uncle_root: Hash256::ZERO,
+            pow_commitment: crate::neural_work::work_commitment(
+                &parent_hash,
+                height,
+                threshold,
+                &miner_pubkey,
+                &witnesses,
+            ),
+            epoch_seed: genesis_epoch_seed(cfg),
+            difficulty: threshold,
+            nonce: 0,
+            extra_nonce: [marker; 32],
+            miner_pubkey,
+            total_fee: 0,
+            reward: hyphen_economics::emission::lcd_base_reward(height, cfg),
+            view_tag: 0,
+            block_size: 0,
+        };
+        let mut block = Block {
+            header,
+            pow_witnesses: witnesses,
+            transactions: Vec::new(),
+            uncle_headers: Vec::new(),
+            block_authorization: Vec::new(),
+        };
+        authorize_block(cfg, &mut block, marker);
+        block
+    }
+
+    #[test]
+    fn the_neural_profile_accepts_neural_work_and_weighs_it_by_attempts() {
+        let cfg = ChainConfig::neural_devnet();
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
+        let genesis = chain.blocks.get_block_by_height(0).unwrap();
+
+        let block = neural_child(&cfg, &genesis, 11);
+        chain.accept_block(&block).unwrap();
+
+        let tip = chain.tip().unwrap();
+        assert_eq!(tip.height, 1);
+        assert_eq!(
+            tip.cumulative_difficulty,
+            crate::neural_work::block_weight(
+                crate::neural_work::neural_work_params(&cfg).initial_threshold
+            ),
+            "fork-choice weight must be the expected attempt count, not the threshold"
+        );
+    }
+
+    #[test]
+    fn the_neural_profile_rejects_a_cunningham_witness_list() {
+        let cfg = ChainConfig::neural_devnet();
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
+        let genesis = chain.blocks.get_block_by_height(0).unwrap();
+
+        let mut block = neural_child(&cfg, &genesis, 12);
+        block.pow_witnesses = vec![3, 5, 11];
+        let error = chain.accept_block(&block).unwrap_err();
+        assert!(
+            error.to_string().contains("neural work rejected"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(chain.tip().unwrap().height, 0);
+    }
+
+    #[test]
+    fn the_neural_profile_rejects_work_mined_for_another_miner() {
+        let cfg = ChainConfig::neural_devnet();
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
+        let genesis = chain.blocks.get_block_by_height(0).unwrap();
+
+        let mut block = neural_child(&cfg, &genesis, 13);
+        let thief = SecretKey([14; 32]);
+        block.header.miner_pubkey = *thief.public_key().as_bytes();
+        block.header.pow_commitment = crate::neural_work::work_commitment(
+            &genesis.hash(),
+            block.header.height,
+            block.header.difficulty,
+            &block.header.miner_pubkey,
+            &block.pow_witnesses,
+        );
+        authorize_block(&cfg, &mut block, 14);
+        let error = chain.accept_block(&block).unwrap_err();
+        assert!(
+            error.to_string().contains("neural work rejected"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

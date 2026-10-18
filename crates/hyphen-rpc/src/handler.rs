@@ -8,6 +8,13 @@ use hyphen_tx::transaction::Transaction;
 
 use crate::messages::*;
 
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Error)]
 pub enum HandlerError {
     #[error("invalid request: {0}")]
@@ -340,10 +347,11 @@ impl RpcHandler {
                     }
                     .encode_to_vec());
                 }
-                let result = self
-                    .mempool
-                    .write()
-                    .insert_protocol(req.tx_data, hyphen_mempool::ValidatedProtocol::new());
+                let result = self.mempool.write().insert_protocol_at(
+                    req.tx_data,
+                    hyphen_mempool::ValidatedProtocol::new(),
+                    unix_time_ms(),
+                );
                 return Ok(match result {
                     Ok(hash) => SubmitTransactionResponse {
                         accepted: true,
@@ -385,10 +393,11 @@ impl RpcHandler {
                     }
                     .encode_to_vec());
                 }
-                let result = self
-                    .mempool
-                    .write()
-                    .insert_protocol(req.tx_data, hyphen_mempool::ValidatedProtocol::new());
+                let result = self.mempool.write().insert_protocol_at(
+                    req.tx_data,
+                    hyphen_mempool::ValidatedProtocol::new(),
+                    unix_time_ms(),
+                );
                 return Ok(match result {
                     Ok(hash) => SubmitTransactionResponse {
                         accepted: true,
@@ -430,10 +439,11 @@ impl RpcHandler {
                     }
                     .encode_to_vec());
                 }
-                let result = self
-                    .mempool
-                    .write()
-                    .insert_protocol(req.tx_data, hyphen_mempool::ValidatedProtocol::new());
+                let result = self.mempool.write().insert_protocol_at(
+                    req.tx_data,
+                    hyphen_mempool::ValidatedProtocol::new(),
+                    unix_time_ms(),
+                );
                 return Ok(match result {
                     Ok(hash) => SubmitTransactionResponse {
                         accepted: true,
@@ -519,7 +529,11 @@ impl RpcHandler {
         };
 
         let mut pool = self.mempool.write();
-        match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
+        match pool.insert_at(
+            tx,
+            hyphen_mempool::Validated::new(vre_quality),
+            unix_time_ms(),
+        ) {
             Ok(tx_hash) => {
                 let resp = SubmitTransactionResponse {
                     accepted: true,
@@ -546,10 +560,12 @@ impl RpcHandler {
             .into_iter()
             .map(|hash| hash.to_vec())
             .collect();
+        let stats = pool.stats();
         let resp = MempoolResponse {
-            tx_count: pool.len() as u64,
-            total_size: 0,
+            tx_count: stats.transactions as u64,
+            total_size: stats.bytes as u64,
             tx_hashes,
+            total_fees: stats.total_fees,
         };
         Ok(resp.encode_to_vec())
     }

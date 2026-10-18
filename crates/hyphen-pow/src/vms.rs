@@ -32,9 +32,8 @@
 //! predicate), because it is a consensus-state question: the block builder and
 //! the validator must agree on the set of witnesses already recorded on chain.
 
-use std::sync::LazyLock;
-
-use thiserror::Error;
+use alloc::vec::Vec;
+use core::fmt;
 
 use hyphen_crypto::Hash256;
 
@@ -53,7 +52,11 @@ pub const MAX_WITNESS: u64 = u64::MAX;
 
 /// Primes below this bound drive the cheap sieve that rejects most candidates
 /// before any Miller-Rabin round runs.
-const SIEVE_LIMIT: usize = 4096;
+///
+/// The CUDA/HIP accelerator implements exactly this predicate, so the value is
+/// part of the cross-language test contract and is exported.
+pub const SMALL_PRIME_SIEVE_LIMIT: usize = 4096;
+const SIEVE_LIMIT: usize = SMALL_PRIME_SIEVE_LIMIT;
 
 /// Miller-Rabin bases proven sufficient for every `n < 2^64`.
 const MR_BASES: [u64; 7] = [2, 325, 9_375, 28_178, 450_775, 9_780_504, 1_795_265_022];
@@ -61,35 +64,65 @@ const MR_BASES: [u64; 7] = [2, 325, 9_375, 28_178, 450_775, 9_780_504, 1_795_265
 /// Domain prefix of the parent-relative witness commitment.
 const COMMITMENT_DOMAIN: &[u8] = b"Hyphen/PoW/witness-commitment/v1";
 
-static SIEVE_PRIMES: LazyLock<Vec<u64>> = LazyLock::new(|| {
-    let mut composite = vec![false; SIEVE_LIMIT];
-    let mut primes = Vec::with_capacity(512);
-    for candidate in 2..SIEVE_LIMIT {
+const SIEVE_CAPACITY: usize = 600;
+
+const fn build_sieve() -> ([u64; SIEVE_CAPACITY], usize) {
+    let mut composite = [false; SIEVE_LIMIT];
+    let mut primes = [0u64; SIEVE_CAPACITY];
+    let mut count = 0usize;
+    let mut candidate = 2usize;
+    while candidate < SIEVE_LIMIT {
         if !composite[candidate] {
-            primes.push(candidate as u64);
+            primes[count] = candidate as u64;
+            count += 1;
             let mut multiple = candidate * candidate;
             while multiple < SIEVE_LIMIT {
                 composite[multiple] = true;
                 multiple += candidate;
             }
         }
+        candidate += 1;
     }
-    primes
-});
+    (primes, count)
+}
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+const SIEVE_TABLE: ([u64; SIEVE_CAPACITY], usize) = build_sieve();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmsError {
-    #[error("chain length {0} is outside {MIN_CHAIN_LENGTH}..={MAX_CHAIN_LENGTH}")]
     ChainLengthOutOfRange(u32),
-    #[error("witness {0} is not a valid chain origin")]
     InvalidWitness(u64),
-    #[error("witness {0} was already claimed")]
     WitnessAlreadyClaimed(u64),
-    #[error("witnesses must be supplied in strictly ascending order")]
     WitnessesNotAscending,
-    #[error("witness count {0} is outside 1..={max}", max = MAX_WITNESSES_PER_BLOCK)]
     WitnessCountOutOfRange(u64),
 }
+
+impl fmt::Display for VmsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ChainLengthOutOfRange(length) => write!(
+                f,
+                "chain length {length} is outside {MIN_CHAIN_LENGTH}..={MAX_CHAIN_LENGTH}"
+            ),
+            Self::InvalidWitness(witness) => {
+                write!(f, "witness {witness} is not a valid chain origin")
+            }
+            Self::WitnessAlreadyClaimed(witness) => {
+                write!(f, "witness {witness} was already claimed")
+            }
+            Self::WitnessesNotAscending => {
+                f.write_str("witnesses must be supplied in strictly ascending order")
+            }
+            Self::WitnessCountOutOfRange(count) => write!(
+                f,
+                "witness count {count} is outside 1..={MAX_WITNESSES_PER_BLOCK}"
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for VmsError {}
 
 /// Upper bound on witnesses per block. The validator refuses larger claims so
 /// that a block can never buy unbounded verification work.
@@ -100,7 +133,7 @@ pub fn is_prime_u64(candidate: u64) -> bool {
     if candidate < 2 {
         return false;
     }
-    for small in SIEVE_PRIMES.iter().copied() {
+    for small in SIEVE_TABLE.0[..SIEVE_TABLE.1].iter().copied() {
         if candidate == small {
             return true;
         }
@@ -108,7 +141,12 @@ pub fn is_prime_u64(candidate: u64) -> bool {
             return false;
         }
     }
+    is_prime_miller_rabin(candidate)
+}
 
+/// Miller-Rabin only. Callers must already have excluded small factors.
+#[inline]
+fn is_prime_miller_rabin(candidate: u64) -> bool {
     // n - 1 = d * 2^s with d odd.
     let d = candidate - 1;
     let s = d.trailing_zeros();
@@ -162,19 +200,21 @@ pub fn chain_element(n: u64, index: u32) -> Option<u64> {
 
 /// True when every element of the chain is prime and fits in `u64`.
 pub fn chain_is_valid(n: u64, length: u32) -> bool {
+    passes_small_prime_sieve(n, length) && chain_is_valid_after_sieve(n, length)
+}
+
+/// Chain validation without the small-prime pass.
+///
+/// Only call this after [`passes_small_prime_sieve`] has returned `true` for
+/// the same `(n, length)` pair. The accelerator path uses it to avoid running
+/// the same division wheel twice.
+pub fn chain_is_valid_after_sieve(n: u64, length: u32) -> bool {
     if !(MIN_CHAIN_LENGTH..=MAX_CHAIN_LENGTH).contains(&length) || n < 3 || n.is_multiple_of(2) {
         return false;
     }
-    // Chain elements after the root grow monotonically, so the extended sieve
-    // rejection below applies to the root as well.
-    for small in SIEVE_PRIMES.iter().copied() {
-        if n > small && n.is_multiple_of(small) {
-            return false;
-        }
-    }
     for index in 0..length {
         match chain_element(n, index) {
-            Some(element) if is_prime_u64(element) => {}
+            Some(element) if is_prime_miller_rabin(element) => {}
             _ => return false,
         }
     }
@@ -257,18 +297,15 @@ pub fn search(params: &SearchParams<'_>) -> Result<SearchOutcome, VmsError> {
     let mut candidate = params.offset;
     let mut remaining = params.max_candidates;
 
-    // Keep every witness this worker finds, even beyond `count`, so a caller
-    // that loses a race for a claimed witness can fall back instead of
-    // restarting the scan.
     while remaining > 0 {
         candidates_tested += 1;
         remaining -= 1;
 
-        if sieve_rejects(candidate, params.length) {
+        if !passes_small_prime_sieve(candidate, params.length) {
             candidate = candidate.wrapping_add(params.stride);
             continue;
         }
-        if chain_is_valid(candidate, params.length) {
+        if chain_is_valid_after_sieve(candidate, params.length) {
             chains_found += 1;
             if !(params.is_claimed)(candidate) {
                 witnesses.push(candidate);
@@ -287,36 +324,40 @@ pub fn search(params: &SearchParams<'_>) -> Result<SearchOutcome, VmsError> {
     })
 }
 
-fn sieve_rejects(candidate: u64, length: u32) -> bool {
+/// Small-prime sieve shared by the CPU search and the device accelerators.
+///
+/// Returns `true` when no prime below [`SMALL_PRIME_SIEVE_LIMIT`] divides any
+/// chain element. An exact small prime is not a rejection: it is prime and may
+/// be a valid chain element.
+pub fn passes_small_prime_sieve(candidate: u64, length: u32) -> bool {
     if candidate < 3 || candidate.is_multiple_of(2) {
-        return true;
+        return false;
     }
-    for small in SIEVE_PRIMES.iter().copied() {
+    for small in SIEVE_TABLE.0[..SIEVE_TABLE.1].iter().copied() {
         if candidate == small {
-            return false;
+            continue;
         }
         if candidate.is_multiple_of(small) {
-            return true;
+            return false;
         }
     }
-    // Reject when any later chain element is divisible by a small prime; those
-    // elements are checked again by the primality test.
+
     for index in 1..length {
         match chain_element(candidate, index) {
             Some(element) => {
-                for small in SIEVE_PRIMES.iter().copied() {
+                for small in SIEVE_TABLE.0[..SIEVE_TABLE.1].iter().copied() {
                     if element == small {
                         break;
                     }
                     if element.is_multiple_of(small) {
-                        return true;
+                        return false;
                     }
                 }
             }
-            None => return true,
+            None => return false,
         }
     }
-    false
+    true
 }
 
 /// Chained commitment to a block's witness list.
@@ -398,7 +439,6 @@ mod tests {
         assert!(is_prime_u64(18_446_744_073_709_551_557));
         assert!(!is_prime_u64(u64::MAX));
         assert!(!is_prime_u64(u64::MAX - 1));
-        // 2^61 - 1 is a Mersenne prime, so it is also the root of a valid chain.
         assert!(is_prime_u64((1 << 61) - 1));
     }
 
@@ -422,7 +462,6 @@ mod tests {
         // 89 -> 179 -> 359 -> 719 -> 1439 -> 2879 is a known length-6 chain.
         assert!(chain_is_valid(89, 6));
         assert!(chain_is_valid(89, 2));
-        // The chain cannot be extended and even roots are rejected outright.
         assert!(!chain_is_valid(89, 7));
         assert!(!chain_is_valid(2, 5));
         assert!(!chain_is_valid(4, 2));

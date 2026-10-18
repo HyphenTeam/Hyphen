@@ -3,7 +3,7 @@ name = "hyphen-explorer-web"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Rust WebAssembly renderer for the Hyphen chain explorer"
 
 [lib]

@@ -2,15 +2,12 @@
 name = "hyphen-neural"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "Deterministic fixed-point neural challenge used by the Hyphen Alice contract and Bob miners"
 
 [features]
 default = ["std"]
-# The core (fixed-point arithmetic, PRNG, MLP forward pass, challenge
-# derivation, verifier, wire format) is allocation-free and builds for
-# `wasm32-unknown-unknown` without `std`. Only the trainer, the CLI and the
-# convenience wrappers need an allocator.
 std = ["dep:clap"]
 
 [dependencies]

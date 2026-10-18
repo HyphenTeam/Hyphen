@@ -144,7 +144,7 @@ concentration, correlated sampling and adaptive corruption need separate
 measurement. The current previous-epoch-block-hash seed is grindable and does
 not satisfy this premise. Activation requires the unique threshold beacon or
 VDF gates in
-[`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md).
+[`cryptographic-activation-gates.md`](Security-Cryptographic-Activation-Gates).
 
 ## 6. H-FOC' certificate stages
 
@@ -398,7 +398,7 @@ P_bad_grind <= min(1, g * P_bad).
 本节“不可偏置”前提。若 `g` 个候选在随机预言机模型下独立且事件单次概率为 `p`，
 攻击者择优后事件概率为 `1-(1-p)^g`；相关候选不满足该等式，只能按联合分布分析，
 并有 union bound 上界 `min(1,gp)`。哈希后处理不能消除选择通道。激活 H-FOC'
-必须先满足 [`cryptographic-activation-gates.md`](../security/cryptographic-activation-gates.md)
+必须先满足 [`cryptographic-activation-gates.md`](Security-Cryptographic-Activation-Gates)
 中的 unique threshold beacon 或 VDF 门槛。
 
 ## 6. H-FOC' 证书阶段

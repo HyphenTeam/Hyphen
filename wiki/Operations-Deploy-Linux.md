@@ -2,7 +2,7 @@
 
 This is the operator runbook for a single full node under `systemd`. It covers
 the "local devnet" and "private multi-node" stages of
-[incentivized-testnet.md](incentivized-testnet.md); the entry blockers listed
+[incentivized-testnet.md](Operations-Incentivized-Testnet); the entry blockers listed
 there are still open, so nothing in this guide makes a balance worth money.
 
 Every `hyphen-node` command below was executed against a binary built from this
@@ -245,7 +245,7 @@ What actually matters in the journal:
 | --- | --- |
 | `Chain tip: height=…, hash=…, cum_diff=…` | per-block progress; `cum_diff` is the fork-choice weight |
 | `No peers connected, retrying Kademlia bootstrap...` | isolation; check firewall, boot node multiaddrs and that the boot node is up |
-| `Peer … banned for …` | three proven-fault strikes in ten minutes; see [../security/peer-policy.md](../security/peer-policy.md) |
+| `Peer … banned for …` | three proven-fault strikes in ten minutes; see [../security/peer-policy.md](Security-Peer-Policy) |
 | `Peer … ban expired` | the hour elapsed, reconnects are allowed |
 | `Remote … at height …, local at … – in sync` | sync responses applied |
 
@@ -277,7 +277,7 @@ What actually matters in the journal:
 
 # 在 Linux 上部署 Hyphen 节点
 
-这是单台 `systemd` 全节点运维手册。它覆盖 [incentivized-testnet.md](incentivized-testnet.md) 里的"本地 devnet"与"私有多节点"阶段；该文档列出的准入阻断项仍未关闭，因此本文任何步骤都不会让余额具备货币价值。
+这是单台 `systemd` 全节点运维手册。它覆盖 [incentivized-testnet.md](Operations-Incentivized-Testnet) 里的"本地 devnet"与"私有多节点"阶段；该文档列出的准入阻断项仍未关闭，因此本文任何步骤都不会让余额具备货币价值。
 
 以下 `hyphen-node` 命令都在本仓库构建出的二进制上、在 Linux 上实际执行过（Ubuntu 24.04，Rust 1.97.1）。单元文件通过 `systemd-analyze verify`；`systemctl` 那几步需要在真实主机上执行。
 
@@ -485,7 +485,7 @@ journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
 | --- | --- |
 | `Chain tip: height=…, hash=…, cum_diff=…` | 逐块进展；`cum_diff` 是分叉选择权重 |
 | `No peers connected, retrying Kademlia bootstrap...` | 网络孤立；检查防火墙、boot node 的 multiaddr，以及对方是否在线 |
-| `Peer … banned for …` | 十分钟内三次可证过错；见 [../security/peer-policy.md](../security/peer-policy.md) |
+| `Peer … banned for …` | 十分钟内三次可证过错；见 [../security/peer-policy.md](Security-Peer-Policy) |
 | `Peer … ban expired` | 封禁一小时到期，允许重连 |
 | `Remote … at height …, local at … – in sync` | 同步响应已应用 |
 

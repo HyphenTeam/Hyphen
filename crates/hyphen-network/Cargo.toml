@@ -2,30 +2,28 @@
 name = "hyphen-network"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "libp2p-based P2P networking for the Hyphen blockchain"
 
 [dependencies]
-hyphen-crypto.workspace    = true
-hyphen-core.workspace      = true
-hyphen-tx.workspace        = true
+hyphen-crypto.workspace = true
+hyphen-core.workspace = true
+hyphen-tx.workspace = true
 hyphen-consensus.workspace = true
-hyphen-mempool.workspace   = true
-hyphen-state.workspace     = true
-libp2p.workspace           = true
+hyphen-mempool.workspace = true
+hyphen-state.workspace = true
+libp2p.workspace = true
 libp2p-allow-block-list.workspace = true
-tokio.workspace            = true
-futures.workspace          = true
-async-trait.workspace      = true
-prost.workspace            = true
-serde.workspace            = true
-rustbinary.workspace       = true
-thiserror.workspace        = true
-tracing.workspace          = true
-parking_lot.workspace      = true
-rand.workspace             = true
-hyphen-wire.workspace      = true
-# DNSSEC-validating resolver for `/dns4`, `/dns6` and `/dns` boot nodes. Kept at
-# `std` + encrypted transports: no QUIC, no persistent cache, nothing the
-# bootstrap path does not use. `hickory` still never enters the graph.
-recurse-x = { version = "0.2", default-features = false, features = ["std", "dnssec", "dot", "doh"] }
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+prost.workspace = true
+serde.workspace = true
+rustbinary.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+hyphen-wire.workspace = true
+recurse-x.workspace = true

@@ -29,7 +29,7 @@ resolver = "2"
 version = "0.1.1"
 edition = "2021"
 authors = ["blueokanna <blueokanna@gmail.com>", "HyphenTeam"]
-license = "PolyForm-Strict-1.0.0"
+license-file = "LICENSE"
 description = "Privacy-focused research blockchain with scientific computational work and fail-closed AetherCompute settlement"
 
 [workspace.dependencies]
@@ -72,7 +72,7 @@ prost-types = "0.14.4"
 
 # ── storage ──
 sled = "0.34"
-zstd = "0.14.2"
+zstd = "0.14.3"
 wasmi = { version = "2.0.0", default-features = false, features = [
     "stable",
     "std",
@@ -80,11 +80,6 @@ wasmi = { version = "2.0.0", default-features = false, features = [
     "validate",
     "deterministic",
     "extra-checks",
-    # Without `auto-dispatch`, Wasmi always selects its tail-call backend. In a
-    # debug build (opt-level 0/1) that backend dispatches with ordinary calls,
-    # so every executed instruction grows the host stack and long-running code
-    # aborts the process. `auto-dispatch` selects the loop backend whenever LLVM
-    # cannot perform sibling-call optimization.
     "auto-dispatch",
 ] }
 wasmparser = "0.262.0"
@@ -92,7 +87,7 @@ wat = "1.262.0"
 
 # ── async / networking ──
 tokio = { version = "1.53.3", features = ["full"] }
-futures = "0.3"
+futures = "0.3.34"
 axum = "0.8.9"
 courierust = "1.0.9"
 libp2p = { version = "0.57", default-features = false, features = [
@@ -112,24 +107,30 @@ libp2p = { version = "0.57", default-features = false, features = [
     "serde",
     "autonat",
 ] }
-# Keep-alive peer block list. The umbrella `libp2p` crate does not re-export
-# this behaviour as a feature, so it is pinned directly.
+
 libp2p-allow-block-list = "0.7"
 async-trait = "0.1.92"
 
 # ── utilities ──
-rand = "0.10"
+rand = "0.10.3"
 rand_core = "0.10.1"
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 rand_chacha = "0.10.0"
-thiserror = "2.0"
+thiserror = "2.0.21"
 env_logger = "0.11"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde_json = "1.0"
+serde_json = "1.0.154"
 parking_lot = "0.12.5"
 clap = { version = "4.6.7", features = ["derive"] }
 rustbinary = { version = "0.1.8", features = ["derive"] }
+tzcraft = { version = "0.1", default-features = false, features = ["std"] }
+recurse-x = { version = "0.2", default-features = false, features = [
+    "std",
+    "dnssec",
+    "dot",
+    "doh",
+] }
 zeroize = { version = "1.9.1", features = ["derive"] }
 
 [package]
@@ -137,7 +138,7 @@ name = "hyphen"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [dependencies]
 hyphen-crypto.workspace = true

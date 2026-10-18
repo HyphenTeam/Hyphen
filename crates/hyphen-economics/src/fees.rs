@@ -1,10 +1,12 @@
 use hyphen_core::config::ChainConfig;
 
-const FEE_PER_BYTE: u64 = 100;
+pub const MIN_RELAY_FEE_PER_BYTE: u64 = 100;
+pub const MIN_RELAY_FEE: u64 = 10_000;
 
 pub fn minimum_fee(tx_size_bytes: usize, _cfg: &ChainConfig) -> u64 {
-    let base = tx_size_bytes as u64 * FEE_PER_BYTE;
-    base.max(10_000)
+    (tx_size_bytes as u64)
+        .saturating_mul(MIN_RELAY_FEE_PER_BYTE)
+        .max(MIN_RELAY_FEE)
 }
 
 pub fn burned_fee(total_fee: u64, cfg: &ChainConfig) -> u64 {
@@ -27,7 +29,6 @@ mod tests {
         let burn = burned_fee(fee, &cfg);
         let miner = miner_fee_share(fee, &cfg);
         assert_eq!(burn + miner, fee);
-        // 5000 bps = 50%
         assert_eq!(burn, 50_000);
     }
 }

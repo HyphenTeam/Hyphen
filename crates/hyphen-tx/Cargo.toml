@@ -2,18 +2,19 @@
 name = "hyphen-tx"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "Shielded UTXO transaction model for the Hyphen blockchain"
 
 [dependencies]
-hyphen-crypto.workspace    = true
-hyphen-proof.workspace     = true
+hyphen-crypto.workspace = true
+hyphen-proof.workspace = true
 curve25519-dalek.workspace = true
-serde.workspace            = true
-rustbinary.workspace       = true
-rand.workspace             = true
-rand_core.workspace        = true
-rand_chacha.workspace      = true
-thiserror.workspace        = true
-zeroize.workspace          = true
-hyphen-wire.workspace      = true
+serde.workspace = true
+rustbinary.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+hyphen-wire.workspace = true

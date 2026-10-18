@@ -2,11 +2,12 @@
 name = "hyphen-economics"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "Block rewards, emission schedule and fee model for the Hyphen blockchain"
 
 [dependencies]
 hyphen-core.workspace = true
-serde.workspace       = true
-rustbinary.workspace  = true
-thiserror.workspace   = true
+serde.workspace = true
+rustbinary.workspace = true
+thiserror.workspace = true

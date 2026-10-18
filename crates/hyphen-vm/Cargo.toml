@@ -2,25 +2,26 @@
 name = "hyphen-vm"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "WASM smart contract execution engine for the Hyphen blockchain"
 
 [dependencies]
 hyphen-crypto.workspace = true
-hyphen-core.workspace   = true
-hyphen-token.workspace  = true
-serde.workspace         = true
-serde_json.workspace    = true
-rustbinary.workspace    = true
-thiserror.workspace     = true
-tracing.workspace       = true
-blake3.workspace        = true
-wat.workspace           = true
-wasmi.workspace         = true
-wasmparser.workspace    = true
-sled.workspace          = true
-zstd.workspace          = true
-hyphen-wire.workspace   = true
+hyphen-core.workspace = true
+hyphen-token.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rustbinary.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+wat.workspace = true
+wasmi.workspace = true
+wasmparser.workspace = true
+sled.workspace = true
+zstd.workspace = true
+hyphen-wire.workspace = true
 
 [dev-dependencies]
 hyphen-neural.workspace = true

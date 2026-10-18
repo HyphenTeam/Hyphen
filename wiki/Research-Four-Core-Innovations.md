@@ -96,7 +96,7 @@ persists all five roots and public creation/bounded expiry in the same atomic
 block/reorg transition. Shielded owner/nullifier recovery and consume, provider
 challenge/repair, long-term retention evidence and independent review remain
 closed. The complete lower bounds and EAOM model are in
-[`h-wes-theorem-and-object-model.md`](h-wes-theorem-and-object-model.md).
+[`h-wes-theorem-and-object-model.md`](Research-H-WES-Theorem-and-Object-Model).
 
 ## 4. H-BFM fusion and visible-domain fairness
 
@@ -126,7 +126,7 @@ credit, the exact PoW-weight/issuance relationship and atomic deep-mesh reorg.
 The inactive `fusion.rs` model and vectors cover unique lane chains, certified
 closure, canonical order, conflict receipts and permutation invariance, not a
 complete mesh consensus. Visible-domain fairness is specified separately in
-[`private-visible-fair-ordering.md`](private-visible-fair-ordering.md).
+[`private-visible-fair-ordering.md`](Research-Private-Visible-Fair-Ordering).
 
 ## 5. Candidate contribution two: H-FOC'
 
@@ -181,7 +181,7 @@ nonce. It rejects identity public keys/nonces and noncanonical scalars. It is
 not encrypted, does not prove canonical inclusion, real ring input or legal
 provenance, and is called targeted opening disclosure. The leakage lower bound,
 composition analysis and v0 distance are in
-[`h-sac-leakage-lower-bound.md`](h-sac-leakage-lower-bound.md).
+[`h-sac-leakage-lower-bound.md`](Research-H-SAC-Leakage-Lower-Bound).
 
 ## 7. Proof ledger
 
@@ -414,7 +414,7 @@ profile 生命周期，不是生产可用的完整 H-WES 协议。
 原始“四条件不可能性”缺少 succinctness，完整 archive 单轮扫描是反例。补强
 后的 membership-only 黑盒后缀查询下界、EAOM 生命周期、线性化点、授权关系、
 安全游戏和复杂度表见
-[`h-wes-theorem-and-object-model.md`](h-wes-theorem-and-object-model.md)。当前代码
+[`h-wes-theorem-and-object-model.md`](Research-H-WES-Theorem-and-Object-Model)。当前代码
 已加入 action/height/lease/pre-state 绑定、恢复终态回执、消费终态和
 no-resurrection 测试；持久 SMT、五根和公开创建/过期已接入研究 profile，shielded
 恢复/消费、长期 DA challenge/repair 和独立审查仍未完成。
@@ -487,7 +487,7 @@ set agreement、permissionless lane 分配、奖励或网络协议，所以不�
 `(txid,fee_class,encoded_len,public_conflict_tag)` 可见投影聚合签名接收序列，
 以 `2f+1` 强证据生成 pairwise edge，把 cycle 收缩成 fair batch，并明确放弃对
 隐藏金额、地址和语义的 fairness 声明。定义、证明、局部 MEV 边界和代码状态见
-[`private-visible-fair-ordering.md`](private-visible-fair-ordering.md)。参考实现位于
+[`private-visible-fair-ordering.md`](Research-Private-Visible-Fair-Ordering)。参考实现位于
 `crates/hyphen-consensus/src/private_fair_ordering.rs`，尚未接入 fusion 或区块。
 
 ## 5. 候选贡献二：H-FOC' 动态委员会公平排序证书
@@ -569,7 +569,7 @@ seat 签名、`2f+1` 门限、重复 seat 拒绝和同一
 固定委员会交集不证明跨 epoch 安全。候选 H-FOC' 需要 old/new committee 对同一
 finalized PoW checkpoint 的双 QC handoff，并把 fairness evidence root 纳入
 prepare/commit lock。完整动态抽样、grinding 上界、handoff 归纳证明和性能式见
-[`private-visible-fair-ordering.md`](private-visible-fair-ordering.md)。当前代码没有
+[`private-visible-fair-ordering.md`](Research-Private-Visible-Fair-Ordering)。当前代码没有
 view-change/handoff，因此不能称为 BFT finality layer。
 
 ## 6. 候选贡献三：H-SAC 任务条件选择性透明
@@ -666,7 +666,7 @@ nonce 和非规范响应标量，避免把公开的零标量误写成排他所�
 `V`，零错误正确性要求 `I(X;V|P)>=H(Y|P)`；允许错误时由 Fano inequality 减去
 `h_2(epsilon)+epsilon log_2(M-1)`。达到该下界需要 transcript 可仅由 `(P,Y)`
 模拟。完整推导、组合查询泄漏和当前 v0 偏离程度见
-[`h-sac-leakage-lower-bound.md`](h-sac-leakage-lower-bound.md)。
+[`h-sac-leakage-lower-bound.md`](Research-H-SAC-Leakage-Lower-Bound)。
 
 ## 7. 证明账本
 

@@ -2,19 +2,18 @@
 name = "hyphen-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "Core types and configuration for the Hyphen blockchain"
 
 [dependencies]
 hyphen-crypto.workspace = true
-serde.workspace         = true
-rustbinary.workspace    = true
-hyphen-wire.workspace   = true
-# Calendar math for operator-facing timestamps and for proving the genesis
-# instant. Codec features are off: `hyphen-wire` owns the wire format.
-tzcraft = { version = "0.1", default-features = false, features = ["std"] }
-thiserror.workspace     = true
-rand.workspace          = true
-parking_lot.workspace   = true
-tracing.workspace       = true
-tokio.workspace         = true
+serde.workspace = true
+rustbinary.workspace = true
+hyphen-wire.workspace = true
+tzcraft.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+tokio.workspace = true

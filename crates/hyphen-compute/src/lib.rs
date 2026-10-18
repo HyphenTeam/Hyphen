@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 
 mod neural;
 
-pub use neural::{neural_circuit_id, NeuralChallengeVerifier, NEURAL_PROOF_SYSTEM};
+pub use neural::{
+    neural_circuit_id, neural_work_circuit_id, neural_work_program_hash, NeuralChallengeVerifier,
+    NeuralWorkVerifier, NEURAL_PROOF_SYSTEM, NEURAL_WORK_PROOF_SYSTEM,
+};
 
 use hyphen_wire::CanonicalSet;
 
@@ -59,9 +62,6 @@ pub enum ScientificDomain {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 #[repr(u8)]
 pub enum ArithmeticProfile {
-    /// Bit-exact integer and fixed-point semantics. Floating-point contraction,
-    /// NaN payloads, host math libraries, clocks, randomness and host I/O are
-    /// forbidden by the referenced program profile.
     DeterministicFixedPointV1 = 1,
 }
 

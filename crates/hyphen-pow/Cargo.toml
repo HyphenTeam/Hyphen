@@ -2,16 +2,15 @@
 name = "hyphen-pow"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "PageWeave CPU-first Proof-of-Work for the Hyphen blockchain"
 
+[features]
+default = ["std"]
+std = ["dep:hyphen-core"]
+
 [dependencies]
+hyphen-core = { workspace = true, optional = true }
 hyphen-crypto.workspace = true
-hyphen-core.workspace   = true
-blake3.workspace        = true
-rand.workspace          = true
-rand_chacha.workspace   = true
-thiserror.workspace     = true
-parking_lot.workspace   = true
-serde.workspace         = true
-rustbinary.workspace    = true
+blake3.workspace = true

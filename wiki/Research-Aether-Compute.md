@@ -88,13 +88,17 @@ successful execution mandatory. This boundary does not replace the consensus
 - A small SNARK exists only after complete arithmetization and activation of a
   versioned verifier key.
 
-The default node uses `NeuralChallengeVerifier`: tasks naming the Alice neural
-circuit (`neural_circuit_id()`, proof system `NEURAL_PROOF_SYSTEM`) settle
-after one deterministic forward pass over `descriptor || solution`. Every other
-circuit, and every fraud or custody proof, still fails closed. That verifier
-re-checks the forward pass only; because `derive_preimage` recomputes the target
-from the descriptor's public `chain_seed`, it proves determinism rather than
-search effort. A production profile must install an audited `ProofVerifier` and
+The default node uses `NeuralWorkVerifier`: tasks naming the one-way work
+circuit (`neural_work_circuit_id()`, proof system `NEURAL_WORK_PROOF_SYSTEM`)
+settle when the submitted `x` makes `score(A(x))` fall below the threshold the
+task committed to in `program_hash`. Verification is one deterministic forward
+pass; producing `x` costs one forward pass per attempt. Every other circuit, and
+every fraud or custody proof, still fails closed.
+
+`NeuralChallengeVerifier` remains available for the inverse Alice circuit, whose
+target is `A(x*)` with `x*` derived from the public `chain_seed`. It is
+deterministic but not worked for, so it must not settle anything that gates
+block validity. A production profile must install an audited `ProofVerifier` and
 bind `circuit_id` plus `proof_system` in consensus.
 
 ## External infrastructure
@@ -179,7 +183,9 @@ Explorer 提供 `/api/science/tasks`、`/api/science/task/{id}` 以及对应 `#/
 - Bulletproofs 不会自动证明任意 Rust/C job。
 - 只有完整算术化并激活版本化 verifier key 后，才存在小型 SNARK。
 
-默认节点使用 `NeuralChallengeVerifier`：声明 Alice 神经挑战电路（`neural_circuit_id()`、证明系统 `NEURAL_PROOF_SYSTEM`）的任务，在本地对 `descriptor || solution` 做一次确定性前向传播后结算。其余电路以及所有欺诈证明与 custody proof 仍然 fail-closed。该验证器只复核前向传播；由于 `derive_preimage` 能从描述符里的公开 `chain_seed` 重算出目标，它证明的是确定性，不是搜索量。生产 profile 必须安装已审计 `ProofVerifier`，并在共识中绑定 `circuit_id` 和 `proof_system`。
+默认节点使用 `NeuralWorkVerifier`：声明单向神经工作量电路（`neural_work_circuit_id()`、证明系统 `NEURAL_WORK_PROOF_SYSTEM`）的任务，当提交的 `x` 使 `score(A(x))` 低于任务在 `program_hash` 中承诺的阈值时结算。验证是一次确定性前向传播；求解每次尝试也是一次前向传播。其余电路以及所有欺诈证明与 custody proof 仍然 fail-closed。
+
+`NeuralChallengeVerifier` 仍保留给 Alice 逆问题电路：它的目标是 `A(x*)`，而 `x*` 由公开的 `chain_seed` 推出。它具备确定性但不代表工作量，因此不能用于决定区块有效性的结算。生产 profile 必须安装已审计 `ProofVerifier`，并在共识中绑定 `circuit_id` 和 `proof_system`。
 
 ## 外部基础设施
 

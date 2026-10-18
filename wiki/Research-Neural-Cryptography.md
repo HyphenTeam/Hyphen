@@ -4,7 +4,7 @@ Status: research. `crates/hyphen-neural` and `contracts/alice-neural` are
 executable, tested and deployable on any chain in this repository that runs the
 `hyphen-vm` contract ABI. The challenge is **not** the block proof-of-work: block
 eligibility remains the PoUW v3 Cunningham-witness rule described in the
-[whitepaper](../whitepaper.md). Nothing here changes chain weight, issuance or
+[whitepaper](Whitepaper). Nothing here changes chain weight, issuance or
 fork choice.
 
 ## The mechanism in one paragraph
@@ -24,10 +24,22 @@ hold Alice's weights in order to verify anything, so the weights are public by
 construction. Copying them satisfies every loss threshold without doing work. The
 same objection kills any scoring rule that rewards reproducing `A`.
 
-The inverse formulation keeps `A` public and withholds only `x*`. Knowing the
-function does not reveal a preimage, the target is public, and "did you find an
-`x`" is a boolean the contract can check in one pass. That is the property the
-mechanism actually needs.
+The inverse formulation publishes `A` and a target `A(x*)`, and asks for any `x`
+whose image lands inside the tolerance. The verifier is one forward pass.
+
+**`x*` is not secret.** `ChallengeDescriptor::derive_preimage` recomputes it from
+the public `chain_seed`, so the target can be produced without searching at all.
+That is acceptable for a contract that settles a result someone declared, and it
+is disqualifying for a proof of work: a block gated on this circuit would be
+free to produce.
+
+`crates/hyphen-neural/src/work.rs` supplies the one-way variant that a block may
+use. The seed fixes the *network*, a published threshold fixes the difficulty,
+and a solution is any `x` with `score(A(x)) < threshold`. Nothing derives such an
+`x`; the only way to obtain one is to run forward passes. The task commits to the
+exact descriptor through `program_hash`, so the threshold cannot be relaxed after
+publication. `hyphen_compute::NeuralWorkVerifier` is the node's default
+settlement verifier for this reason, and the inverse circuit is not eligible.
 
 ## Numbers are integers, on purpose
 
@@ -104,7 +116,9 @@ Established by the code and its tests:
 - **Determinism.** Same descriptor, same weights, same target, same acceptance on
   every host. Pinned by unit tests, an RFC 8439 vector, and an end-to-end test
   that runs the compiled contract inside `hyphen-vm`.
-- **No weight copying.** The only accepted witness is a preimage; the weights are
+- **No weight copying, and no derived preimage.** The inverse circuit's answer is
+  recomputable from the public seed, so only the one-way work circuit
+  (`work.rs`) may gate work; the weights are
   never part of a submission.
 - **Single settlement.** The first accepted preimage is stored under
   `hyphen:sol:v1:<epoch>`; later submissions return `2` and mutate nothing.
@@ -196,9 +210,9 @@ bodies and the `hyphen-vm` ledger, exactly like any other application contract.
 
 ## Related reading
 
-- [Useful-work augmented PoW](useful-work-augmented-pow.md) — why external tasks
+- [Useful-work augmented PoW](Research-Useful-Work-Augmented-PoW) — why external tasks
   do not replace the block work rule.
-- [AetherCompute](aether-compute.md) — the fail-closed settlement layer for
+- [AetherCompute](Research-Aether-Compute) — the fail-closed settlement layer for
   user-funded work.
 
 ---

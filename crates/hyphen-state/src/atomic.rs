@@ -30,6 +30,7 @@ pub struct IndexedOutput {
 
 pub struct AtomicBlockUpdate<'a> {
     pub block: &'a Block,
+    pub block_weight: u128,
     pub commitment_tree: hyphen_crypto::merkle::MerkleTree,
     pub outputs: Vec<IndexedOutput>,
     pub nullifiers: Vec<[u8; 32]>,
@@ -557,7 +558,7 @@ fn validate_update(
                 ));
             }
             tip.cumulative_difficulty
-                .checked_add(update.block.header.difficulty as u128)
+                .checked_add(update.block_weight)
                 .ok_or_else(|| {
                     AtomicStateError::InvalidTransition("cumulative difficulty is exhausted".into())
                 })?
@@ -568,7 +569,7 @@ fn validate_update(
                     "first committed block must be genesis".into(),
                 ));
             }
-            update.block.header.difficulty as u128
+            update.block_weight
         }
     };
     if update.tip.cumulative_difficulty != expected_cumulative_difficulty {
@@ -946,6 +947,7 @@ mod tests {
             },
             AtomicBlockUpdate {
                 block: &first,
+                block_weight: 1,
                 commitment_tree: first_tree,
                 outputs: vec![IndexedOutput {
                     global_index: 0,
@@ -985,6 +987,7 @@ mod tests {
             },
             AtomicBlockUpdate {
                 block: &second,
+                block_weight: 1,
                 commitment_tree: second_tree,
                 outputs: vec![IndexedOutput {
                     global_index: 1,
@@ -1057,6 +1060,7 @@ mod tests {
             },
             AtomicBlockUpdate {
                 block: &first,
+                block_weight: 1,
                 commitment_tree: first_tree,
                 outputs: vec![IndexedOutput {
                     global_index: 0,
@@ -1108,6 +1112,7 @@ mod tests {
             },
             AtomicBlockUpdate {
                 block: &second,
+                block_weight: 1,
                 commitment_tree: second_tree,
                 outputs: vec![second_output.clone()],
                 nullifiers: vec![second_nullifier],
@@ -1181,6 +1186,7 @@ mod tests {
             },
             AtomicBlockUpdate {
                 block: &second,
+                block_weight: 1,
                 commitment_tree: reapplied_tree,
                 outputs: vec![second_output],
                 nullifiers: vec![second_nullifier],

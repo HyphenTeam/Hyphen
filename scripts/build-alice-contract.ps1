@@ -33,8 +33,27 @@ if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
     throw "expected contract artifact at $artifact"
 }
 
-$hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$b3sum = Get-Command b3sum -ErrorAction SilentlyContinue
+if ($b3sum) {
+    $hashOutput = & $b3sum.Source --no-names -- $artifact 2>&1
+    $hashExit = $LASTEXITCODE
+} else {
+    $hashOutput = & cargo run --quiet --manifest-path (Join-Path $root 'Cargo.toml') `
+        -p hyphen-crypto --example blake3-file -- $artifact 2>&1
+    $hashExit = $LASTEXITCODE
+}
+$ErrorActionPreference = $previousPreference
+if ($hashExit -ne 0) {
+    throw "BLAKE3 hashing failed with exit code $hashExit`n$($hashOutput | Out-String)"
+}
+$hash = ($hashOutput | Where-Object { "$_".Trim() } | Select-Object -Last 1).ToString().Trim()
+if ($hash -notmatch '^[0-9a-f]{64}$') {
+    throw "unexpected BLAKE3 output: $hash"
+}
+
 $size = (Get-Item -LiteralPath $artifact).Length
 Write-Host "alice-neural contract: $artifact"
 Write-Host "  size:   $size bytes"
-Write-Host "  sha256: $hash"
+Write-Host "  blake3: $hash"

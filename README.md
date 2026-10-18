@@ -25,7 +25,7 @@ cryptographic audit. `mainnet` is a research profile. The current devnet can be
 built and tested, but that is not evidence that real assets are safe.
 
 The design rationale, threat model, mechanism status and known limitations are
-written up in the [whitepaper](docs/whitepaper.md). Read it before quoting any
+written up in the [whitepaper](wiki/Whitepaper.md). Read it before quoting any
 claim from this repository.
 
 The four named research mechanisms are executable reference models, not active
@@ -41,10 +41,12 @@ devnet consensus:
 AetherCompute task publication and the deterministic WASM ledger are integrated
 with research-chain block execution, RPC/P2P ingress, mempool templates, state
 roots and reorg rollback. The default verifier settles tasks whose circuit is
-the Alice neural challenge, re-checking every submission with one deterministic
-forward pass; every other circuit remains fail-closed until an exact audited
-proof verifier is installed. See the
-[AetherCompute boundary](docs/research/aether-compute.md).
+the one-way neural work challenge: the seed fixes the network, the task commits
+to an acceptance threshold, and verification is one deterministic forward pass.
+The inverse Alice circuit stays available to the contract but cannot settle
+work, because its answer is recomputable from the public seed. Every other
+circuit remains fail-closed until an exact audited proof verifier is installed.
+See the [AetherCompute boundary](wiki/Research-Aether-Compute.md).
 
 Block version 5 activates PoUW v3. A block claims `difficulty` distinct
 Cunningham-chain witnesses of the epoch's chain length; a witness is a value `n`
@@ -85,14 +87,15 @@ primality tests where a solver pays the full search, every accepted witness is
 independently checkable number-theoretic data rather than a burned digest, and
 the accumulated witness set is a publishable dataset. It is not a claim about
 artificial intelligence, quantum computing or externally funded science; those
-belong to the AetherCompute settlement layer, where only the neural challenge
+belong to the AetherCompute settlement layer, where only the one-way neural work
 circuit is active.
 
 This block-level deterministic kernel is separate from user-funded
-AetherCompute result settlement. Settlement stays limited to the neural
-circuit until an exact audited circuit and verifier key are activated, and that
-verifier does not measure search effort: the descriptor's public seed derives
-the preimage, so it proves determinism, not work. The current PoUW does not
+AetherCompute result settlement. Settlement stays limited to that circuit until
+an exact audited circuit and verifier key are activated. Its difficulty is a
+published acceptance threshold, so the work is search over forward passes — but
+the output is discarded by the puzzle itself, and that is why block validity is
+still decided by PoUW v3. The current PoUW does not
 justify claims of a SNARK, useful external dataset processing, succinct
 verification, or audited mainnet economic security. The search rule makes
 verifier cost bounded and measurable, but this revision still lacks a published
@@ -239,7 +242,7 @@ fully specified prover that searches for a preimage `x`. Verification is one
 fixed-point forward pass; the search is Levenberg–Marquardt over Q32.32 integers.
 The design, the soundness argument for using the inverse problem rather than
 "learn Alice's weights", the measured cost envelope, the contract ABI and its open
-obligations are in [docs/research/neural-cryptography.md](docs/research/neural-cryptography.md).
+obligations are in [wiki/Research-Neural-Cryptography.md](wiki/Research-Neural-Cryptography.md).
 
 Three things it is not:
 
@@ -293,7 +296,7 @@ this tree rather than dismissed by analogy:
 | Difficulty weighting that mis-scores parents or decays over depth | Cumulative difficulty is an exact `u128` sum of `header.difficulty`, which the validator requires to equal the integer-only LWMA controller's expectation for the current window (`chain.rs`: `expected_difficulty`). No floats on the consensus path, no per-round weighting term. The window is read from the canonical height index under the current tip, and a block with an inconsistent parent set or height is rejected before it is scored. |
 | Ordering that is not a total order, or a tie-break that is not unique | `rank(b) = (logical_round, lane, block_hash)` over certified identifiers; the ready set is a `BTreeSet<Rank>` and the minimum is unique. |
 | Trusting an imported UTXO/pruning-point snapshot before validating it | No snapshot import surface exists. Sync is block-only (`GetBlocks`/`GetBlock`), so state is always rebuilt by execution. |
-| Adversarial peers that degrade a node without consequence | Undecodable envelopes, payloads or sync responses beyond the structural budget are scored; three strikes in ten minutes bans the peer for an hour and drops the live connection. Contextual failures are deliberately not scored. See [docs/security/peer-policy.md](docs/security/peer-policy.md). |
+| Adversarial peers that degrade a node without consequence | Undecodable envelopes, payloads or sync responses beyond the structural budget are scored; three strikes in ten minutes bans the peer for an hour and drops the live connection. Contextual failures are deliberately not scored. See [wiki/Security-Peer-Policy.md](wiki/Security-Peer-Policy.md). |
 
 ## Run a node
 
@@ -336,7 +339,13 @@ opening those ports in a browser is not a valid health check. Use `--help` as
 the authoritative CLI reference.
 
 To run a node on a server — systemd unit, firewall, backups, upgrades and a
-health check — follow [docs/operations/deploy-linux.md](docs/operations/deploy-linux.md).
+health check — follow [wiki/Operations-Deploy-Linux.md](wiki/Operations-Deploy-Linux.md).
+
+The node also ships a separate neural-work consensus profile,
+`--network neural-devnet`, with its own chain identity and block rule. The
+specification is [wiki/Consensus-Neural-Work.md](wiki/Consensus-Neural-Work.md);
+until the Miner and Pool changes listed there ship, it validates blocks but
+cannot produce them.
 
 ## What the base chain verifies
 
@@ -355,7 +364,7 @@ list closes live connections and refuses reconnects. A well-formed block that
 fails contextual validation is not counted, because the node validates against
 its current tip and catch-up sync would otherwise ban honest relays. The policy,
 including its in-memory limitation and the absence of any snapshot-import surface,
-is specified in [docs/security/peer-policy.md](docs/security/peer-policy.md).
+is specified in [wiki/Security-Peer-Policy.md](wiki/Security-Peer-Policy.md).
 
 There is no switchable block version to disagree with: `FROZEN_BLOCK_VERSION` is
 the only version in the build, it is hashed into the consensus-parameter
@@ -586,7 +595,7 @@ The current chain seed is `BLAKE3(last epoch block hash)` and is grindable. It
 must not be substituted into the independent-seed probability model as if it
 were unbiasable. Acceptable activation routes and the Circom field-bridge
 obstruction are stated in
-[`cryptographic-activation-gates.md`](docs/security/cryptographic-activation-gates.md).
+[`cryptographic-activation-gates.md`](wiki/Security-Cryptographic-Activation-Gates.md).
 
 ### H-SAC: amount opening and scoped ownership
 
@@ -642,10 +651,10 @@ optimal for a task that needs only one compliance bit. Its exact plaintext
 fields are now exposed through `DISCLOSED_FIELDS_V0`.
 
 Full statements and boundaries are in the [H-WES lower bound and object
-model](docs/research/h-wes-theorem-and-object-model.md), [private visible-domain
-fair ordering and H-FOC'](docs/research/private-visible-fair-ordering.md),
-[H-SAC leakage lower bound](docs/research/h-sac-leakage-lower-bound.md), and the
-[research ledger](docs/research/four-core-innovations.md).
+model](wiki/Research-H-WES-Theorem-and-Object-Model.md), [private visible-domain
+fair ordering and H-FOC'](wiki/Research-Private-Visible-Fair-Ordering.md),
+[H-SAC leakage lower bound](wiki/Research-H-SAC-Leakage-Lower-Bound.md), and the
+[research ledger](wiki/Research-Four-Core-Innovations.md).
 
 No shielded H-WES or H-SAC Circom circuit is claimed. The live transaction
 relations use Ristretto255 and BLAKE3 while ordinary Circom artifacts operate
@@ -708,7 +717,8 @@ encoding.
 `CI` runs on pushes and pull requests. A successful `CI` run on `main` triggers
 the `Release` workflow. It rebuilds `hyphen-node` on Linux, Windows, and macOS,
 packages the executable with build metadata and available debug information,
-publishes SHA-256 files, and creates a GitHub prerelease tied to the exact commit.
+publishes BLAKE3 checksum files, and creates a GitHub prerelease tied to the exact
+commit.
 Pull requests never receive release permissions.
 
 Automated releases are reproducible development artifacts, not a declaration
@@ -720,7 +730,7 @@ Wire formats and chain identity are compatibility contracts. Change them in
 this order: update the specification, update canonical vectors, update and test
 the base chain, then update each independent client against the exact base-chain
 commit. See
-[`docs/architecture/repository-boundaries.md`](docs/architecture/repository-boundaries.md).
+[`wiki/Architecture-Repository-Boundaries.md`](wiki/Architecture-Repository-Boundaries.md).
 
 ## Security
 

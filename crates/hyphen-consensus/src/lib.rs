@@ -15,6 +15,7 @@ pub mod fair_finality;
 pub mod fairness_receipts;
 pub mod fast_ordering;
 pub mod fusion;
+pub mod neural_work;
 pub mod private_fair_ordering;
 pub mod replay;
 pub mod validator;
@@ -44,6 +45,11 @@ pub use fusion::{
     FusionResult, FusionTransaction, TransactionReceipt as FusionTransactionReceipt,
 };
 pub use hyphen_core::genesis::{build_genesis_block, genesis_epoch_seed};
+pub use neural_work::{
+    block_weight, expected_threshold, median_time_past, retarget_threshold, work_commitment,
+    work_seed, NeuralWorkError, NeuralWorkParams, WORK_MAX_ADJUST, WORK_MEDIAN_WINDOW,
+    WORK_RETARGET_WINDOW, WORK_TARGET_SECS,
+};
 pub use private_fair_ordering::{
     build_visible_fair_order, sign_reception, visible_metadata_root, FairBatch,
     FairOrderingContext, FairOrderingError, ReceptionObservation, ReceptionStatement,

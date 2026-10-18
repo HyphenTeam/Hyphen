@@ -58,7 +58,7 @@ Production or value-bearing promotion is prohibited until:
 - competing-branch fork choice and reorg rollback are implemented and tested;
 - frozen specifications and cross-implementation vectors exist;
 - independent cryptography, consensus, wallet, network, and pool reviews pass;
-- a public testnet meets `docs/operations/incentivized-testnet.md`;
+- a public testnet meets `wiki/Operations-Incentivized-Testnet.md`;
 - wallet recovery and pool ledger/payout fault drills pass;
 - shared-pool balances settle through audited, confirmed on-chain payments;
 - a funded vulnerability program and incident-response team exist; and

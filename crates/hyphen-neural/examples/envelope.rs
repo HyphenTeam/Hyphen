@@ -1,7 +1,7 @@
 //! Measures the cost envelope the difficulty controller works with.
 //!
 //! Run it after changing the solver, the activation or the dimension bounds; the
-//! numbers in `docs/research/neural-cryptography.md` come from this harness. It
+//! numbers in `wiki/Research-Neural-Cryptography.md` come from this harness. It
 //! is an example rather than a test because wall-clock time on a shared runner is
 //! not a property the test suite should assert on.
 //!

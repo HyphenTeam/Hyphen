@@ -16,23 +16,8 @@ pub struct TxInput {
     pub ring: Vec<OutputRef>,
     pub key_image: [u8; 32],
     pub pseudo_output: Commitment,
-    // ── TERA: Temporal Entangled Ring Authorization ────────────────────────
-    /// Deterministic binding to the current epoch:  
-    ///   epoch_context = blake3("TERA_v1" ‖ epoch_seed)
-    /// Validators reject inputs whose epoch_context does not match any
-    /// epoch within ±tera_epoch_tolerance of the tip.
     pub epoch_context: [u8; 32],
-    /// Per-spend temporal nonce derived from the signing secret AND epoch:
-    ///   temporal_nonce = Hs("TERA_nonce" ‖ spend_sk ‖ epoch_context)
-    /// Within a single epoch the nullifier set rejects duplicate nonces
-    /// for the same key_image, providing epoch-scoped double-spend
-    /// detection *without* cross-epoch linkability.
     pub temporal_nonce: [u8; 32],
-    /// Causal binding that ties the authorization to the specific output
-    /// being spent AND the epoch:
-    ///   causal_binding = blake3("TERA_causal" ‖ spend_sk ‖ note_hash ‖ epoch_context)
-    /// Included in the CLSAG message hash so the ring signature
-    /// transitively proves it was produced by the true owner.
     pub causal_binding: [u8; 32],
 }
 

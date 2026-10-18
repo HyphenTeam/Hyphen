@@ -4,7 +4,7 @@
 //! derives the same network, the prover reaches the published tolerance, the
 //! search is reproducible, and a perturbed answer is rejected.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyphen_neural::{
     difficulty::next_hidden_dim, encode_descriptor, solve, verify, ChallengeDescriptor, MlpSpec,
@@ -95,18 +95,23 @@ fn the_controller_reacts_in_the_right_direction() {
 #[test]
 fn verification_is_much_cheaper_than_the_search() {
     let descriptor = descriptor(64, 31);
-    let search_started = Instant::now();
-    let outcome = solve(&descriptor, SolveConfig::default()).unwrap();
-    let search = search_started.elapsed();
+    let _ = solve(&descriptor, SolveConfig::default()).unwrap();
+    let _ = verify(&descriptor, &[0; 16]);
 
-    let verification_started = Instant::now();
-    for _ in 0..10 {
+    let mut best_search = Duration::MAX;
+    let mut best_verification = Duration::MAX;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let outcome = solve(&descriptor, SolveConfig::default()).unwrap();
+        best_search = best_search.min(started.elapsed());
+
+        let started = Instant::now();
         verify(&descriptor, &outcome.input).unwrap();
+        best_verification = best_verification.min(started.elapsed());
     }
-    let verification = verification_started.elapsed() / 10;
 
     assert!(
-        search > verification * 10,
-        "search {search:?} is not meaningfully more expensive than one verification {verification:?}"
+        best_search > best_verification * 10,
+        "search {best_search:?} is not meaningfully more expensive than one verification {best_verification:?}"
     );
 }

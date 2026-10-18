@@ -4,7 +4,7 @@ Status: active development profile, 2026-07-30. It is not a production or
 value-bearing network.
 
 Devnet v2 inherits the numeric parameter table and disabled research-feature
-set from the historical [devnet v1 profile](devnet-v1.md), with these normative
+set from the historical [devnet v1 profile](Consensus-Devnet-V1), with these normative
 changes:
 
 1. `network_name` is `hyphen-devnet-v2`.
@@ -49,7 +49,7 @@ implemented, so complete live reorg handling remains a release blocker.
 
 状态：2026-07-30 启用的开发 profile。它不是生产网络，也不承载价值。
 
-Devnet v2 继承历史 [devnet v1 profile](devnet-v1.md) 的数值参数表和禁用研究功能集合，并作出以下规范性变更：
+Devnet v2 继承历史 [devnet v1 profile](Consensus-Devnet-V1) 的数值参数表和禁用研究功能集合，并作出以下规范性变更：
 
 1. `network_name` 为 `hyphen-devnet-v2`。
 2. `STATE_TRANSITION_VERSION` 为 `2`，并由 `ChainConfig::consensus_params_hash` 承诺。

@@ -2,28 +2,30 @@
 name = "hyphen-consensus"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "Consensus validation and chain management for the Hyphen blockchain"
 
 [dependencies]
-hyphen-crypto.workspace    = true
-hyphen-core.workspace      = true
-hyphen-pow.workspace       = true
-hyphen-proof.workspace     = true
-hyphen-tx.workspace        = true
+hyphen-crypto.workspace = true
+hyphen-core.workspace = true
+hyphen-pow.workspace = true
+hyphen-proof.workspace = true
+hyphen-tx.workspace = true
 hyphen-economics.workspace = true
-hyphen-state.workspace     = true
-hyphen-compute.workspace   = true
-hyphen-vm.workspace        = true
+hyphen-state.workspace = true
+hyphen-compute.workspace = true
+hyphen-neural.workspace = true
+hyphen-vm.workspace = true
 curve25519-dalek.workspace = true
-serde.workspace            = true
-rustbinary.workspace       = true
-sled.workspace             = true
-thiserror.workspace        = true
-tracing.workspace          = true
-parking_lot.workspace      = true
-hyphen-wire.workspace      = true
+serde.workspace = true
+rustbinary.workspace = true
+sled.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+hyphen-wire.workspace = true
 
 [dev-dependencies]
-serde_json.workspace       = true
-wat.workspace              = true
+serde_json.workspace = true
+wat.workspace = true

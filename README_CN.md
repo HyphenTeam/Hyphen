@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启用 PoUW v3：工作量来自对一次性 Cunningham 链见证的可验证搜索，验证方只做确定性的整数素性检验，而不是重复矿工的全部尝试。AetherCompute 的任务状态机已接入区块执行，默认验证器只结算 Alice 神经挑战电路，其余电路仍拒绝；因此这里只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
+Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启用 PoUW v3：工作量来自对一次性 Cunningham 链见证的可验证搜索，验证方只做确定性的整数素性检验，而不是重复矿工的全部尝试。AetherCompute 的任务状态机已接入区块执行，默认验证器只结算单向神经工作量电路（种子锁定网络、任务锁定接受阈值），其余电路仍拒绝；Alice 逆问题电路因为答案可由公开种子推出，只能给合约用、不能结算工作量。因此这里只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
 
 本仓库不包含 HyphenMiner、HyphenPool、HyphenWallet 三个产品。它们是独立的 Git 仓库，拥有各自的锁文件、CI、发布流程和安全边界；本签出可能在同目录并列放置 `HyphenMiner/`、`HyphenPool/` 与 `HyphenWallet/`，`.gitignore` 保证它们不进入本仓库历史。三者存在时，`scripts/devnet-smoke.ps1` 会构建并运行它们；不存在时会给出明确错误而不是静默跳过。协议变更可能需要三端协同升级，但这不会让它们成为本仓库的一部分。
 
@@ -10,12 +10,12 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启�
 
 项目尚未经过独立密码学、共识或电路审计，也没有已发布的生产主网。命令行中的 mainnet 仍是研究配置，不应承载真实资产。
 
-设计理念、威胁模型、机制状态与已知局限全部写在[白皮书](docs/whitepaper.md)里。引用本仓库任何主张之前请先读它。
+设计理念、威胁模型、机制状态与已知局限全部写在[白皮书](wiki/Whitepaper.md)里。引用本仓库任何主张之前请先读它。
 
 - H-BFM 已实现固定 DAG 的规范排序、缺父块拒绝、DA 集合检查和原子冲突处理；DAG 集合一致性、激励和活性仍未完成。
 - H-FOC 已实现持久锁、timeout/view-change、双委员会 handoff 和 receipt obligation；不可偏置 beacon、在线 pacemaker/leader、最终委员会来源、区块执行接线和 WAN 基准仍未完成。
 - H-SAC 已实现单输出 opening 和绑定 auditor/scope 的所有权证明；冻结的合规关系、provenance ZK 电路、证明器/验证器接线和独立审计仍未完成。
-- AetherCompute 的任务状态机已接入区块执行、RPC/P2P、mempool、状态根和重组回滚。默认验证器结算 Alice 神经挑战电路的任务，每次提交都在本地重做一次确定性前向传播；其余电路仍由拒绝验证器挡住，没有真实且审计过的电路/VK 时不会结算。
+- AetherCompute 的任务状态机已接入区块执行、RPC/P2P、mempool、状态根和重组回滚。默认验证器结算单向神经工作量电路：提交的解必须让网路输出的分数低于任务承诺的阈值，本地用一次确定性前向传播复核。Alice 逆问题电路不参与结算——它的答案可由公开种子重算，无法代表工作量。其余电路仍由拒绝验证器挡住。
 - WASM 支持签名部署和调用，失败执行原子回滚。hyphen.app ABI 支持 defi、game、utility 分类，并强制 hyphen_query 只读。
 - Explorer 的核心渲染器由 Rust 编译为 WASM；浏览器 API 不返回科学对象 locator、凭证或私有交易 payload。页面、脚本、模块和所有 `/api/…` 路由都由 Courierust 自带的 HTTP/1.1 + HTTP/2 服务端提供，状态与 socket 之间没有 Web 框架，且每个响应都带同一套 media type、`nosniff`、`no-referrer` 与 CSP。
 
@@ -33,7 +33,7 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启�
 
 工作量承诺按父区块链式构造：`pow_commitment = BLAKE3(domain ‖ parent_commitment ‖ height ‖ witnesses)`。承诺刻意做成父区块相对而非集合根——集合根依赖整条已认领集合，竞争者为自己分支挖块时必须知道该分支的集合状态，这是不可维护的耦合。单次使用仍然是节点对自身分支已认领集合的本地判定，重组时释放被拆下区块的见证，使回退的分支可原样重新接入。
 
-诚实定位：这是可验证数学搜索。验证成本与求解成本结构性不对称（`L` 次素性检验 vs 完整搜索），见证集是可发布的数据集。它不是关于人工智能、量子计算或外部科研资助的声明——那些属于 AetherCompute 结算层，目前只激活了神经挑战电路，且该验证器只证明确定性、不度量搜索量。
+诚实定位：这是可验证数学搜索。验证成本与求解成本结构性不对称（`L` 次素性检验 vs 完整搜索），见证集是可发布的数据集。它不是关于人工智能、量子计算或外部科研资助的声明——那些属于 AetherCompute 结算层，目前只激活了单向神经工作量电路；该电路确有真实搜索成本，但谜题本身丢弃输出，因此区块有效性仍由 PoUW v3 决定。
 ## 链身份迁移
 
 PoUW v3 改变了区块版本、共识参数和创世哈希；序列化切换到 RustBinary 0.1.8 的 schema 驱动紧凑档后，创世哈希再次改变。规范向量位于 test-vectors/chain-identity-v6.json（v1 与 v5 保留为已被取代身份的历史记录）。旧数据库会在任何状态变更前因 params_hash 不匹配而拒绝打开；Miner、Pool 和 Wallet 也必须同步升级，否则会因协议版本或链身份不匹配而拒绝服务。链身份与创世块只有一份实现，位于 hyphen-core，由 ChainConfig 单独推导（ChainIdentity::of、build_genesis_block），区块版本常量同样来源于此。Miner 与 Pool 通过各自的锁文件钉定同一份公开 revision，不在本地链接主链路径，因此可以从干净克隆构建；Wallet 是独立发布的应用，同样钉住该 revision，并用单元测试与规范向量比对，一旦漂移立即失败。没有这类测试的复制常量会把客户端钉死在一条已不存在的链上，握手在第一个字节就会失败。区块头里不再存在 arena/page/pouw_depth 等失效参数，共识参数哈希只承诺真正生效的字段。
@@ -72,7 +72,9 @@ cargo test --workspace --all-targets
   --explorer-bind 127.0.0.1:8080
 ```
 
-要在服务器上长期运行（systemd 单元、防火墙、备份、升级与健康检查），按 [docs/operations/deploy-linux.md](docs/operations/deploy-linux.md) 操作。
+要在服务器上长期运行（systemd 单元、防火墙、备份、升级与健康检查），按 [wiki/Operations-Deploy-Linux.md](wiki/Operations-Deploy-Linux.md) 操作。
+
+节点还提供一条独立的神经工作量共识档位 `--network neural-devnet`，它用自己的链身份和区块规则，不与 devnet 共用数据库。规范见 [wiki/Consensus-Neural-Work.md](wiki/Consensus-Neural-Work.md)；在该文档列出的 Miner/Pool 改动完成前，这条档位只能验证区块，不能产出区块。
 
 Explorer 使用 HTTP；RPC、P2P 和模板端口是二进制协议。修改 Explorer Rust 渲染器后运行：
 
@@ -102,7 +104,7 @@ workspace 显式启用了 Wasmi 的 `auto-dispatch` 特性。缺少它时引擎�
 
 ## 神经密码学挑战（研究合约）
 
-仓库同时提供 Alice/Bob 神经挑战：链上合约公布一个随机两层感知机 `A` 与目标 `y* = A(x*)`，Rust 求解器搜索原像 `x`。验证是一次定点前向传播；求解是 Q32.32 整数上的 Levenberg–Marquardt。设计、为什么判定必须是求逆而不是「学习 Alice 权重」、实测成本边界、合约 ABI 与待办事项都在 [docs/research/neural-cryptography.md](docs/research/neural-cryptography.md)。
+仓库同时提供 Alice/Bob 神经挑战：链上合约公布一个随机两层感知机 `A` 与目标 `y* = A(x*)`，Rust 求解器搜索原像 `x`。验证是一次定点前向传播；求解是 Q32.32 整数上的 Levenberg–Marquardt。设计、为什么判定必须是求逆而不是「学习 Alice 权重」、实测成本边界、合约 ABI 与待办事项都在 [wiki/Research-Neural-Cryptography.md](wiki/Research-Neural-Cryptography.md)。
 
 需要讲清楚的三点：
 
@@ -136,11 +138,11 @@ Kaspa 是高吞吐 PoW 链的成熟参照。Hyphen 借鉴的是工程流程，�
 | 难度加权错算父块，或随深度衰减 | 累计难度是 `header.difficulty` 的 `u128` 精确求和；该值必须等于纯整数 LWMA 控制器对当前窗口的期望值（`chain.rs` 的 `expected_difficulty`），不等即拒。共识路径没有浮点，也没有按轮次的加权项；窗口取自当前 tip 下的规范高度索引，父集合或高度不一致的区块在计分前就被拒绝。 |
 | 排序不是全序，或并列时没有唯一解 | `rank(b) = (logical_round, lane, block_hash)`，作用在已认证的区块标识上；就绪集是 `BTreeSet<Rank>`，最小值唯一。 |
 | 导入 UTXO／剪枝点快照却不先校验 | 不存在快照导入面。同步只有区块（`GetBlocks`／`GetBlock`），状态一律由执行重建。 |
-| 恶意 peer 拖垮节点却没有任何代价 | 信封、载荷无法解码，或同步响应超出结构预算，都计分；十分钟内三次封禁一小时并断开现有连接。依赖上下文才能判定的失败**不**计分。见 [docs/security/peer-policy.md](docs/security/peer-policy.md)。 |
+| 恶意 peer 拖垮节点却没有任何代价 | 信封、载荷无法解码，或同步响应超出结构预算，都计分；十分钟内三次封禁一小时并断开现有连接。依赖上下文才能判定的失败**不**计分。见 [wiki/Security-Peer-Policy.md](wiki/Security-Peer-Policy.md)。 |
 
 ## 对等节点策略与版本一致性
 
-入站 peer 只在节点能够本地证明的过错上计分：信封或载荷无法解码，或同步响应超出结构预算。十分钟内三次即封禁一小时；封禁会立即断开现有连接并拒绝重连。一个格式正确但未通过上下文校验的区块**不**计分——节点是相对当前 tip 校验的，追块同步若据此计分，会把诚实的转发者也封掉。策略细节（包括仅内存保存的局限、以及当前不存在快照导入面）见 [docs/security/peer-policy.md](docs/security/peer-policy.md)。
+入站 peer 只在节点能够本地证明的过错上计分：信封或载荷无法解码，或同步响应超出结构预算。十分钟内三次即封禁一小时；封禁会立即断开现有连接并拒绝重连。一个格式正确但未通过上下文校验的区块**不**计分——节点是相对当前 tip 校验的，追块同步若据此计分，会把诚实的转发者也封掉。策略细节（包括仅内存保存的局限、以及当前不存在快照导入面）见 [wiki/Security-Peer-Policy.md](wiki/Security-Peer-Policy.md)。
 
 这里不存在可切换的区块版本：`FROZEN_BLOCK_VERSION` 是构建中唯一的版本，它被写入共识参数身份哈希，创世构造、区块头校验、授权与重放读取的都是同一个常量。profile 变更意味着新的构建和新的身份向量，而不是一个区块头构造器可能悄悄忽略的运行时开关。
 

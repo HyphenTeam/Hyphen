@@ -2,16 +2,17 @@
 name = "hyphen-token"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+authors.workspace = true
 description = "Token and asset management for the Hyphen blockchain"
 
 [dependencies]
-hyphen-crypto.workspace    = true
-hyphen-core.workspace      = true
-hyphen-proof.workspace     = true
-blake3.workspace           = true
+hyphen-crypto.workspace = true
+hyphen-core.workspace = true
+hyphen-proof.workspace = true
+blake3.workspace = true
 curve25519-dalek.workspace = true
-serde.workspace            = true
-rustbinary.workspace       = true
-thiserror.workspace        = true
-rand.workspace             = true
+serde.workspace = true
+rustbinary.workspace = true
+thiserror.workspace = true
+rand.workspace = true

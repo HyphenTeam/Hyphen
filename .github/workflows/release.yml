@@ -52,7 +52,7 @@ jobs:
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item (Join-Path 'target/release' '${{ matrix.executable }}') $stage
           Copy-Item README.md, README_CN.md, SECURITY.md, LICENSE $stage
-          Copy-Item docs (Join-Path $stage 'docs') -Recurse
+          Copy-Item wiki (Join-Path $stage 'wiki') -Recurse
           Copy-Item test-vectors (Join-Path $stage 'test-vectors') -Recurse
           Copy-Item crates/hyphen-wire/README.md (Join-Path $stage 'HYPHEN-WIRE.md')
           Get-ChildItem target/release -Filter '*.pdb' -ErrorAction SilentlyContinue |
@@ -77,8 +77,11 @@ jobs:
             tar -czf $archive -C target/package '${{ matrix.artifact }}'
           }
           $name = Split-Path $archive -Leaf
-          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $name" | Set-Content "$archive.sha256" -Encoding ascii
+          $hashOutput = & cargo run --quiet --locked -p hyphen-crypto --example blake3-file -- $archive 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "BLAKE3 hashing failed: $($hashOutput | Out-String)" }
+          $hash = ($hashOutput | Where-Object { "$_".Trim() } | Select-Object -Last 1).ToString().Trim()
+          if ($hash -notmatch '^[0-9a-f]{64}$') { throw "unexpected BLAKE3 output: $hash" }
+          "$hash  $name" | Set-Content "$archive.blake3" -Encoding ascii
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.artifact }}
@@ -114,7 +117,7 @@ jobs:
 
           Source CI: $env:SOURCE_RUN_URL
 
-          Every archive has a matching `.sha256` file and contains `BUILD-INFO.txt`.
+          Every archive has a matching `.blake3` file and contains `BUILD-INFO.txt`.
           This prerelease is not a mainnet-readiness claim.
           "@
           $assets = (Get-ChildItem dist -File).FullName

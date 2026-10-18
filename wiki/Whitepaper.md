@@ -83,7 +83,7 @@ not an internal counter.
 | Execution | Wasmi 2.0 interpreter, fuel metering, bounded host ABI | Active |
 | Settlement | AetherCompute task lifecycle, rejecting proof verifier | Fail-closed |
 | Network | libp2p (gossipsub, Kademlia, identify, relay, DCUtR), template protocol TP v4 | Active |
-| Pool | NCAP miner authorization, share receipts, Pool Protocol v6 | Active, spec in `docs/research/non-custodial-pool.md` |
+| Pool | NCAP miner authorization, share receipts, Pool Protocol v6 | Active, spec in `Research-Non-Custodial-Pool` |
 | Wallet | Flutter client over a Rust core: derivation, encrypted storage, isolated signer | Active |
 
 ## 3. Consensus
@@ -411,7 +411,7 @@ Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞
 | 执行 | Wasmi 2.0 解释器、fuel 计量、受限主机 ABI | 生效 |
 | 结算 | AetherCompute 任务生命周期、神经挑战验证器（其余电路 fail-closed） | 研究，仅神经电路生效 |
 | 网络 | libp2p（gossipsub、Kademlia、identify、relay、DCUtR）、TP v4 模板协议 | 生效 |
-| 矿池 | NCAP 矿工授权、share receipt、Pool Protocol v6 | 生效，规范见 `docs/research/non-custodial-pool.md` |
+| 矿池 | NCAP 矿工授权、share receipt、Pool Protocol v6 | 生效，规范见 `Research-Non-Custodial-Pool` |
 | 钱包 | Flutter 客户端 + Rust 核心：派生、加密存储、隔离签名器 | 生效 |
 
 ## 3. 共识

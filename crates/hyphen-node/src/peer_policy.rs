@@ -163,8 +163,6 @@ impl PeerPolicy {
                 Some(peer) => {
                     self.peers.remove(&peer);
                 }
-                // Every tracked peer is banned: dropping a ban would be worse
-                // than refusing to track a new identity.
                 None => break,
             }
         }
@@ -176,7 +174,6 @@ mod tests {
     use super::*;
 
     fn peer(byte: u8) -> PeerId {
-        // A deterministic, structurally valid multihash-based peer id.
         let mut bytes = [0u8; 32];
         bytes[0] = byte;
         PeerId::from_multihash(libp2p::multihash::Multihash::wrap(0x12, &bytes).unwrap()).unwrap()

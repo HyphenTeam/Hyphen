@@ -5,4 +5,4 @@ pub use emission::{
     block_reward, block_reward_with_mse, lcd_base_reward, mse_multiplier_bps,
     total_supply_at_height,
 };
-pub use fees::{burned_fee, miner_fee_share, minimum_fee};
+pub use fees::{burned_fee, miner_fee_share, minimum_fee, MIN_RELAY_FEE, MIN_RELAY_FEE_PER_BYTE};

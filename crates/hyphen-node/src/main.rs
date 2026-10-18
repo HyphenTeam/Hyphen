@@ -21,7 +21,7 @@ use hyphen_consensus::{
 };
 use hyphen_core::config::{ChainConfig, GENESIS_TIMESTAMP_MS};
 use hyphen_core::timestamp::{ntp_adjusted_timestamp_ms, start_ntp_sync_task};
-use hyphen_mempool::Mempool;
+use hyphen_mempool::{Mempool, MempoolConfig};
 use hyphen_transport::{
     read_envelope, write_envelope, BlockTemplate, DeclareJobRequest, DeclareJobResult,
     SignedEnvelope, SubmitBlockRequest, SubmitBlockResult, POOL_PROTOCOL_VERSION, TP_DECLARE_JOB,
@@ -35,7 +35,11 @@ struct Cli {
     #[arg(long, default_value = "hyphen_data")]
     data_dir: String,
 
-    #[arg(long, value_parser = ["mainnet", "testnet", "devnet"], default_value = "devnet")]
+    #[arg(
+        long,
+        value_parser = ["mainnet", "testnet", "devnet", "neural-devnet"],
+        default_value = "devnet"
+    )]
     network: String,
 
     #[arg(long)]
@@ -87,6 +91,17 @@ struct Cli {
     rpc_bind: Option<String>,
 }
 
+/// Fourteen days matches the outside bound a public mempool needs before an
+/// unfunded transaction is treated as abandoned rather than pending.
+const MEMPOOL_ENTRY_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1_000;
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
 /// Builds the runtime explicitly instead of using `#[tokio::main]` so that
 /// shutdown can be bounded.
 ///
@@ -117,6 +132,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "mainnet" => ChainConfig::mainnet(),
         "testnet" => ChainConfig::testnet(),
         "devnet" => ChainConfig::devnet(),
+        "neural-devnet" => ChainConfig::neural_devnet(),
         _ => unreachable!("clap validates network"),
     };
     if cli.print_chain_identity {
@@ -217,7 +233,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tip.height, tip.hash, tip.cumulative_difficulty
     );
 
-    let mempool = Arc::new(RwLock::new(Mempool::new(10_000)));
+    let mempool = Arc::new(RwLock::new(Mempool::with_config(
+        MempoolConfig::new(10_000)
+            .with_minimum_fee(
+                hyphen_economics::MIN_RELAY_FEE,
+                hyphen_economics::MIN_RELAY_FEE_PER_BYTE,
+            )
+            .with_max_entry_age(MEMPOOL_ENTRY_TTL_MS),
+    )));
+
+    {
+        let prune_pool = Arc::clone(&mempool);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let removed = prune_pool.write().prune_expired(unix_time_ms());
+                if removed > 0 {
+                    info!(
+                        target: "hyphen::metrics",
+                        "Mempool expiry removed {removed} entries"
+                    );
+                }
+            }
+        });
+    }
 
     let listen_addr_str = cli
         .listen
@@ -613,9 +653,10 @@ fn handle_behaviour_event(
                                         );
                                         return;
                                     }
-                                    match mempool.write().insert_protocol(
+                                    match mempool.write().insert_protocol_at(
                                         tx_bytes,
                                         hyphen_mempool::ValidatedProtocol::new(),
+                                        unix_time_ms(),
                                     ) {
                                         Ok(hash) => info!(
                                             target: "hyphen::metrics",
@@ -664,10 +705,23 @@ fn handle_behaviour_event(
                                         );
                                         return;
                                     }
-                                    let _ = mempool.write().insert_protocol(
+                                    match mempool.write().insert_protocol_at(
                                         tx_bytes,
                                         hyphen_mempool::ValidatedProtocol::new(),
-                                    );
+                                        unix_time_ms(),
+                                    ) {
+                                        Ok(hash) => info!(
+                                            target: "hyphen::metrics",
+                                            "P2P WASM transaction {} accepted from {}",
+                                            hash,
+                                            propagation_source
+                                        ),
+                                        Err(error) => warn!(
+                                            target: "hyphen::metrics",
+                                            "P2P WASM transaction mempool-rejected from {}: {error}",
+                                            propagation_source
+                                        ),
+                                    }
                                     return;
                                 }
                                 Ok(None) => {}
@@ -690,19 +744,36 @@ fn handle_behaviour_event(
                                         Some(height) => height,
                                         None => return,
                                     };
-                                    if blockchain
+                                    if let Err(error) = blockchain
                                         .validate_transaction_blobs_for_height(
                                             std::slice::from_ref(&tx_bytes),
                                             next_height,
                                         )
-                                        .is_err()
                                     {
+                                        warn!(
+                                            target: "hyphen::metrics",
+                                            "P2P WES transaction rejected from {}: {error}",
+                                            propagation_source
+                                        );
                                         return;
                                     }
-                                    let _ = mempool.write().insert_protocol(
+                                    match mempool.write().insert_protocol_at(
                                         tx_bytes,
                                         hyphen_mempool::ValidatedProtocol::new(),
-                                    );
+                                        unix_time_ms(),
+                                    ) {
+                                        Ok(hash) => info!(
+                                            target: "hyphen::metrics",
+                                            "P2P WES transaction {} accepted from {}",
+                                            hash,
+                                            propagation_source
+                                        ),
+                                        Err(error) => warn!(
+                                            target: "hyphen::metrics",
+                                            "P2P WES transaction mempool-rejected from {}: {error}",
+                                            propagation_source
+                                        ),
+                                    }
                                     return;
                                 }
                                 Ok(None) => {}
@@ -785,7 +856,11 @@ fn handle_behaviour_event(
 
                             let tx_hash_hex = hyphen_crypto::hex_encode(tx.hash().as_bytes());
                             let mut pool = mempool.write();
-                            match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
+                            match pool.insert_at(
+                                tx,
+                                hyphen_mempool::Validated::new(vre_quality),
+                                unix_time_ms(),
+                            ) {
                                 Ok(hash) => {
                                     info!(
                                         target: "hyphen::metrics",
