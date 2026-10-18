@@ -63,17 +63,12 @@ pub fn lcd_base_reward(height: u64, cfg: &ChainConfig) -> u64 {
 /// `difficulty_ratio_bps` = (D_actual / D_target) × 10_000.
 /// If D_target = 0 or unknown (e.g. genesis), returns 10_000 (neutral).
 pub fn mse_multiplier_bps(difficulty_ratio_bps: u64, cfg: &ChainConfig) -> u64 {
-    // γ as fixed-point: mse_gamma=100 → γ=0.10 → γ_scaled = 100
-    // deviation = ratio - 10_000 (can be negative)
     let ratio = difficulty_ratio_bps as i128;
     let deviation = ratio - 10_000;
 
-    // raw_multiplier = 10_000 + γ/1000 * deviation
-    // = 10_000 + mse_gamma * deviation / 1000
     let gamma = cfg.mse_gamma as i128;
     let raw = 10_000i128 + gamma * deviation / 1000;
 
-    // Clamp between floor and ceil
     let floor = cfg.mse_floor_bps as i128;
     let ceil = cfg.mse_ceil_bps as i128;
     raw.clamp(floor, ceil) as u64
@@ -91,10 +86,7 @@ pub fn block_reward(height: u64, cfg: &ChainConfig) -> u64 {
 pub fn block_reward_with_mse(height: u64, difficulty_ratio_bps: u64, cfg: &ChainConfig) -> u64 {
     let base = lcd_base_reward(height, cfg) as u128;
     let multiplier = mse_multiplier_bps(difficulty_ratio_bps, cfg) as u128;
-
     let adjusted = base * multiplier / 10_000;
-
-    // Never below tail emission
     adjusted.max(cfg.tail_emission as u128) as u64
 }
 
@@ -113,8 +105,6 @@ pub fn total_supply_at_height(height: u64, cfg: &ChainConfig) -> u128 {
         let r_start = lcd_base_reward(h, cfg) as u128;
         let r_end = lcd_base_reward(end, cfg) as u128;
         let blocks = (end - h + 1) as u128;
-
-        // Trapezoidal rule: (r_start + r_end) / 2 * blocks
         total += (r_start + r_end) * blocks / 2;
 
         h = end + 1;
@@ -168,11 +158,9 @@ mod tests {
 
     #[test]
     fn midpoint_reward() {
-        // At h = c, reward should be approximately (R_0 + R_tail) / 2
         let cfg = ChainConfig::mainnet();
         let r = block_reward(cfg.emission_decay_constant, &cfg);
         let expected = (cfg.initial_reward + cfg.tail_emission) / 2;
-        // Allow 1 atomic unit rounding tolerance
         assert!(
             (r as i128 - expected as i128).unsigned_abs() <= 1,
             "at h=c: got {r}, expected ~{expected}"
@@ -193,10 +181,8 @@ mod tests {
     #[test]
     fn tail_emission_floor() {
         let cfg = ChainConfig::mainnet();
-        // At very late heights, reward should converge very close to tail
         let very_late = 1_000_000_000;
         let r = block_reward(very_late, &cfg);
-        // Must be at or very close to tail emission (within 0.001% of initial reward)
         let tolerance = cfg.initial_reward / 100_000;
         assert!(
             r <= cfg.tail_emission + tolerance,
@@ -265,9 +251,6 @@ mod tests {
     #[test]
     fn mse_high_hashrate() {
         let cfg = ChainConfig::mainnet();
-        // ratio = 15_000 (1.5×) → deviation = +5000
-        // raw = 10_000 + 100 * 5000 / 1000 = 10_000 + 500 = 10_500
-        // clamped to ceil 12_000 → actually 10_500 < 12_000 so stays
         let m = mse_multiplier_bps(15_000, &cfg);
         assert_eq!(m, 10_500);
     }
@@ -275,8 +258,6 @@ mod tests {
     #[test]
     fn mse_low_hashrate() {
         let cfg = ChainConfig::mainnet();
-        // ratio = 5_000 (0.5×) → deviation = -5000
-        // raw = 10_000 + 100 * (-5000) / 1000 = 10_000 - 500 = 9_500
         let m = mse_multiplier_bps(5_000, &cfg);
         assert_eq!(m, 9_500);
     }
@@ -284,9 +265,6 @@ mod tests {
     #[test]
     fn mse_clamp_ceil() {
         let cfg = ChainConfig::mainnet();
-        // ratio = 40_000 (4.0×) → deviation = +30_000
-        // raw = 10_000 + 100 * 30_000 / 1000 = 10_000 + 3_000 = 13_000
-        // clamped to ceil 12_000
         let m = mse_multiplier_bps(40_000, &cfg);
         assert_eq!(m, cfg.mse_ceil_bps);
     }
@@ -294,9 +272,6 @@ mod tests {
     #[test]
     fn mse_clamp_floor() {
         let cfg = ChainConfig::mainnet();
-        // ratio = 0 → deviation = -10_000
-        // raw = 10_000 + 100 * (-10_000) / 1000 = 10_000 - 1_000 = 9_000
-        // above floor 8_000, so stays at 9_000
         let m = mse_multiplier_bps(0, &cfg);
         assert_eq!(m, 9_000);
     }
@@ -305,7 +280,6 @@ mod tests {
     fn mse_adjusted_reward() {
         let cfg = ChainConfig::mainnet();
         let base = lcd_base_reward(0, &cfg);
-        // 1.05× multiplier
         let adj = block_reward_with_mse(0, 15_000, &cfg);
         let expected = (base as u128 * 10_500 / 10_000) as u64;
         assert_eq!(adj, expected);
@@ -314,7 +288,6 @@ mod tests {
     #[test]
     fn mse_never_below_tail() {
         let cfg = ChainConfig::mainnet();
-        // Even with minimum multiplier at very late height
         let r = block_reward_with_mse(1_000_000_000, 0, &cfg);
         assert!(r >= cfg.tail_emission);
     }
