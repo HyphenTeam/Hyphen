@@ -69,9 +69,10 @@ and economic analysis.
    not modify block-work eligibility, block validity, chain weight, or base issuance.
 
 The repository now commits this lifecycle to the unified research-profile
-state root. Publication is usable, but settlement stays fail-closed until a
-versioned verifier backend and requester-funded escrow transfer are implemented
-and activated under a new reviewed chain profile.
+state root. Publication is usable, and the default verifier settles the Alice
+neural circuit by re-running one forward pass; every other circuit stays
+fail-closed until a versioned verifier backend and requester-funded escrow
+transfer are implemented and activated under a new reviewed chain profile.
 
 ## Required experiments
 
@@ -150,7 +151,7 @@ Hyphen 不得把通用 AI 训练或推理描述为挖矿。这类工作通常验
 4. 有界验证检查证明与结果 commitment。昂贵任务执行绝不在每个全节点中进行。
 5. 成功 claim 只转移请求方托管的 bounty，不改变区块工作资格、区块有效性、链权重或基础发行。
 
-仓库现已将该生命周期承诺到统一研究 profile 状态根。任务发布可用，但在实现版本化 verifier 后端和请求方出资的 escrow 转移，并通过新链 profile 审查激活前，结算保持 fail-closed。
+仓库现已将该生命周期承诺到统一研究 profile 状态根。任务发布可用，默认验证器通过重跑一次前向传播结算 Alice 神经挑战电路；其余电路在实现版本化 verifier 后端和请求方出资的 escrow 转移，并通过新链 profile 审查激活前，结算保持 fail-closed。
 
 ## 必需实验
 

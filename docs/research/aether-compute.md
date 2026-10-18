@@ -88,10 +88,14 @@ successful execution mandatory. This boundary does not replace the consensus
 - A small SNARK exists only after complete arithmetization and activation of a
   versioned verifier key.
 
-The default node uses `RejectingVerifier`: task publication is possible, but
-result settlement, fraud and custody proofs fail closed. A production profile
-must install an audited `ProofVerifier` and bind `circuit_id` plus
-`proof_system` in consensus.
+The default node uses `NeuralChallengeVerifier`: tasks naming the Alice neural
+circuit (`neural_circuit_id()`, proof system `NEURAL_PROOF_SYSTEM`) settle
+after one deterministic forward pass over `descriptor || solution`. Every other
+circuit, and every fraud or custody proof, still fails closed. That verifier
+re-checks the forward pass only; because `derive_preimage` recomputes the target
+from the descriptor's public `chain_seed`, it proves determinism rather than
+search effort. A production profile must install an audited `ProofVerifier` and
+bind `circuit_id` plus `proof_system` in consensus.
 
 ## External infrastructure
 
@@ -175,7 +179,7 @@ Explorer 提供 `/api/science/tasks`、`/api/science/task/{id}` 以及对应 `#/
 - Bulletproofs 不会自动证明任意 Rust/C job。
 - 只有完整算术化并激活版本化 verifier key 后，才存在小型 SNARK。
 
-默认节点使用 `RejectingVerifier`：任务可发布，但结果结算、欺诈证明和 custody proof 均 fail-closed。生产 profile 必须安装已审计 `ProofVerifier`，并在共识中绑定 `circuit_id` 和 `proof_system`。
+默认节点使用 `NeuralChallengeVerifier`：声明 Alice 神经挑战电路（`neural_circuit_id()`、证明系统 `NEURAL_PROOF_SYSTEM`）的任务，在本地对 `descriptor || solution` 做一次确定性前向传播后结算。其余电路以及所有欺诈证明与 custody proof 仍然 fail-closed。该验证器只复核前向传播；由于 `derive_preimage` 能从描述符里的公开 `chain_seed` 重算出目标，它证明的是确定性，不是搜索量。生产 profile 必须安装已审计 `ProofVerifier`，并在共识中绑定 `circuit_id` 和 `proof_system`。
 
 ## 外部基础设施
 

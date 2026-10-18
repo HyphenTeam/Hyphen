@@ -1431,6 +1431,7 @@ name = "hyphen-compute"
 version = "0.1.1"
 dependencies = [
  "hyphen-crypto",
+ "hyphen-neural",
  "hyphen-wire",
  "rustbinary",
  "serde",

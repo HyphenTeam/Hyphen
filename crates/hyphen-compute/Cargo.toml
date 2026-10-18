@@ -8,6 +8,7 @@ description = "Consensus protocol for verified scientific state updates"
 [dependencies]
 rustbinary.workspace = true
 hyphen-crypto.workspace = true
+hyphen-neural.workspace = true
 hyphen-wire.workspace   = true
 serde.workspace = true
 thiserror.workspace = true

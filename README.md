@@ -40,8 +40,10 @@ devnet consensus:
 
 AetherCompute task publication and the deterministic WASM ledger are integrated
 with research-chain block execution, RPC/P2P ingress, mempool templates, state
-roots and reorg rollback. Scientific result settlement remains fail-closed
-until an exact audited proof verifier is installed. See the
+roots and reorg rollback. The default verifier settles tasks whose circuit is
+the Alice neural challenge, re-checking every submission with one deterministic
+forward pass; every other circuit remains fail-closed until an exact audited
+proof verifier is installed. See the
 [AetherCompute boundary](docs/research/aether-compute.md).
 
 Block version 5 activates PoUW v3. A block claims `difficulty` distinct
@@ -83,11 +85,14 @@ primality tests where a solver pays the full search, every accepted witness is
 independently checkable number-theoretic data rather than a burned digest, and
 the accumulated witness set is a publishable dataset. It is not a claim about
 artificial intelligence, quantum computing or externally funded science; those
-belong to the AetherCompute settlement layer, which remains fail-closed.
+belong to the AetherCompute settlement layer, where only the neural challenge
+circuit is active.
 
 This block-level deterministic kernel is separate from user-funded
-AetherCompute result settlement. Settlement remains fail-closed until an exact
-audited circuit and verifier key are activated. The current PoUW does not
+AetherCompute result settlement. Settlement stays limited to the neural
+circuit until an exact audited circuit and verifier key are activated, and that
+verifier does not measure search effort: the descriptor's public seed derives
+the preimage, so it proves determinism, not work. The current PoUW does not
 justify claims of a SNARK, useful external dataset processing, succinct
 verification, or audited mainnet economic security. The search rule makes
 verifier cost bounded and measurable, but this revision still lacks a published

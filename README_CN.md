@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启用 PoUW v3：工作量来自对一次性 Cunningham 链见证的可验证搜索，验证方只做确定性的整数素性检验，而不是重复矿工的全部尝试。AetherCompute 的任务状态机已接入区块执行，但结果结算仍默认拒绝；因此这里只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
+Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启用 PoUW v3：工作量来自对一次性 Cunningham 链见证的可验证搜索，验证方只做确定性的整数素性检验，而不是重复矿工的全部尝试。AetherCompute 的任务状态机已接入区块执行，默认验证器只结算 Alice 神经挑战电路，其余电路仍拒绝；因此这里只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
 
 本仓库不包含 HyphenMiner、HyphenPool、HyphenWallet 三个产品。它们是独立的 Git 仓库，拥有各自的锁文件、CI、发布流程和安全边界；本签出可能在同目录并列放置 `HyphenMiner/`、`HyphenPool/` 与 `HyphenWallet/`，`.gitignore` 保证它们不进入本仓库历史。三者存在时，`scripts/devnet-smoke.ps1` 会构建并运行它们；不存在时会给出明确错误而不是静默跳过。协议变更可能需要三端协同升级，但这不会让它们成为本仓库的一部分。
 
@@ -15,7 +15,7 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启�
 - H-BFM 已实现固定 DAG 的规范排序、缺父块拒绝、DA 集合检查和原子冲突处理；DAG 集合一致性、激励和活性仍未完成。
 - H-FOC 已实现持久锁、timeout/view-change、双委员会 handoff 和 receipt obligation；不可偏置 beacon、在线 pacemaker/leader、最终委员会来源、区块执行接线和 WAN 基准仍未完成。
 - H-SAC 已实现单输出 opening 和绑定 auditor/scope 的所有权证明；冻结的合规关系、provenance ZK 电路、证明器/验证器接线和独立审计仍未完成。
-- AetherCompute 的任务状态机已接入区块执行、RPC/P2P、mempool、状态根和重组回滚。用户任务结算默认使用拒绝验证器；没有真实且审计过的电路/VK 时不会结算。
+- AetherCompute 的任务状态机已接入区块执行、RPC/P2P、mempool、状态根和重组回滚。默认验证器结算 Alice 神经挑战电路的任务，每次提交都在本地重做一次确定性前向传播；其余电路仍由拒绝验证器挡住，没有真实且审计过的电路/VK 时不会结算。
 - WASM 支持签名部署和调用，失败执行原子回滚。hyphen.app ABI 支持 defi、game、utility 分类，并强制 hyphen_query 只读。
 - Explorer 的核心渲染器由 Rust 编译为 WASM；浏览器 API 不返回科学对象 locator、凭证或私有交易 payload。页面、脚本、模块和所有 `/api/…` 路由都由 Courierust 自带的 HTTP/1.1 + HTTP/2 服务端提供，状态与 socket 之间没有 Web 框架，且每个响应都带同一套 media type、`nosniff`、`no-referrer` 与 CSP。
 
@@ -33,7 +33,7 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启�
 
 工作量承诺按父区块链式构造：`pow_commitment = BLAKE3(domain ‖ parent_commitment ‖ height ‖ witnesses)`。承诺刻意做成父区块相对而非集合根——集合根依赖整条已认领集合，竞争者为自己分支挖块时必须知道该分支的集合状态，这是不可维护的耦合。单次使用仍然是节点对自身分支已认领集合的本地判定，重组时释放被拆下区块的见证，使回退的分支可原样重新接入。
 
-诚实定位：这是可验证数学搜索。验证成本与求解成本结构性不对称（`L` 次素性检验 vs 完整搜索），见证集是可发布的数据集。它不是关于人工智能、量子计算或外部科研资助的声明——那些属于 AetherCompute 结算层，且默认 fail-closed。
+诚实定位：这是可验证数学搜索。验证成本与求解成本结构性不对称（`L` 次素性检验 vs 完整搜索），见证集是可发布的数据集。它不是关于人工智能、量子计算或外部科研资助的声明——那些属于 AetherCompute 结算层，目前只激活了神经挑战电路，且该验证器只证明确定性、不度量搜索量。
 ## 链身份迁移
 
 PoUW v3 改变了区块版本、共识参数和创世哈希；序列化切换到 RustBinary 0.1.8 的 schema 驱动紧凑档后，创世哈希再次改变。规范向量位于 test-vectors/chain-identity-v6.json（v1 与 v5 保留为已被取代身份的历史记录）。旧数据库会在任何状态变更前因 params_hash 不匹配而拒绝打开；Miner、Pool 和 Wallet 也必须同步升级，否则会因协议版本或链身份不匹配而拒绝服务。链身份与创世块只有一份实现，位于 hyphen-core，由 ChainConfig 单独推导（ChainIdentity::of、build_genesis_block），区块版本常量同样来源于此。Miner 与 Pool 通过各自的锁文件钉定同一份公开 revision，不在本地链接主链路径，因此可以从干净克隆构建；Wallet 是独立发布的应用，同样钉住该 revision，并用单元测试与规范向量比对，一旦漂移立即失败。没有这类测试的复制常量会把客户端钉死在一条已不存在的链上，握手在第一个字节就会失败。区块头里不再存在 arena/page/pouw_depth 等失效参数，共识参数哈希只承诺真正生效的字段。

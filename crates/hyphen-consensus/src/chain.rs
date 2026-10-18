@@ -2,7 +2,7 @@ use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 use tracing::info;
 
-use hyphen_compute::{ComputeTransaction, ProofVerifier, RejectingVerifier, TaskRecord};
+use hyphen_compute::{ComputeTransaction, NeuralChallengeVerifier, ProofVerifier, TaskRecord};
 use hyphen_core::block::Block;
 use hyphen_core::config::ChainConfig;
 use hyphen_core::error::CoreError;
@@ -53,12 +53,14 @@ pub struct Blockchain {
 impl Blockchain {
     pub fn open(path: &str, cfg: ChainConfig) -> Result<Self, CoreError> {
         let db = sled::open(path).map_err(|e| CoreError::Storage(e.to_string()))?;
-        Self::open_db_with_verifier(db, cfg, Arc::new(RejectingVerifier))
+        Self::open_db_with_verifier(db, cfg, Arc::new(NeuralChallengeVerifier))
     }
 
+    /// Tests that exercise unrelated consensus rules keep the fail-closed
+    /// verifier, so a neural settlement cannot change their expectations.
     #[cfg(test)]
     fn open_db(db: sled::Db, cfg: ChainConfig) -> Result<Self, CoreError> {
-        Self::open_db_with_verifier(db, cfg, Arc::new(RejectingVerifier))
+        Self::open_db_with_verifier(db, cfg, Arc::new(hyphen_compute::RejectingVerifier))
     }
 
     pub fn open_with_compute_verifier(
@@ -505,14 +507,11 @@ impl Blockchain {
         let tip = self.tip()?;
         let now_ms = ntp_adjusted_timestamp_ms();
 
-        // Get previous block timestamp for minimum-timestamp validation
         let parent_header = self
             .blocks
             .get_block_by_height(tip.height)
             .map(|b| b.header);
         let prev_timestamp = parent_header.as_ref().map(|h| h.timestamp).unwrap_or(0);
-        // PoUW v3 chains each block's witness commitment to its parent, so the
-        // miner never needs branch-local state to build a valid block.
         let parent_commitment = parent_header
             .as_ref()
             .map(|h| h.pow_commitment)
@@ -550,7 +549,6 @@ impl Blockchain {
             })
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
-        // C2 fix: Verify declared difficulty matches expected value
         let expected_difficulty = self.next_difficulty()?;
         if block.header.difficulty != expected_difficulty {
             return Err(CoreError::Validation(format!(
@@ -568,7 +566,6 @@ impl Blockchain {
         }
         self.validate_witnesses(block, &parent_commitment, expected_difficulty)?;
 
-        // C3 fix: Verify declared reward matches emission formula
         let expected_reward =
             hyphen_economics::emission::lcd_base_reward(block.header.height, &self.cfg);
         if block.header.reward != expected_reward {
@@ -585,9 +582,6 @@ impl Blockchain {
             return Err(CoreError::BlockTooLarge);
         }
 
-        // ── TERA: build set of valid epoch contexts ──
-        // Accept epoch_context derived from the current epoch and up to
-        // tera_epoch_tolerance past epochs.
         let total_fee = self.validate_transaction_blobs_for_height_locked(
             &block.transactions,
             block.header.height,
@@ -1012,8 +1006,6 @@ impl ReorgBackend for BlockchainReorgBackend<'_> {
         )
         .map_err(|error| CoreError::Storage(error.to_string()))?;
 
-        // The detached block's witnesses become claimable again, so the
-        // reverted branch can be re-attached without a spurious rejection.
         if let Ok(detached) = self.chain.blocks.get_block_by_hash(&expected) {
             self.chain.release_witnesses(&detached);
         }

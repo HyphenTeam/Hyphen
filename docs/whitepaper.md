@@ -53,9 +53,10 @@ forty lines of byte shuffling. The dependency graph is 267 crates; it dropped by
 101 crates in one step when the Wasm runtime changed, and the whole Cranelift,
 `bindgen`, CMake and `libclang` surface disappeared with it.
 
-**Fail closed, and make the failure loud.** A rejecting verifier, a refused
+**Fail closed, and make the failure loud.** An unsupported circuit, a refused
 database, an untrusted clock and disabled research features are all states the
-system openly reports. Silent fallback is treated as a bug: an encoding path
+system openly reports; only the neural challenge circuit has an active
+settlement verifier. Silent fallback is treated as a bug: an encoding path
 that "tries something else" on parse failure is exactly how consensus splits.
 
 **Write down what is missing, next to what works.** The repository's own README
@@ -351,8 +352,9 @@ Stated plainly, because a reader who discovers these later has been misled:
 4. **Research mechanisms are inactive on devnet.** H-WES shielded recovery,
    H-BFM DAG set agreement, H-FOC' live pacemaker and beacon, and the H-SAC
    compliance circuit are unimplemented beyond the reference models.
-5. **Settlement is fail-closed by construction**, so the AetherCompute economy
-   is inert until a verifier exists.
+5. **Settlement is fail-closed outside one circuit.** Only the Alice neural
+   challenge settles by default, and that verifier proves determinism rather
+   than search effort, so the AetherCompute economy stays inert.
 6. **Cross-repository coordination is mandatory.** Miner, Pool and Wallet pin
    chain identity and block version; a consensus change requires updating all
    three before any joint test can pass.
@@ -407,7 +409,7 @@ Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞
 | 隐私 | 隐身地址、CLSAG 环签名、Pedersen 承诺、Bulletproof 型范围证明 | 生效 |
 | 披露 | H-SAC 单输出 opening + 受限 Schnorr 所有权证明 | 研究，未激活 |
 | 执行 | Wasmi 2.0 解释器、fuel 计量、受限主机 ABI | 生效 |
-| 结算 | AetherCompute 任务生命周期、拒绝型证明验证器 | fail-closed |
+| 结算 | AetherCompute 任务生命周期、神经挑战验证器（其余电路 fail-closed） | 研究，仅神经电路生效 |
 | 网络 | libp2p（gossipsub、Kademlia、identify、relay、DCUtR）、TP v4 模板协议 | 生效 |
 | 矿池 | NCAP 矿工授权、share receipt、Pool Protocol v6 | 生效，规范见 `docs/research/non-custodial-pool.md` |
 | 钱包 | Flutter 客户端 + Rust 核心：派生、加密存储、隔离签名器 | 生效 |
@@ -527,7 +529,7 @@ R(h)     = R_lcd(h) · μ(h)
 2. **PoUW v3 是新东西。** 工作量、单次使用集合与承诺规则已实现并测试，但尚无真实网络上的逐 epoch 链密度、出块方差或对抗性挖矿行为测量。
 3. **PoUW v3 不支持 SNARK、有用数据集或能效声明。** 见证集是带结构性验证不对称性的真实数学数据，这就是全部主张。
 4. **研究机制在 devnet 上未激活。** H-WES 屏蔽恢复、H-BFM DAG 集合一致性、H-FOC' 在线 pacemaker 与 beacon、H-SAC 合规电路都只有参考模型之外的实现尚缺。
-5. **结算按构造 fail-closed**，因此在验证器存在之前 AetherCompute 经济是惰性的。
+5. **结算在单一电路之外按构造 fail-closed。** 默认只结算 Alice 神经挑战，且该验证器证明的是确定性而非搜索量，因此 AetherCompute 经济仍是惰性的。
 6. **跨仓库协同是强制的。** Miner、Pool、Wallet 各自固定链身份与区块版本；任何共识变更都必须同步更新三者，否则联合测试无法通过。
 
 因此工作顺序是：先落地 PoUW v3 共识切换及其状态分量与向量，再补 H-FOC' 所需的 beacon 与 pacemaker，然后是电路，最后才谈生产就绪。

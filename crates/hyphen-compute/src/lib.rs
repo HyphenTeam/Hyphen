@@ -9,6 +9,10 @@
 
 use std::collections::BTreeMap;
 
+mod neural;
+
+pub use neural::{neural_circuit_id, NeuralChallengeVerifier, NEURAL_PROOF_SYSTEM};
+
 use hyphen_wire::CanonicalSet;
 
 use hyphen_crypto::{blake3_hash_many, Hash256, PublicKey, SecretKey, Signature};
@@ -717,7 +721,6 @@ impl ComputeState {
             .values()
             .filter(|attestation| attestation.retain_until_height >= required_until)
             .count();
-        // This is a decentralization floor, not a claim of permanent storage.
         if independent < 3 {
             return Err(ComputeError::InsufficientRetention);
         }

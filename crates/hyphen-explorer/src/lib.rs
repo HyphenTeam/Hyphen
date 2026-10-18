@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use hyphen_compute::{ArithmeticProfile, ScientificDomain, TaskRecord, TaskStatus};
 use hyphen_consensus::Blockchain;
-use hyphen_core::block::{Block, BlockHeader};
+use hyphen_core::block::Block;
 use hyphen_core::config::ChainConfig;
 use hyphen_crypto::Hash256;
 use hyphen_economics::{block_reward, total_supply_at_height};
@@ -365,10 +365,11 @@ impl ExplorerState {
                 total_fee_atomic: block.header.total_fee,
                 miner_pubkey: hyphen_crypto::hex_encode(block.header.miner_pubkey),
             };
-            let events = cache
-                .miner_blocks
-                .entry(event.miner_pubkey.clone())
-                .or_default();
+            let reward_key = block
+                .decode_authorization()
+                .map(|authorization| hyphen_crypto::hex_encode(authorization.reward_spend_public))
+                .unwrap_or_else(|_| event.miner_pubkey.clone());
+            let events = cache.miner_blocks.entry(reward_key).or_default();
             events.push(event);
             if events.len() > 512 {
                 let overflow = events.len() - 512;
@@ -418,7 +419,8 @@ struct ErrorResponse {
     error: String,
 }
 
-fn header_detail(h: &BlockHeader) -> HeaderDetail {
+fn header_detail(block: &Block) -> HeaderDetail {
+    let h = &block.header;
     HeaderDetail {
         version: h.version,
         height: h.height,
@@ -441,8 +443,19 @@ fn header_detail(h: &BlockHeader) -> HeaderDetail {
         reward: format_hpn(h.reward),
         reward_atomic: h.reward,
         view_tag: h.view_tag,
-        block_size: h.block_size,
+        block_size: encoded_block_size(block),
     }
+}
+
+/// Actual wire size of the block.
+///
+/// The header's `block_size` field is not filled in by the pool that builds
+/// blocks, so reading it reported `0 bytes` for every block.
+fn encoded_block_size(block: &Block) -> u32 {
+    hyphen_core::wire_config(hyphen_core::DEFAULT_WIRE_BYTES)
+        .serialize(block)
+        .map(|bytes| bytes.len().min(u32::MAX as usize) as u32)
+        .unwrap_or(block.header.block_size)
 }
 
 fn block_summary(block: &Block) -> BlockSummary {
@@ -453,7 +466,7 @@ fn block_summary(block: &Block) -> BlockSummary {
         timestamp: header.timestamp,
         difficulty: header.difficulty,
         tx_count: block.transactions.len(),
-        block_size: header.block_size,
+        block_size: encoded_block_size(block),
         reward: format_hpn(header.reward),
         reward_atomic: header.reward,
         total_fee: format_hpn(header.total_fee),
@@ -835,7 +848,7 @@ fn get_block_handler(state: &ExplorerState, id: &str) -> Response<Body> {
         StatusCode::OK,
         &BlockDetail {
             hash: block.hash().to_string(),
-            header: header_detail(&block.header),
+            header: header_detail(&block),
             tx_count: block.transactions.len(),
             tx_hashes,
             uncle_count: block.uncle_headers.len(),
@@ -1243,7 +1256,6 @@ mod tests {
             );
         }
 
-        // A malformed escape is a client error, not a route.
         let rejection = Route::resolve("/api/block/%zz").unwrap_err();
         assert_eq!(rejection.status, StatusCode::BAD_REQUEST);
     }
@@ -1256,11 +1268,9 @@ mod tests {
         assert_eq!(params.require("q").unwrap(), "hello world");
         assert_eq!(params.get("absent"), None);
 
-        // Unknown parameters are ignored rather than refused.
         let params = QueryParams::parse(Some("since=9&cachebuster=1")).unwrap();
         assert_eq!(params.number::<u64>("since").unwrap(), Some(9));
 
-        // A missing required parameter and a non-numeric one are both 400s.
         let params = QueryParams::parse(Some("")).unwrap();
         assert_eq!(
             params.require("q").unwrap_err().status,
