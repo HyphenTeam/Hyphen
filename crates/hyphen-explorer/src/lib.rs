@@ -307,48 +307,80 @@ fn get_contract(state: &ExplorerState, address: &str) -> Result<Response<Body>, 
 #[derive(Default)]
 struct ExplorerCache {
     indexed_tip_height: Option<u64>,
-    indexed_tip_hash: Option<String>,
+    indexed_hash_at_tip: Option<String>,
     miner_blocks: HashMap<String, Vec<MinerBlockEvent>>,
 }
 
-impl ExplorerState {
-    fn refresh_cache(&self) -> Result<(), String> {
-        let tip = self.blockchain.tip().map_err(|e| e.to_string())?;
-        let tip_hash = tip.hash.to_string();
-        let mut cache = self.cache.write();
+/// Blocks indexed per refresh.
+///
+/// A refresh reads blocks from sled, and an uncached request must never pin a
+/// worker for the whole chain: on a long chain the first request would take
+/// minutes and every concurrent reader would queue behind it. The index moves
+/// forward in bounded batches instead and converges over a few requests.
+const INDEX_BATCH_BLOCKS: u64 = 256;
 
-        let should_rebuild = match (cache.indexed_tip_height, cache.indexed_tip_hash.as_ref()) {
-            (Some(indexed_height), Some(indexed_hash)) => {
-                if indexed_height > tip.height {
-                    true
-                } else {
-                    self.blockchain
-                        .blocks
-                        .get_block_hash_at_height(indexed_height)
-                        .map(|hash| hash.to_string() != *indexed_hash)
-                        .unwrap_or(true)
-                }
+/// Miner history kept per reward key.
+const MINER_HISTORY_LIMIT: usize = 512;
+
+/// Batches one request may index.
+///
+/// A page view must stay fast; eight batches catch up 2048 blocks per request,
+/// which is enough for any chain that has been running for less than a day at
+/// the devnet block time, while never pinning a worker for the whole history.
+const INDEX_BATCHES_PER_REQUEST: usize = 8;
+
+impl ExplorerState {
+    /// Advances the derived index, and reports whether it is caught up.
+    fn refresh_cache(&self) -> Result<(), String> {
+        for _ in 0..INDEX_BATCHES_PER_REQUEST {
+            if !self.refresh_cache_once()? {
+                break;
             }
-            _ => false,
+        }
+        Ok(())
+    }
+
+    /// Indexes at most one batch. Returns `true` while blocks remain.
+    fn refresh_cache_once(&self) -> Result<bool, String> {
+        let tip = self.blockchain.tip().map_err(|e| e.to_string())?;
+
+        // Decide the window without holding any lock: the indexed position is
+        // a cheap read, and the block loads below must not serialize other
+        // explorer readers.
+        let (start_height, stale) = {
+            let cache = self.cache.read();
+            match (cache.indexed_tip_height, cache.indexed_hash_at_tip.as_ref()) {
+                (Some(indexed_height), Some(indexed_hash)) => {
+                    let stale = indexed_height > tip.height
+                        || self
+                            .blockchain
+                            .blocks
+                            .get_block_hash_at_height(indexed_height)
+                            .map(|hash| hash.to_string() != *indexed_hash)
+                            .unwrap_or(true);
+                    (if stale { 0 } else { indexed_height + 1 }, stale)
+                }
+                _ => (0, false),
+            }
         };
 
-        if should_rebuild {
-            cache.indexed_tip_height = None;
-            cache.indexed_tip_hash = None;
+        if stale {
+            // Reorged below the indexed height: drop the derived history and
+            // reindex from genesis in batches.
+            let mut cache = self.cache.write();
             cache.miner_blocks.clear();
+            cache.indexed_tip_height = None;
+            cache.indexed_hash_at_tip = None;
+        } else if start_height > tip.height {
+            return Ok(false);
         }
+        let start_height = if stale { 0 } else { start_height };
 
-        let start_height = cache
-            .indexed_tip_height
-            .map(|height| height + 1)
-            .unwrap_or(0);
-        if start_height > tip.height {
-            cache.indexed_tip_height = Some(tip.height);
-            cache.indexed_tip_hash = Some(tip_hash);
-            return Ok(());
-        }
-
-        for height in start_height..=tip.height {
+        let end_height = start_height
+            .saturating_add(INDEX_BATCH_BLOCKS - 1)
+            .min(tip.height);
+        let mut batch = Vec::with_capacity((end_height - start_height + 1) as usize);
+        for height in start_height..=end_height {
             let block = self
                 .blockchain
                 .blocks
@@ -369,17 +401,44 @@ impl ExplorerState {
                 .decode_authorization()
                 .map(|authorization| hyphen_crypto::hex_encode(authorization.reward_spend_public))
                 .unwrap_or_else(|_| event.miner_pubkey.clone());
+            batch.push((reward_key, event));
+        }
+
+        // The block the index will actually reach. Recording its hash — not the
+        // tip's — keeps a reorg below the tip detectable on the next batch.
+        let indexed_hash = if end_height == tip.height {
+            tip.hash.to_string()
+        } else {
+            self.blockchain
+                .blocks
+                .get_block_hash_at_height(end_height)
+                .map(|hash| hash.to_string())
+                .map_err(|e| e.to_string())?
+        };
+
+        let mut cache = self.cache.write();
+        // Another request may have advanced the index while this one was
+        // reading blocks. Publishing a stale batch would double-count events,
+        // so only the writer that still sees its own starting point commits.
+        let current = cache
+            .indexed_tip_height
+            .map(|height| height + 1)
+            .unwrap_or(0);
+        if current != start_height {
+            return Ok(true);
+        }
+        for (reward_key, event) in batch {
             let events = cache.miner_blocks.entry(reward_key).or_default();
             events.push(event);
-            if events.len() > 512 {
-                let overflow = events.len() - 512;
+            if events.len() > MINER_HISTORY_LIMIT {
+                let overflow = events.len() - MINER_HISTORY_LIMIT;
                 events.drain(..overflow);
             }
         }
 
-        cache.indexed_tip_height = Some(tip.height);
-        cache.indexed_tip_hash = Some(tip_hash);
-        Ok(())
+        cache.indexed_tip_height = Some(end_height);
+        cache.indexed_hash_at_tip = Some(indexed_hash);
+        Ok(end_height < tip.height)
     }
 }
 
