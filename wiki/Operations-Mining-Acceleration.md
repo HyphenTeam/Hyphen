@@ -41,41 +41,68 @@ the current consensus predicate.
 
 ## Build
 
+Requirements: CMake ≥ 3.25, a C++17 compiler, and the vendor toolkit. Confirm
+the device and compiler are visible before configuring:
+
+```bash
+nvidia-smi          # NVIDIA driver + GPU
+nvcc --version      # CUDA toolkit
+rocm-smi            # AMD driver + GPU
+hipcc --version     # ROCm/HIP
+```
+
+Linux with NVIDIA:
+
+```bash
+cmake -S native -B native/build -DHYPHEN_ENABLE_CUDA=ON
+cmake --build native/build --config Release -j"$(nproc)"
+```
+
+Linux with ROCm/HIP:
+
+```bash
+cmake -S native -B native/build -DHYPHEN_ENABLE_HIP=ON
+cmake --build native/build --config Release -j"$(nproc)"
+```
+
+Windows with NVIDIA:
+
 ```powershell
 cmake -S native -B native/build -DHYPHEN_ENABLE_CUDA=ON
 cmake --build native/build --config Release
 ```
 
-or, with ROCm/HIP:
+The plugin is written to `accelerators/`: `hyphen_backend_cuda.so` on Linux,
+`hyphen_backend_cuda.dll` on Windows, or `hyphen_backend_hip.so` for HIP. An
+explicit `--accelerator-dir` or `HYPHEN_ACCELERATOR_DIR` is authoritative: only
+that directory is searched. Without an override the loader searches:
 
-```powershell
-cmake -S native -B native/build -DHYPHEN_ENABLE_HIP=ON
-cmake --build native/build --config Release
-```
+1. `accelerators/` next to the executable (including `Release/`),
+2. `accelerators/` in the current directory,
+3. the source-tree `accelerators/` directory.
 
-Plugins are written to `accelerators/`. The loader searches, in order:
-
-1. `--accelerator-dir`,
-2. `HYPHEN_ACCELERATOR_DIR`,
-3. `accelerators/` next to the executable (including `Release/`),
-4. `accelerators/` in the current directory,
-5. the source-tree `accelerators/` directory.
-
-`HYPHEN_CUDA_ARCHITECTURES` defaults to `native`. `HYPHEN_HIP_ARCHITECTURES` is
-empty by default, so hipcc chooses; set an explicit list for a binary
+`HYPHEN_CUDA_ARCHITECTURES` defaults to `native`. If CMake cannot detect the
+device, read the compute capability with
+`nvidia-smi --query-gpu=compute_cap --format=csv,noheader` and pass it without
+a dot, for example `-DHYPHEN_CUDA_ARCHITECTURES=86`. `HYPHEN_HIP_ARCHITECTURES`
+is empty by default, so hipcc chooses; set an explicit list for a binary
 distributed to other machines.
 
 ## Verify before mining
 
-```powershell
-cargo run --release -- accelerator-check --batch 2000000 --offset 1000001 `
-    --stride 32 --length 6
+```bash
+./target/release/hyphen-miner \
+    --accelerator-dir "$PWD/accelerators" \
+    accelerator-check --batch 2000000 --offset 1000001 --stride 32 --length 6
 ```
 
 The check scans the same window with the device and the CPU sieve and fails on
 any mismatch. It also rejects values outside the requested window and counts
-the survivors that pass full chain validation. Use `--no-accelerator` to force
-the CPU path for a baseline, and `--accelerator-dir` to test a specific build.
+the survivors that pass full chain validation. The output names the backend,
+device and exact plugin path. An explicit directory that contains no usable
+plugin is an error; the check never silently falls back to another directory.
+Use `--no-accelerator` when running the miner to force the CPU path for a
+baseline.
 
 ## Failure behavior
 
