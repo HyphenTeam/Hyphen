@@ -38,6 +38,18 @@ contract and the prover compile the same fixed-point code. The contract is
 tracked here, built by CI, and executed by `crates/hyphen-vm/tests`; it is not a
 root workspace member and does not affect base-chain builds.
 
+## Fuzz workspace
+
+`crates/hyphen-fuzz` is excluded from the root workspace and carries its own
+committed `Cargo.lock`, which CI compiles and audits with `--locked`. Adding,
+removing or re-targeting any dependency edge its graph reaches — including one
+that only changes a dependency of a dependency — leaves that lock stale and
+fails the fuzz job. Regenerate it in the same commit:
+
+```bash
+cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins
+```
+
 ## Protocol change sequence
 
 A compatibility-affecting base-chain change MUST proceed in this order:
@@ -102,6 +114,14 @@ clean checkout of the Hyphen base-chain repository.
 4. 更新 Hyphen 参考实现并使基础链 CI 通过。
 5. 在各自仓库和 CI 中更新每个独立项目。
 6. 针对精确 revision 运行跨项目兼容性测试，并归档 revision 映射、日志和向量哈希。
+
+## 模糊测试工作区
+
+`crates/hyphen-fuzz` 不属于根工作区，并且自带一份提交进仓库的 `Cargo.lock`；CI 用 `--locked` 编译并审计它。只要它的依赖图里任何一条依赖边发生增删或改向——包括仅仅是某个依赖自身的依赖变化——这份锁文件就会过期，进而让模糊测试任务失败。必须在同一次提交里重新生成：
+
+```bash
+cargo check --manifest-path crates/hyphen-fuzz/Cargo.toml --bins
+```
 
 ## CI 所有权
 
