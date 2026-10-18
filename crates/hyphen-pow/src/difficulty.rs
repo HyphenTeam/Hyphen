@@ -518,6 +518,47 @@ mod tests {
         assert!(next_difficulty(&slow, &diffs, &cfg) < difficulty);
     }
 
+    /// The devnet profile starts at difficulty one and can only ask for three
+    /// times more work per block, so the first blocks are found almost
+    /// instantly by design. This test pins that ramp: an operator who sees
+    /// sub-second blocks at height 1-8 is watching the controller work, not a
+    /// retarget failure.
+    #[test]
+    fn devnet_ramps_from_genesis_difficulty_by_at_most_one_clamp_step() {
+        let cfg = ChainConfig::devnet();
+        let mut difficulties = vec![cfg.genesis_difficulty; 2];
+        // Blocks found in one millisecond, far below the 30 s target.
+        let mut timestamps = vec![0u64, 1];
+
+        for _ in 0..12 {
+            let next = next_difficulty(&timestamps, &difficulties, &cfg);
+            let previous = *difficulties.last().expect("history");
+            assert!(
+                next <= previous.saturating_mul(cfg.difficulty_clamp_up),
+                "retarget must never exceed the configured up-clamp"
+            );
+            assert!(next > previous, "instant blocks must raise difficulty");
+            let last = *timestamps.last().expect("history");
+            timestamps.push(last + 1);
+            difficulties.push(next);
+        }
+
+        // The controller keeps asking for more work; the consensus call site
+        // clamps every retarget to the validator's per-block witness bound, so
+        // difficulty saturates there and block time stops following the target
+        // once the hardware is fast enough to produce that many witnesses.
+        let unbounded = *difficulties.last().expect("history");
+        assert!(
+            unbounded > crate::MAX_WITNESSES_PER_BLOCK,
+            "the raw LWMA must keep asking for more work than any block may carry"
+        );
+        assert_eq!(
+            unbounded.clamp(1, crate::MAX_WITNESSES_PER_BLOCK),
+            crate::MAX_WITNESSES_PER_BLOCK,
+            "the consensus clamp is what bounds difficulty"
+        );
+    }
+
     #[test]
     fn frozen_lwma_clamps_timestamp_reversal_attack() {
         let cfg = ChainConfig::devnet();
