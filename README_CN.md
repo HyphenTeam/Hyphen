@@ -36,7 +36,7 @@ Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启�
 诚实定位：这是可验证数学搜索。验证成本与求解成本结构性不对称（`L` 次素性检验 vs 完整搜索），见证集是可发布的数据集。它不是关于人工智能、量子计算或外部科研资助的声明——那些属于 AetherCompute 结算层，且默认 fail-closed。
 ## 链身份迁移
 
-PoUW v3 改变了区块版本、共识参数和创世哈希；序列化切换到 RustBinary 0.1.8 的 schema 驱动紧凑档后，创世哈希再次改变。规范向量位于 test-vectors/chain-identity-v6.json（v1 与 v5 保留为已被取代身份的历史记录）。旧数据库会在任何状态变更前因 params_hash 不匹配而拒绝打开；Miner、Pool 和 Wallet 也必须同步升级，否则会因协议版本或链身份不匹配而拒绝服务。链身份与创世块只有一份实现，位于 hyphen-core，由 ChainConfig 单独推导（ChainIdentity::of、build_genesis_block），区块版本常量同样来源于此。Miner 与 Pool 以路径依赖链接并在运行时派生身份；Wallet 是独立发布的应用，因此钉住同样的取值，并用单元测试与规范向量比对，一旦漂移立即失败。没有这类测试的复制常量会把客户端钉死在一条已不存在的链上，握手在第一个字节就会失败。区块头里不再存在 arena/page/pouw_depth 等失效参数，共识参数哈希只承诺真正生效的字段。
+PoUW v3 改变了区块版本、共识参数和创世哈希；序列化切换到 RustBinary 0.1.8 的 schema 驱动紧凑档后，创世哈希再次改变。规范向量位于 test-vectors/chain-identity-v6.json（v1 与 v5 保留为已被取代身份的历史记录）。旧数据库会在任何状态变更前因 params_hash 不匹配而拒绝打开；Miner、Pool 和 Wallet 也必须同步升级，否则会因协议版本或链身份不匹配而拒绝服务。链身份与创世块只有一份实现，位于 hyphen-core，由 ChainConfig 单独推导（ChainIdentity::of、build_genesis_block），区块版本常量同样来源于此。Miner 与 Pool 通过各自的锁文件钉定同一份公开 revision，不在本地链接主链路径，因此可以从干净克隆构建；Wallet 是独立发布的应用，同样钉住该 revision，并用单元测试与规范向量比对，一旦漂移立即失败。没有这类测试的复制常量会把客户端钉死在一条已不存在的链上，握手在第一个字节就会失败。区块头里不再存在 arena/page/pouw_depth 等失效参数，共识参数哈希只承诺真正生效的字段。
 
 当前 devnet 标识：
 

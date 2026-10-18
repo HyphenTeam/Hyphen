@@ -129,12 +129,12 @@ profile changed them again. Normative identities are in
 identities. Old databases are rejected before state
 mutation. Both the identity and the genesis block are computed inside `hyphen-core` from
 `ChainConfig` alone, so there is exactly one implementation: `ChainIdentity::of`
-and `build_genesis_block`. The miner and the pool link these crates by path and
-derive the identity at runtime; the wallet ships as a standalone application, so
-it pins the same values and a unit test compares them against the canonical
-vector, which fails the moment they drift. A copied constant without that test
-pins a client to a chain that no longer exists, and the handshake then fails on
-the first byte.
+and `build_genesis_block`. The miner, the pool and the wallet each pin the same
+published revision of these crates in their own lockfile, so none of them links a
+local checkout and each can build from a clean clone; both also compare the
+derived identity against the canonical vector in a unit test, which fails the
+moment they drift. A copied constant without that test pins a client to a chain
+that no longer exists, and the handshake then fails on the first byte.
 RustBinary has not been independently audited for Hyphen.
 
 ### Dependency policy
