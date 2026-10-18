@@ -330,6 +330,9 @@ The explorer is HTTP. RPC, P2P, and the template protocol are binary protocols;
 opening those ports in a browser is not a valid health check. Use `--help` as
 the authoritative CLI reference.
 
+To run a node on a server — systemd unit, firewall, backups, upgrades and a
+health check — follow [docs/operations/deploy-linux.md](docs/operations/deploy-linux.md).
+
 ## What the base chain verifies
 
 A block is accepted only after its chain identity, parent, height, timestamp,

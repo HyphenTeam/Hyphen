@@ -75,6 +75,7 @@ impl Blockchain {
         cfg: ChainConfig,
         compute_verifier: Arc<dyn ProofVerifier>,
     ) -> Result<Self, CoreError> {
+        let meta_tree = ensure_chain_identity(&db, &cfg)?;
         let blocks = BlockStore::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
         let chain_state = ChainState::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
         let nullifiers = NullifierSet::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
@@ -102,29 +103,6 @@ impl Blockchain {
             .map_err(|e| CoreError::Storage(e.to_string()))?;
         let witnesses = WitnessSet::open(&db, chain_namespace)
             .map_err(|e| CoreError::Storage(e.to_string()))?;
-
-        // ── Genesis config immutability check ──────────────────────
-        let meta_tree = db
-            .open_tree("consensus_meta")
-            .map_err(|e| CoreError::Storage(e.to_string()))?;
-        let current_hash = cfg.consensus_params_hash();
-        if let Some(stored) = meta_tree
-            .get(b"params_hash")
-            .map_err(|e| CoreError::Storage(e.to_string()))?
-        {
-            if stored.as_ref() != current_hash.as_slice() {
-                return Err(CoreError::Validation(
-                    "consensus parameters differ from genesis — \
-                     the chain database was created with different rules; \
-                     refusing to open to prevent fork"
-                        .into(),
-                ));
-            }
-        } else {
-            meta_tree
-                .insert(b"params_hash", current_hash.as_slice())
-                .map_err(|e| CoreError::Storage(e.to_string()))?;
-        }
 
         let bc = Self {
             cfg,
@@ -1056,6 +1034,38 @@ impl ReorgBackend for BlockchainReorgBackend<'_> {
     }
 }
 
+/// Refuses to open a database written under different consensus parameters.
+///
+/// Every state tree is namespaced by `consensus_params_hash`, so a directory
+/// from another network or profile would otherwise fail with an SMT namespace
+/// error that says nothing about the actual cause. This runs first so the
+/// operator sees the reason, and returns the metadata tree for the genesis
+/// checks that follow.
+fn ensure_chain_identity(db: &sled::Db, cfg: &ChainConfig) -> Result<sled::Tree, CoreError> {
+    let meta_tree = db
+        .open_tree("consensus_meta")
+        .map_err(|e| CoreError::Storage(e.to_string()))?;
+    let current_hash = cfg.consensus_params_hash();
+    match meta_tree
+        .get(b"params_hash")
+        .map_err(|e| CoreError::Storage(e.to_string()))?
+    {
+        Some(stored) if stored.as_ref() != current_hash.as_slice() => Err(CoreError::Validation(
+            "consensus parameters differ from genesis — \
+             the chain database was created with different rules; \
+             refusing to open to prevent fork"
+                .into(),
+        )),
+        Some(_) => Ok(meta_tree),
+        None => {
+            meta_tree
+                .insert(b"params_hash", current_hash.as_slice())
+                .map_err(|e| CoreError::Storage(e.to_string()))?;
+            Ok(meta_tree)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,6 +1101,24 @@ mod tests {
             Err(CoreError::Validation(message))
                 if message.contains("different rules") && message.contains("refusing to open")
         ));
+    }
+
+    /// A real directory opened under one profile must reject another profile
+    /// with the identity message. Before the check was moved ahead of the state
+    /// trees, this surfaced as "persisted sparse Merkle tree namespace does not
+    /// match", which tells an operator nothing.
+    #[test]
+    fn database_from_another_profile_is_rejected_with_the_identity_error() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let _devnet = Blockchain::open_db(db.clone(), ChainConfig::devnet()).unwrap();
+
+        let error = Blockchain::open_db(db, ChainConfig::testnet())
+            .err()
+            .expect("a second profile must be rejected");
+        assert!(
+            error.to_string().contains("consensus parameters differ"),
+            "unexpected error: {error}"
+        );
     }
 
     /// Test-only mining. Each marker owns a disjoint residue class, so blocks

@@ -87,8 +87,24 @@ struct Cli {
     rpc_bind: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Builds the runtime explicitly instead of using `#[tokio::main]` so that
+/// shutdown can be bounded.
+///
+/// The explorer serves on a blocking pool thread with an accept loop that has
+/// no cancellation signal, so an unbounded `Runtime::drop` blocks forever after
+/// the node has already flushed and logged "Shutdown complete". A bounded
+/// shutdown flushes and exits within a second while still letting every other
+/// task observe cancellation normally.
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let outcome = runtime.block_on(run());
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    outcome
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -263,13 +279,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rpc_server.run().await;
     });
 
-    info!("Node running. Press Ctrl+C to stop.");
+    info!("Node running. Send SIGINT or SIGTERM to stop.");
 
     let mut bootstrap_interval = tokio::time::interval(std::time::Duration::from_secs(60));
     // Don't delay the first tick.
     bootstrap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut peer_policy = PeerPolicy::default();
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
 
     loop {
         tokio::select! {
@@ -314,17 +332,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 network.try_bootstrap();
             }
-            _ = signal::ctrl_c() => {
-                info!("Shutting down...");
+            _ = &mut shutdown => {
+                info!("Shutdown signal received, flushing state...");
                 break;
             }
         }
     }
 
-    let _ = blockchain.db.flush();
+    if let Err(error) = blockchain.db.flush() {
+        error!("Failed to flush the database during shutdown: {error}");
+    }
 
     info!("Shutdown complete.");
     Ok(())
+}
+
+/// Resolves on the first shutdown request: `SIGINT` everywhere, plus `SIGTERM`
+/// on unix so that `systemctl stop` and container stop signals take the
+/// graceful path instead of terminating the process mid-write.
+///
+/// The future is pinned once by the caller. Re-creating it on every loop
+/// iteration would register a fresh signal subscription each pass.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate = match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(handler) => handler,
+            Err(error) => {
+                warn!("SIGTERM handler unavailable, waiting for SIGINT only: {error}");
+                let _ = signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signal::ctrl_c().await;
+    }
 }
 
 fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::Error>> {
@@ -438,9 +486,15 @@ fn load_or_create_p2p_identity(
     }
     let identity = libp2p::identity::Keypair::generate_ed25519();
     let encoded = identity.to_protobuf_encoding()?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        // A default umask would leave this private key group/world readable.
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(path)
         .map_err(|e| format!("cannot create p2p identity {}: {e}", path.display()))?;
     file.write_all(&encoded)?;
@@ -1311,7 +1365,6 @@ fn build_template(
 
     let reward = hyphen_economics::emission::block_reward(next_height, cfg);
 
-    // Compute the total fee from all included transactions
     let total_fee: u64 = tx_blobs
         .iter()
         .filter_map(|blob| hyphen_tx::Transaction::deserialise_limited(blob).ok())

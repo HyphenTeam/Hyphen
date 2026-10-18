@@ -72,6 +72,8 @@ cargo test --workspace --all-targets
   --explorer-bind 127.0.0.1:8080
 ```
 
+要在服务器上长期运行（systemd 单元、防火墙、备份、升级与健康检查），按 [docs/operations/deploy-linux.md](docs/operations/deploy-linux.md) 操作。
+
 Explorer 使用 HTTP；RPC、P2P 和模板端口是二进制协议。修改 Explorer Rust 渲染器后运行：
 
 ```powershell

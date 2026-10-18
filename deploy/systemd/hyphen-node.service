@@ -1,0 +1,69 @@
+# Hyphen full node — systemd unit.
+#
+# Install to /etc/systemd/system/hyphen-node.service and configure the
+# operator-specific values in /etc/hyphen/node.env (see
+# deploy/systemd/node.env.example and docs/operations/deploy-linux.md).
+#
+# The defaults below are the devnet profile. Override them in
+# /etc/hyphen/node.env; that file is read after `Environment=` and wins.
+
+[Unit]
+Description=Hyphen full node
+Documentation=https://github.com/HyphenTeam/Hyphen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hyphen
+Group=hyphen
+
+Environment=HYPHEN_NETWORK=devnet
+Environment=HYPHEN_P2P_PORT=48334
+Environment=HYPHEN_RPC_PORT=48333
+Environment=HYPHEN_BOOT_NODES=
+Environment=RUST_LOG=info
+EnvironmentFile=-/etc/hyphen/node.env
+
+# /var/lib/hyphen is created with mode 0750 and owned by `hyphen`; it holds the
+# sled database, the P2P identity key and nothing else.
+StateDirectory=hyphen
+StateDirectoryMode=0750
+
+# Log the chain identity of every start: an operator reading the journal can
+# tell which consensus rules this process ran under without opening the DB.
+ExecStartPre=/opt/hyphen/bin/hyphen-node --network ${HYPHEN_NETWORK} --print-chain-identity
+
+# Only the P2P port is bound publicly. RPC, the template provider and the
+# explorer stay on loopback: none of them authenticates or rate-limits clients
+# yet (see docs/operations/incentivized-testnet.md).
+ExecStart=/opt/hyphen/bin/hyphen-node \
+    --network ${HYPHEN_NETWORK} \
+    --data-dir /var/lib/hyphen/data \
+    --listen /ip4/0.0.0.0/tcp/${HYPHEN_P2P_PORT} \
+    --rpc-bind 127.0.0.1:${HYPHEN_RPC_PORT} \
+    --template-bind 127.0.0.1:3350 \
+    --explorer-bind 127.0.0.1:8080 \
+    --boot-nodes ${HYPHEN_BOOT_NODES}
+
+# SIGTERM is handled: the node stops, flushes sled and exits. TimeoutStopSec
+# only has to cover that flush.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=5s
+
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
