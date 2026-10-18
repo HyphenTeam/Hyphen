@@ -6,9 +6,14 @@ use prost::Message;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{debug, error, info, warn};
+
+mod peer_policy;
+
+use peer_policy::PeerPolicy;
 
 use hyphen_consensus::{
     build_genesis_block, export_archive, replay_archive, verify_archive_envelopes, Blockchain,
@@ -264,14 +269,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Don't delay the first tick.
     bootstrap_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut peer_policy = PeerPolicy::default();
+
     loop {
         tokio::select! {
             event = network.next_event() => {
                 if let Some(event) = event {
-                    handle_swarm_event(event, &blockchain, &mempool, &mut network);
+                    handle_swarm_event(
+                        event,
+                        &blockchain,
+                        &mempool,
+                        &mut network,
+                        &mut peer_policy,
+                    );
                 }
             }
             _ = bootstrap_interval.tick() => {
+                for peer in peer_policy.take_expired(Instant::now()) {
+                    network.unblock_peer(peer);
+                    info!("Peer {peer} ban expired; connections are allowed again");
+                }
                 // Periodically re-attempt Kademlia bootstrap so we discover
                 // new peers even if the initial boot nodes were offline. A seed
                 // name is a record the operator rotates, so an isolated node
@@ -437,6 +454,7 @@ fn handle_swarm_event(
     _blockchain: &Arc<Blockchain>,
     _mempool: &Arc<RwLock<Mempool>>,
     network: &mut hyphen_network::HyphenNetwork,
+    peer_policy: &mut PeerPolicy,
 ) {
     use libp2p::swarm::SwarmEvent;
     match event {
@@ -469,7 +487,7 @@ fn handle_swarm_event(
             }
         }
         SwarmEvent::Behaviour(behaviour_event) => {
-            handle_behaviour_event(behaviour_event, _blockchain, _mempool, network);
+            handle_behaviour_event(behaviour_event, _blockchain, _mempool, network, peer_policy);
         }
         _ => {}
     }
@@ -480,6 +498,7 @@ fn handle_behaviour_event(
     blockchain: &Arc<Blockchain>,
     mempool: &Arc<RwLock<Mempool>>,
     network: &mut hyphen_network::HyphenNetwork,
+    peer_policy: &mut PeerPolicy,
 ) {
     use hyphen_network::behaviour::HyphenBehaviourEvent;
     match event {
@@ -488,247 +507,275 @@ fn handle_behaviour_event(
             propagation_source,
             ..
         }) => {
-            if let Ok(msg) = hyphen_network::NetworkMessage::decode_proto(&message.data) {
-                match msg {
-                    hyphen_network::NetworkMessage::NewBlock(block_bytes) => {
-                        if let Ok(block) = hyphen_core::Block::deserialise_limited(
-                            &block_bytes,
-                            blockchain.cfg.max_block_size,
-                        ) {
-                            info!(
-                                "Received block {} from {}",
-                                block.header.height, propagation_source
-                            );
-                            if let Err(e) = blockchain.accept_block(&block) {
-                                warn!("Block rejected: {e}");
+            match hyphen_network::NetworkMessage::decode_proto(&message.data) {
+                Ok(msg) => {
+                    match msg {
+                        hyphen_network::NetworkMessage::NewBlock(block_bytes) => {
+                            match hyphen_core::Block::deserialise_limited(
+                                &block_bytes,
+                                blockchain.cfg.max_block_size,
+                            ) {
+                                Ok(block) => {
+                                    info!(
+                                        "Received block {} from {}",
+                                        block.header.height, propagation_source
+                                    );
+                                    if let Err(e) = blockchain.accept_block(&block) {
+                                        warn!("Block rejected: {e}");
+                                    }
+                                }
+                                Err(error) => {
+                                    penalize(
+                                        network,
+                                        peer_policy,
+                                        propagation_source,
+                                        "undecodable block payload",
+                                    );
+                                    warn!("Undecodable block from {propagation_source}: {error}");
+                                }
                             }
                         }
-                    }
-                    hyphen_network::NetworkMessage::NewTransaction(tx_bytes) => {
-                        match hyphen_compute::ComputeTransaction::decode(&tx_bytes) {
-                            Ok(Some(_)) => {
-                                let next_height = match blockchain
-                                    .tip()
-                                    .ok()
-                                    .and_then(|tip| tip.height.checked_add(1))
-                                {
-                                    Some(height) => height,
-                                    None => return,
-                                };
-                                if let Err(error) = blockchain
-                                    .validate_transaction_blobs_for_height(
-                                        std::slice::from_ref(&tx_bytes),
-                                        next_height,
-                                    )
-                                {
+                        hyphen_network::NetworkMessage::NewTransaction(tx_bytes) => {
+                            match hyphen_compute::ComputeTransaction::decode(&tx_bytes) {
+                                Ok(Some(_)) => {
+                                    let next_height = match blockchain
+                                        .tip()
+                                        .ok()
+                                        .and_then(|tip| tip.height.checked_add(1))
+                                    {
+                                        Some(height) => height,
+                                        None => return,
+                                    };
+                                    if let Err(error) = blockchain
+                                        .validate_transaction_blobs_for_height(
+                                            std::slice::from_ref(&tx_bytes),
+                                            next_height,
+                                        )
+                                    {
+                                        warn!(
+                                            target: "hyphen::metrics",
+                                            "P2P AetherCompute transaction rejected from {}: {error}",
+                                            propagation_source
+                                        );
+                                        return;
+                                    }
+                                    match mempool.write().insert_protocol(
+                                        tx_bytes,
+                                        hyphen_mempool::ValidatedProtocol::new(),
+                                    ) {
+                                        Ok(hash) => info!(
+                                            target: "hyphen::metrics",
+                                            "P2P AetherCompute transaction {} accepted from {}",
+                                            hash,
+                                            propagation_source
+                                        ),
+                                        Err(error) => warn!(
+                                            target: "hyphen::metrics",
+                                            "P2P AetherCompute transaction mempool-rejected from {}: {error}",
+                                            propagation_source
+                                        ),
+                                    }
+                                    return;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
                                     warn!(
                                         target: "hyphen::metrics",
-                                        "P2P AetherCompute transaction rejected from {}: {error}",
+                                        "P2P AetherCompute decode failed from {}: {error}",
                                         propagation_source
                                     );
                                     return;
                                 }
-                                match mempool.write().insert_protocol(
-                                    tx_bytes,
-                                    hyphen_mempool::ValidatedProtocol::new(),
-                                ) {
-                                    Ok(hash) => info!(
-                                        target: "hyphen::metrics",
-                                        "P2P AetherCompute transaction {} accepted from {}",
-                                        hash,
-                                        propagation_source
-                                    ),
-                                    Err(error) => warn!(
-                                        target: "hyphen::metrics",
-                                        "P2P AetherCompute transaction mempool-rejected from {}: {error}",
-                                        propagation_source
-                                    ),
+                            }
+                            match hyphen_vm::VmTransaction::decode(&tx_bytes) {
+                                Ok(Some(_)) => {
+                                    let next_height = match blockchain
+                                        .tip()
+                                        .ok()
+                                        .and_then(|tip| tip.height.checked_add(1))
+                                    {
+                                        Some(height) => height,
+                                        None => return,
+                                    };
+                                    if let Err(error) = blockchain
+                                        .validate_transaction_blobs_for_height(
+                                            std::slice::from_ref(&tx_bytes),
+                                            next_height,
+                                        )
+                                    {
+                                        warn!(
+                                            target: "hyphen::metrics",
+                                            "P2P WASM transaction rejected from {}: {error}",
+                                            propagation_source
+                                        );
+                                        return;
+                                    }
+                                    let _ = mempool.write().insert_protocol(
+                                        tx_bytes,
+                                        hyphen_mempool::ValidatedProtocol::new(),
+                                    );
+                                    return;
                                 }
-                                return;
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                warn!(
-                                    target: "hyphen::metrics",
-                                    "P2P AetherCompute decode failed from {}: {error}",
-                                    propagation_source
-                                );
-                                return;
-                            }
-                        }
-                        match hyphen_vm::VmTransaction::decode(&tx_bytes) {
-                            Ok(Some(_)) => {
-                                let next_height = match blockchain
-                                    .tip()
-                                    .ok()
-                                    .and_then(|tip| tip.height.checked_add(1))
-                                {
-                                    Some(height) => height,
-                                    None => return,
-                                };
-                                if let Err(error) = blockchain
-                                    .validate_transaction_blobs_for_height(
-                                        std::slice::from_ref(&tx_bytes),
-                                        next_height,
-                                    )
-                                {
+                                Ok(None) => {}
+                                Err(error) => {
                                     warn!(
                                         target: "hyphen::metrics",
-                                        "P2P WASM transaction rejected from {}: {error}",
+                                        "P2P WASM decode failed from {}: {error}",
                                         propagation_source
                                     );
                                     return;
                                 }
-                                let _ = mempool.write().insert_protocol(
-                                    tx_bytes,
-                                    hyphen_mempool::ValidatedProtocol::new(),
-                                );
-                                return;
                             }
-                            Ok(None) => {}
-                            Err(error) => {
-                                warn!(
-                                    target: "hyphen::metrics",
-                                    "P2P WASM decode failed from {}: {error}",
-                                    propagation_source
-                                );
-                                return;
-                            }
-                        }
-                        match hyphen_state::WesTransaction::decode(&tx_bytes) {
-                            Ok(Some(_)) => {
-                                let next_height = match blockchain
-                                    .tip()
-                                    .ok()
-                                    .and_then(|tip| tip.height.checked_add(1))
-                                {
-                                    Some(height) => height,
-                                    None => return,
-                                };
-                                if blockchain
-                                    .validate_transaction_blobs_for_height(
-                                        std::slice::from_ref(&tx_bytes),
-                                        next_height,
-                                    )
-                                    .is_err()
-                                {
+                            match hyphen_state::WesTransaction::decode(&tx_bytes) {
+                                Ok(Some(_)) => {
+                                    let next_height = match blockchain
+                                        .tip()
+                                        .ok()
+                                        .and_then(|tip| tip.height.checked_add(1))
+                                    {
+                                        Some(height) => height,
+                                        None => return,
+                                    };
+                                    if blockchain
+                                        .validate_transaction_blobs_for_height(
+                                            std::slice::from_ref(&tx_bytes),
+                                            next_height,
+                                        )
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    let _ = mempool.write().insert_protocol(
+                                        tx_bytes,
+                                        hyphen_mempool::ValidatedProtocol::new(),
+                                    );
                                     return;
                                 }
-                                let _ = mempool.write().insert_protocol(
-                                    tx_bytes,
-                                    hyphen_mempool::ValidatedProtocol::new(),
-                                );
-                                return;
-                            }
-                            Ok(None) => {}
-                            Err(_) => return,
-                        }
-                        let tx = match hyphen_tx::Transaction::deserialise_limited(&tx_bytes) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                warn!(
-                                    target: "hyphen::metrics",
-                                    "P2P tx decode failed from {}: {e}", propagation_source
-                                );
-                                return;
-                            }
-                        };
-
-                        // ── Full consensus validation (same as RPC path) ──
-                        let tip = match blockchain.tip() {
-                            Ok(t) => t,
-                            Err(_) => return,
-                        };
-                        let next_height = tip.height + 1;
-
-                        // Nullifier check
-                        for inp in &tx.inputs {
-                            if blockchain
-                                .nullifiers
-                                .contains(&inp.key_image)
-                                .unwrap_or(false)
-                            {
-                                warn!(
-                                    target: "hyphen::metrics",
-                                    "P2P tx rejected (double-spend) from {}", propagation_source
-                                );
-                                return;
-                            }
-                        }
-
-                        let valid_epoch_contexts =
-                            match blockchain.build_valid_epoch_contexts(next_height) {
-                                Ok(v) => v,
+                                Ok(None) => {}
                                 Err(_) => return,
+                            }
+                            let tx = match hyphen_tx::Transaction::deserialise_limited(&tx_bytes) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    penalize(
+                                        network,
+                                        peer_policy,
+                                        propagation_source,
+                                        "undecodable transaction payload",
+                                    );
+                                    warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P tx decode failed from {}: {e}", propagation_source
+                                    );
+                                    return;
+                                }
                             };
 
-                        let total_outputs = {
-                            let ct = blockchain.commitment_tree.read();
-                            ct.count()
-                        };
+                            // ── Full consensus validation (same as RPC path) ──
+                            let tip = match blockchain.tip() {
+                                Ok(t) => t,
+                                Err(_) => return,
+                            };
+                            let next_height = tip.height + 1;
 
-                        let validator = hyphen_consensus::BlockValidator::new(&blockchain.cfg);
-                        let store = blockchain.store();
-                        let vre_quality = match validator.validate_transaction(
-                            &tx,
-                            |global_index| {
-                                store.resolve_ring_member(global_index).map_err(|e| {
-                                    hyphen_consensus::validator::ValidationError::Core(
-                                        hyphen_core::error::CoreError::Storage(e.to_string()),
-                                    )
-                                })
-                            },
-                            &valid_epoch_contexts,
-                            total_outputs,
-                            next_height,
-                        ) {
-                            Ok(q) => q,
-                            Err(e) => {
-                                warn!(
-                                    target: "hyphen::metrics",
-                                    "P2P tx rejected from {}: {e}", propagation_source
-                                );
-                                return;
+                            // Nullifier check
+                            for inp in &tx.inputs {
+                                if blockchain
+                                    .nullifiers
+                                    .contains(&inp.key_image)
+                                    .unwrap_or(false)
+                                {
+                                    warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P tx rejected (double-spend) from {}", propagation_source
+                                    );
+                                    return;
+                                }
                             }
-                        };
 
-                        let tx_hash_hex = hyphen_crypto::hex_encode(tx.hash().as_bytes());
-                        let mut pool = mempool.write();
-                        match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
-                            Ok(hash) => {
-                                info!(
-                                    target: "hyphen::metrics",
-                                    "P2P tx {} accepted (vre_quality={}) from {}",
-                                    hash, vre_quality, propagation_source
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    target: "hyphen::metrics",
-                                    "P2P tx {} mempool-rejected from {}: {e}",
-                                    tx_hash_hex, propagation_source
-                                );
+                            let valid_epoch_contexts =
+                                match blockchain.build_valid_epoch_contexts(next_height) {
+                                    Ok(v) => v,
+                                    Err(_) => return,
+                                };
+
+                            let total_outputs = {
+                                let ct = blockchain.commitment_tree.read();
+                                ct.count()
+                            };
+
+                            let validator = hyphen_consensus::BlockValidator::new(&blockchain.cfg);
+                            let store = blockchain.store();
+                            let vre_quality = match validator.validate_transaction(
+                                &tx,
+                                |global_index| {
+                                    store.resolve_ring_member(global_index).map_err(|e| {
+                                        hyphen_consensus::validator::ValidationError::Core(
+                                            hyphen_core::error::CoreError::Storage(e.to_string()),
+                                        )
+                                    })
+                                },
+                                &valid_epoch_contexts,
+                                total_outputs,
+                                next_height,
+                            ) {
+                                Ok(q) => q,
+                                Err(e) => {
+                                    warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P tx rejected from {}: {e}", propagation_source
+                                    );
+                                    return;
+                                }
+                            };
+
+                            let tx_hash_hex = hyphen_crypto::hex_encode(tx.hash().as_bytes());
+                            let mut pool = mempool.write();
+                            match pool.insert(tx, hyphen_mempool::Validated::new(vre_quality)) {
+                                Ok(hash) => {
+                                    info!(
+                                        target: "hyphen::metrics",
+                                        "P2P tx {} accepted (vre_quality={}) from {}",
+                                        hash, vre_quality, propagation_source
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        target: "hyphen::metrics",
+                                        "P2P tx {} mempool-rejected from {}: {e}",
+                                        tx_hash_hex, propagation_source
+                                    );
+                                }
                             }
                         }
+                        hyphen_network::NetworkMessage::InclusionReceiptVote(receipt) => {
+                            warn!(
+                                target: "hyphen::fairness",
+                                "Ignoring structurally valid receipt vote for slot {} transaction {} from {} because no active finalized committee profile is configured",
+                                receipt.statement.slot,
+                                receipt.statement.transaction_id,
+                                propagation_source
+                            );
+                        }
+                        hyphen_network::NetworkMessage::QuorumInclusionReceipt(receipt) => {
+                            warn!(
+                                target: "hyphen::fairness",
+                                "Ignoring structurally valid quorum receipt for slot {} transaction {} from {} because no active finalized committee profile is configured",
+                                receipt.receipt.statement.slot,
+                                receipt.receipt.statement.transaction_id,
+                                propagation_source
+                            );
+                        }
                     }
-                    hyphen_network::NetworkMessage::InclusionReceiptVote(receipt) => {
-                        warn!(
-                            target: "hyphen::fairness",
-                            "Ignoring structurally valid receipt vote for slot {} transaction {} from {} because no active finalized committee profile is configured",
-                            receipt.statement.slot,
-                            receipt.statement.transaction_id,
-                            propagation_source
-                        );
-                    }
-                    hyphen_network::NetworkMessage::QuorumInclusionReceipt(receipt) => {
-                        warn!(
-                            target: "hyphen::fairness",
-                            "Ignoring structurally valid quorum receipt for slot {} transaction {} from {} because no active finalized committee profile is configured",
-                            receipt.receipt.statement.slot,
-                            receipt.receipt.statement.transaction_id,
-                            propagation_source
-                        );
-                    }
+                }
+                Err(error) => {
+                    penalize(
+                        network,
+                        peer_policy,
+                        propagation_source,
+                        "undecodable gossip envelope",
+                    );
+                    debug!("Undecodable gossip envelope from {propagation_source}: {error}");
                 }
             }
         }
@@ -748,7 +795,7 @@ fn handle_behaviour_event(
                     .send_response(channel, response);
             }
             request_response::Message::Response { response, .. } => {
-                handle_sync_response(response, blockchain, &peer, network);
+                handle_sync_response(response, blockchain, &peer, network, peer_policy);
             }
         },
         HyphenBehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. }) => {
@@ -761,6 +808,31 @@ fn handle_behaviour_event(
             }
         }
         _ => {}
+    }
+}
+
+/// Applies the peer policy to one locally verified fault.
+///
+/// Only faults the node can prove on its own reach this function: undecodable
+/// envelopes, undecodable payloads, and sync responses that exceed their
+/// structural budget. A well-formed block that fails contextual validation does
+/// not, because the node validates against its current tip and a block for a
+/// height it has not reached yet fails for reasons that belong to the node.
+fn penalize(
+    network: &mut hyphen_network::HyphenNetwork,
+    policy: &mut PeerPolicy,
+    peer: libp2p::PeerId,
+    reason: &str,
+) {
+    if policy.record_offense(peer, Instant::now()) {
+        if network.block_peer(peer) {
+            warn!(
+                "Blocked peer {peer} for {} seconds after proofed misbehavior: {reason}",
+                peer_policy::BAN_DURATION.as_secs()
+            );
+        }
+    } else {
+        warn!("Proofed misbehavior from {peer}: {reason}");
     }
 }
 
@@ -858,9 +930,16 @@ fn handle_sync_response(
     blockchain: &Arc<Blockchain>,
     peer: &libp2p::PeerId,
     network: &mut hyphen_network::HyphenNetwork,
+    peer_policy: &mut PeerPolicy,
 ) {
     use hyphen_network::SyncResponse;
     if let Err(error) = response.validate() {
+        penalize(
+            network,
+            peer_policy,
+            *peer,
+            "sync response violates its structural budget",
+        );
         warn!("Invalid sync response from {peer}: {error}");
         return;
     }
@@ -869,27 +948,46 @@ fn handle_sync_response(
             let count = blocks.len();
             let mut accepted = 0u64;
             for block_data in blocks {
-                if let Ok(block) = hyphen_core::Block::deserialise_limited(
+                match hyphen_core::Block::deserialise_limited(
                     &block_data,
                     blockchain.cfg.max_block_size,
                 ) {
-                    match blockchain.accept_block(&block) {
+                    Ok(block) => match blockchain.accept_block(&block) {
                         Ok(()) => accepted += 1,
                         Err(e) => {
                             warn!("Synced block rejected: {e}");
                             break;
                         }
+                    },
+                    Err(error) => {
+                        penalize(
+                            network,
+                            peer_policy,
+                            *peer,
+                            "undecodable block in sync response",
+                        );
+                        warn!("Undecodable synced block from {peer}: {error}");
+                        break;
                     }
                 }
             }
             info!("Sync from {peer}: accepted {accepted}/{count} blocks");
         }
         SyncResponse::Block(data) => {
-            if let Ok(block) =
-                hyphen_core::Block::deserialise_limited(&data, blockchain.cfg.max_block_size)
-            {
-                if let Err(e) = blockchain.accept_block(&block) {
-                    warn!("Synced block rejected: {e}");
+            match hyphen_core::Block::deserialise_limited(&data, blockchain.cfg.max_block_size) {
+                Ok(block) => {
+                    if let Err(e) = blockchain.accept_block(&block) {
+                        warn!("Synced block rejected: {e}");
+                    }
+                }
+                Err(error) => {
+                    penalize(
+                        network,
+                        peer_policy,
+                        *peer,
+                        "undecodable block in sync response",
+                    );
+                    warn!("Undecodable synced block from {peer}: {error}");
                 }
             }
         }

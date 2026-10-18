@@ -82,7 +82,7 @@ Explorer 使用 HTTP；RPC、P2P 和模板端口是二进制协议。修改 Expl
 
 ### 依赖策略
 
-本仓库不保留依赖镜像，也没有任何 `[patch.crates-io]` 覆盖：每个依赖都是 crates.io 正式发布版本，由提交的锁文件固定。对"这个 crate 要不要引"的默认答案是不引——hex 编解码、base58 编解码、SNTP 客户端和 NTP 校正时钟都实现在 `hyphen-crypto` 与 `hyphen-core` 内部，因为共识 crate 不该为几十行字节处理引入一条供应链。真正引入的外部 crate 只回答本仓库不该自己回答的问题：有界二进制编解码（`rustbinary`，在 `hyphen-wire` 中冻结）、种子名字的 DNSSEC 校验解析（`recurse-x`）、面向运营者的时间戳日历（`tzcraft`），以及服务 Explorer、矿池结算 API 与付款链路两端的 HTTP/1.1 + HTTP/2 栈（`courierust`——它自身零依赖，替换掉了本工作区里的 axum、tower 与 hyper）。
+本仓库不保留依赖镜像，也没有任何 `[patch.crates-io]` 覆盖：每个依赖都是 crates.io 正式发布版本，由提交的锁文件固定。对"这个 crate 要不要引"的默认答案是不引——hex 编解码、base58 编解码、SNTP 客户端和 NTP 校正时钟都实现在 `hyphen-crypto` 与 `hyphen-core` 内部，因为共识 crate 不该为几十行字节处理引入一条供应链。真正引入的外部 crate 只回答本仓库不该自己回答的问题：有界二进制编解码（`rustbinary`，在 `hyphen-wire` 中冻结）、种子名字的 DNSSEC 校验解析（`recurse-x`）、面向运营者的时间戳日历（`tzcraft`）、服务 Explorer、矿池结算 API 与付款链路两端的 HTTP/1.1 + HTTP/2 栈（`courierust`——它自身零依赖，替换掉了本工作区里的 axum、tower 与 hyper），以及执行封禁策略的 peer 黑名单（`libp2p-allow-block-list`——umbrella `libp2p` crate 没有把它导出为 feature）。
 
 Miner 不携带任何代理引擎：`--via-proxy` 自己完成 SOCKS5 或 HTTP `CONNECT` 握手，所以运营者运行的任何代理——包括带 `socks5` 或 `http` inbound 的 `corduit` 服务——都是 Miner 去拨号的外部进程，而不是它链接进来的库。
 
@@ -125,6 +125,22 @@ Kaspa 是高吞吐 PoW 链的成熟参照。Hyphen 借鉴的是工程流程，�
 - **发布纪律**：可复现构建、带校验和的产物、钉定工具链、夜间 fuzz 与严格的依赖策略。
 
 不借鉴 Kaspa 的共识。Kaspa 用 GHOSTDAG 的 blue set 给区块 DAG 排序；Hyphen 的 H-BFM 在固定 braid 上按全序 rank 融合，明确不是 GHOSTDAG 或 PHANTOM 实现。Kaspa 的 kHeavyHash 是摘要研磨的 ASIC 工作量；Hyphen 的 PoUW v3 是一次性 Cunningham 见证搜索，神经挑战是叠加其上的研究合约，而不是二者的替代品。照抄 Kaspa 的哈希或 DAG 排序，只会得到一条已有链的更差副本。
+
+针对 `rusty-kaspa` 已报告过的几类问题，逐条对照本仓库（不是靠类比，而是查代码）：
+
+| Kaspa 的问题类型 | 本仓库的状态 |
+| --- | --- |
+| 构造区块头时硬编码升级前的 block version | 不适用。`FROZEN_BLOCK_VERSION = 5` 是编译期常量，并被哈希进 `consensus_params_hash`；创世、校验器、授权、重放与节点都走同一常量，没有可以写错的运行期开关，改动它等于换一条链的身份。 |
+| 难度加权错算父块，或随深度衰减 | 累计难度是 `header.difficulty` 的 `u128` 精确求和；该值必须等于纯整数 LWMA 控制器对当前窗口的期望值（`chain.rs` 的 `expected_difficulty`），不等即拒。共识路径没有浮点，也没有按轮次的加权项；窗口取自当前 tip 下的规范高度索引，父集合或高度不一致的区块在计分前就被拒绝。 |
+| 排序不是全序，或并列时没有唯一解 | `rank(b) = (logical_round, lane, block_hash)`，作用在已认证的区块标识上；就绪集是 `BTreeSet<Rank>`，最小值唯一。 |
+| 导入 UTXO／剪枝点快照却不先校验 | 不存在快照导入面。同步只有区块（`GetBlocks`／`GetBlock`），状态一律由执行重建。 |
+| 恶意 peer 拖垮节点却没有任何代价 | 信封、载荷无法解码，或同步响应超出结构预算，都计分；十分钟内三次封禁一小时并断开现有连接。依赖上下文才能判定的失败**不**计分。见 [docs/security/peer-policy.md](docs/security/peer-policy.md)。 |
+
+## 对等节点策略与版本一致性
+
+入站 peer 只在节点能够本地证明的过错上计分：信封或载荷无法解码，或同步响应超出结构预算。十分钟内三次即封禁一小时；封禁会立即断开现有连接并拒绝重连。一个格式正确但未通过上下文校验的区块**不**计分——节点是相对当前 tip 校验的，追块同步若据此计分，会把诚实的转发者也封掉。策略细节（包括仅内存保存的局限、以及当前不存在快照导入面）见 [docs/security/peer-policy.md](docs/security/peer-policy.md)。
+
+这里不存在可切换的区块版本：`FROZEN_BLOCK_VERSION` 是构建中唯一的版本，它被写入共识参数身份哈希，创世构造、区块头校验、授权与重放读取的都是同一个常量。profile 变更意味着新的构建和新的身份向量，而不是一个区块头构造器可能悄悄忽略的运行时开关。
 
 ## 许可证
 

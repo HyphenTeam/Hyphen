@@ -148,10 +148,12 @@ forty lines of byte shuffling. The crates the chain does take from outside the
 repository are the ones that answer a question the repository should not answer
 itself — the bounded binary codec (`rustbinary`, frozen in `hyphen-wire`), the
 DNSSEC-validating resolver for seed names (`recurse-x`), the calendar behind
-operator-facing timestamps (`tzcraft`), and the HTTP/1.1 + HTTP/2 stack that
+operator-facing timestamps (`tzcraft`), the HTTP/1.1 + HTTP/2 stack that
 serves the explorer, the pool's accounting API and both ends of the payout link
 (`courierust`, which has no dependencies of its own and replaced axum, tower and
-hyper in this workspace).
+hyper in this workspace), and the peer block list that enforces the ban policy
+(`libp2p-allow-block-list`, which the umbrella `libp2p` crate does not re-export
+as a feature).
 
 The miner carries no proxy engine: `--via-proxy` performs the SOCKS5 or HTTP
 `CONNECT` handshake itself, so whatever proxy the operator runs — including a
@@ -277,6 +279,17 @@ neural challenge is a research contract on top, not a replacement for either.
 Copying Kaspa's hashing or its DAG ordering would have produced a worse copy of a
 chain that already exists.
 
+A concrete audit of issue classes reported against `rusty-kaspa`, checked against
+this tree rather than dismissed by analogy:
+
+| Kaspa issue class | Status here |
+| --- | --- |
+| Header built with a hardcoded pre-upgrade block version | Not applicable. One compile-time `FROZEN_BLOCK_VERSION = 5`, hashed into `consensus_params_hash` and used by genesis, the validator, authorization, replay and the node. There is no runtime switch to get wrong; changing it is a new chain identity. |
+| Difficulty weighting that mis-scores parents or decays over depth | Cumulative difficulty is an exact `u128` sum of `header.difficulty`, which the validator requires to equal the integer-only LWMA controller's expectation for the current window (`chain.rs`: `expected_difficulty`). No floats on the consensus path, no per-round weighting term. The window is read from the canonical height index under the current tip, and a block with an inconsistent parent set or height is rejected before it is scored. |
+| Ordering that is not a total order, or a tie-break that is not unique | `rank(b) = (logical_round, lane, block_hash)` over certified identifiers; the ready set is a `BTreeSet<Rank>` and the minimum is unique. |
+| Trusting an imported UTXO/pruning-point snapshot before validating it | No snapshot import surface exists. Sync is block-only (`GetBlocks`/`GetBlock`), so state is always rebuilt by execution. |
+| Adversarial peers that degrade a node without consequence | Undecodable envelopes, payloads or sync responses beyond the structural budget are scored; three strikes in ten minutes bans the peer for an hour and drops the live connection. Contextual failures are deliberately not scored. See [docs/security/peer-policy.md](docs/security/peer-policy.md). |
+
 ## Run a node
 
 Install Rust 1.97.0 and a host C/C++ toolchain, then build with the committed
@@ -326,6 +339,21 @@ updates are committed atomically. The backend can validate and execute a
 planned branch switch with rollback, but complete live reorg handling still
 needs P2P branch intake, automatic branch selection, and reconciliation of all
 dependent services.
+
+Inbound peers are scored only on faults the node can prove locally: an envelope
+or payload that does not decode, or a sync response that exceeds its structural
+budget. Three such faults inside ten minutes block the peer for an hour; the block
+list closes live connections and refuses reconnects. A well-formed block that
+fails contextual validation is not counted, because the node validates against
+its current tip and catch-up sync would otherwise ban honest relays. The policy,
+including its in-memory limitation and the absence of any snapshot-import surface,
+is specified in [docs/security/peer-policy.md](docs/security/peer-policy.md).
+
+There is no switchable block version to disagree with: `FROZEN_BLOCK_VERSION` is
+the only version in the build, it is hashed into the consensus-parameter
+identity, and genesis construction, header validation, authorization and replay
+all read that same constant. A profile change is a new build and a new identity
+vector, not a runtime toggle that a header builder can silently miss.
 
 Canonical transaction ordering is a research-profile rule. It makes a declared
 set mutation-detectable and removes arrival order as a tie-breaker. It does not
@@ -459,8 +487,13 @@ take the currently zero-indegree blocks and choose the minimum under the total
 rank
 
 ```text
-rank(b) = (parent_frontier_hash(b), producer_key(b), block_hash(b)).
+rank(b) = (logical_round(b), lane(b), block_hash(b)),
 ```
+
+as implemented by `rank` in
+[crates/hyphen-consensus/src/fusion.rs](crates/hyphen-consensus/src/fusion.rs);
+the third component is the certified opaque block identifier, so ties inside a
+round are broken by lane and then by hash.
 
 Append that block to the fused order and delete its outgoing edges.
 

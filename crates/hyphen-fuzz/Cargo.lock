@@ -1434,6 +1434,7 @@ dependencies = [
  "hyphen-tx",
  "hyphen-wire",
  "libp2p",
+ "libp2p-allow-block-list",
  "parking_lot 0.12.5",
  "prost",
  "rand",

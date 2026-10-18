@@ -4,6 +4,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm,
 };
+use libp2p_allow_block_list as allow_block_list;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -22,6 +23,7 @@ pub struct HyphenBehaviour {
     pub request_response: request_response::cbor::Behaviour<SyncRequest, SyncResponse>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
+    pub block_list: allow_block_list::Behaviour<allow_block_list::BlockedPeers>,
 }
 
 pub struct HyphenNetwork {
@@ -97,6 +99,7 @@ impl HyphenNetwork {
                     request_response: rr,
                     identify,
                     ping,
+                    block_list: allow_block_list::Behaviour::default(),
                 }
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(600)))
@@ -221,5 +224,55 @@ impl HyphenNetwork {
     /// Number of peers currently connected via the swarm.
     pub fn connected_peer_count(&self) -> usize {
         self.swarm.connected_peers().count()
+    }
+
+    /// Blocks a peer and closes every connection to it.
+    ///
+    /// The caller must have locally verified the fault; a peer that merely
+    /// relayed somebody else's bad data is not necessarily the author, so the
+    /// node only calls this for proofed protocol violations.
+    pub fn block_peer(&mut self, peer: PeerId) -> bool {
+        self.swarm.behaviour_mut().block_list.block_peer(peer)
+    }
+
+    /// Lifts a block, allowing the peer to connect again.
+    pub fn unblock_peer(&mut self, peer: PeerId) -> bool {
+        self.swarm.behaviour_mut().block_list.unblock_peer(peer)
+    }
+
+    /// Returns whether the peer is currently blocked.
+    pub fn is_blocked(&self, peer: &PeerId) -> bool {
+        self.swarm
+            .behaviour()
+            .block_list
+            .blocked_peers()
+            .contains(peer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn blocking_a_peer_is_visible_and_reversible() {
+        let key = identity::Keypair::generate_ed25519();
+        let peer = key.public().to_peer_id();
+        let mut network = HyphenNetwork::new(
+            "/ip4/127.0.0.1/tcp/0".parse().unwrap(),
+            Vec::new(),
+            key,
+            *b"TEST",
+        )
+        .expect("the network starts on a loopback port");
+
+        assert!(!network.is_blocked(&peer));
+        assert!(network.block_peer(peer));
+        assert!(network.is_blocked(&peer));
+        // Blocking an already blocked peer reports no change.
+        assert!(!network.block_peer(peer));
+        assert!(network.unblock_peer(peer));
+        assert!(!network.is_blocked(&peer));
+        assert!(!network.unblock_peer(peer));
     }
 }

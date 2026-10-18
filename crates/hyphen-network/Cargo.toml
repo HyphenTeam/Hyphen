@@ -13,6 +13,7 @@ hyphen-consensus.workspace = true
 hyphen-mempool.workspace   = true
 hyphen-state.workspace     = true
 libp2p.workspace           = true
+libp2p-allow-block-list.workspace = true
 tokio.workspace            = true
 futures.workspace          = true
 async-trait.workspace      = true

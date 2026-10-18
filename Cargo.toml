@@ -112,6 +112,9 @@ libp2p = { version = "0.57", default-features = false, features = [
     "serde",
     "autonat",
 ] }
+# Keep-alive peer block list. The umbrella `libp2p` crate does not re-export
+# this behaviour as a feature, so it is pinned directly.
+libp2p-allow-block-list = "0.7"
 async-trait = "0.1.92"
 
 # ── utilities ──
