@@ -605,6 +605,10 @@ impl Blockchain {
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
         validator
+            .validate_receipt_root(block)
+            .map_err(|e| CoreError::Validation(e.to_string()))?;
+
+        validator
             .validate_transaction_order(block)
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 

@@ -6,6 +6,7 @@ use hyphen_core::{
     FEATURE_CANONICAL_TX_ORDER, FEATURE_TERA, FEATURE_UNCLES, FEATURE_VRE, FROZEN_BLOCK_VERSION,
 };
 use hyphen_crypto::clsag;
+use hyphen_crypto::Hash256;
 use hyphen_tx::transaction::Transaction;
 use thiserror::Error;
 
@@ -216,6 +217,18 @@ impl<'a> BlockValidator<'a> {
         let computed = block.compute_uncle_root();
         if computed != block.header.uncle_root {
             return Err(ValidationError::UncleRootMismatch);
+        }
+        Ok(())
+    }
+
+    /// Block v5 has no receipt sidecar: no supported transaction type produces
+    /// a receipt commitment yet. The field is still part of the hashed header,
+    /// so accepting arbitrary bytes would let a producer commit to data no
+    /// validator checks. Require the empty Merkle root until receipt
+    /// generation becomes part of the state transition.
+    pub fn validate_receipt_root(&self, block: &Block) -> Result<(), ValidationError> {
+        if block.header.receipt_root != Hash256::ZERO {
+            return Err(ValidationError::ReceiptRootMismatch);
         }
         Ok(())
     }
@@ -599,5 +612,20 @@ mod tests {
             stratified > clustered,
             "stratified decoys should outscore a recent/index-clustered anonymity set: {stratified} <= {clustered}"
         );
+    }
+
+    #[test]
+    fn receipt_root_must_be_the_empty_root() {
+        let cfg = ChainConfig::devnet();
+        let validator = BlockValidator::new(&cfg);
+        let mut block = hyphen_core::build_genesis_block(&cfg);
+
+        assert!(validator.validate_receipt_root(&block).is_ok());
+
+        block.header.receipt_root = hyphen_crypto::Hash256::from_bytes([7u8; 32]);
+        assert!(matches!(
+            validator.validate_receipt_root(&block),
+            Err(ValidationError::ReceiptRootMismatch)
+        ));
     }
 }
