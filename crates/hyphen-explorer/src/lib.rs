@@ -702,7 +702,8 @@ fn percent_decode(input: &str) -> Result<String, Rejection> {
 /// The page, its script and its WebAssembly module are all served from this
 /// origin, so the policy can stay as tight as it was: no remote scripts, no
 /// framing, no referrer, and a media type that cannot be sniffed into anything
-/// else.
+/// else. `'wasm-unsafe-eval'` is required to compile the module and permits
+/// WebAssembly only, not JavaScript `eval`.
 fn secure_response(
     status: StatusCode,
     content_type: &'static str,
@@ -714,7 +715,7 @@ fn secure_response(
         .header("referrer-policy", "no-referrer")
         .header(
             "content-security-policy",
-            "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'self'; connect-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
         )
         .with_body(body.into())
 }
@@ -1294,6 +1295,7 @@ mod tests {
         let policy = header("content-security-policy").expect("the CSP is set");
         let policy = String::from_utf8(policy).unwrap();
         assert!(policy.contains("default-src 'self'"));
+        assert!(policy.contains("script-src 'self' 'wasm-unsafe-eval'"));
         assert!(policy.contains("frame-ancestors 'none'"));
         assert!(policy.contains("object-src 'none'"));
 

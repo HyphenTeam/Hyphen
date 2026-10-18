@@ -257,6 +257,7 @@ What actually matters in the journal:
 | `boot node '…' is missing /p2p/<peer-id>` | add the peer id; unauthenticated addresses are refused |
 | `consensus parameters differ from genesis` | data directory from another network or profile — use a fresh one |
 | `Address already in use` | another process holds the port; check `ss -lntp` |
+| `Address family not supported by protocol` | `RestrictAddressFamilies` is missing `AF_NETLINK`, which libp2p's interface watcher needs |
 | `Permission denied` under `/var/lib/hyphen` | the unit runs as `hyphen`; fix ownership, do not run as root |
 | Service restarts every 5 s | `Restart=on-failure`; the reason is always the last journal error |
 | Peers connect then drop | clock untrusted (check UDP 123 egress) or the peer earned strikes |
@@ -496,6 +497,7 @@ journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
 | `boot node '…' is missing /p2p/<peer-id>` | 补上 peer id；未认证地址一律拒绝 |
 | `consensus parameters differ from genesis` | 数据目录属于别的网络或配置档——换新目录 |
 | `Address already in use` | 端口被占用；`ss -lntp` 查看 |
+| `Address family not supported by protocol` | `RestrictAddressFamilies` 缺少 libp2p 网卡监视所需的 `AF_NETLINK` |
 | `/var/lib/hyphen` 下 `Permission denied` | 单元以 `hyphen` 身份运行；修所有者，不要用 root 跑 |
 | 服务每 5 秒重启 | `Restart=on-failure`；原因始终在最后一条 journal 错误里 |
 | peer 连上又断开 | 时钟不可信（检查出站 UDP 123），或对方已累计过错 |
