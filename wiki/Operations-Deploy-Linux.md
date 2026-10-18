@@ -146,7 +146,8 @@ chain tip, the P2P peer id, the template provider, the RPC server and
 Machine-readable health comes from the explorer:
 
 ```bash
-curl -s http://127.0.0.1:8080/api/info
+curl -fsS http://127.0.0.1:8080/healthz   # liveness, no chain lock
+curl -s http://127.0.0.1:8080/api/info     # chain tip and supply
 ```
 
 ```json
@@ -164,7 +165,54 @@ Confirm the listeners:
 ss -lntp | grep hyphen
 ```
 
-## 7. Stop, restart, upgrade
+## 7. Public explorer behind Cloudflare
+
+Keep the explorer bound to `127.0.0.1:8080`. Publish it through a Cloudflare
+Tunnel, not by pointing a proxied DNS record at port 8080: Cloudflare's HTTP
+proxy only accepts the standard HTTP/HTTPS ports.
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+That quick tunnel is for testing. A production deployment uses a named tunnel
+with a credentials file and an ingress rule pointing at
+`http://127.0.0.1:8080`, run as its own `cloudflared` systemd service. Keep the
+tunnel and node restarts independent: restarting the node must not require
+recreating the tunnel, and a dead tunnel must be visible in
+`journalctl -u cloudflared`.
+
+Before touching Cloudflare, prove the origin answers locally:
+
+```bash
+curl -fsS -D- http://127.0.0.1:8080/healthz
+curl -fsS -D- http://127.0.0.1:8080/api/info
+ss -lntp | grep 8080
+systemctl status hyphen-node --no-pager
+journalctl -u hyphen-node -g 'Explorer|panic|ERROR' --since '30 min ago' --no-pager
+journalctl -u cloudflared --since '30 min ago' --no-pager
+```
+
+`/healthz` is a pure liveness response with no chain lock; use it for Cloudflare
+health checks and supervisors. `/api/info` additionally reads the chain tip.
+Point the tunnel at `127.0.0.1`, not `localhost`: if `localhost` resolves to
+`::1` first and the node is bound to IPv4, every request is refused.
+
+Cloudflare edge errors are origin diagnostics, not a Cloudflare crash:
+
+| Error | Meaning |
+| --- | --- |
+| 521 / 522 / 523 | The edge cannot reach the origin: node stopped, tunnel down, wrong port or firewall |
+| 1033 | The tunnel process is not connected to Cloudflare |
+| 502 | The tunnel reached a listener but the HTTP exchange failed |
+| 524 | The origin accepted the connection but did not answer before the edge timeout |
+
+A node whose explorer port is already held by another process now fails at
+startup with `bind block explorer …: address in use`; it no longer runs with a
+silently dead public surface. If the port was held by a previous node instance,
+`systemctl restart` is the wrong fix — stop the old process first.
+
+## 8. Stop, restart, upgrade
 
 `systemctl stop` sends `SIGTERM`; the node breaks its main loop, flushes sled
 and exits. `Ctrl+C` in a foreground run does the same through `SIGINT`.
@@ -192,7 +240,7 @@ new chain identity and needs a new data directory. Roll back by reinstalling
 the previous binary; if the data directory was already migrated, restore the
 backup instead.
 
-## 8. Backup and restore
+## 9. Backup and restore
 
 The only consistent backup of a sled database is a stopped copy:
 
@@ -227,7 +275,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
 `--verify-history` and `--replay-history` reject archives above 512 MiB; past
 that size move the stopped data directory instead.
 
-## 9. Logs and monitoring
+## 10. Logs and monitoring
 
 ```bash
 journalctl -u hyphen-node --since '1 hour ago' --no-pager
@@ -249,7 +297,7 @@ What actually matters in the journal:
 | `Peer … ban expired` | the hour elapsed, reconnects are allowed |
 | `Remote … at height …, local at … – in sync` | sync responses applied |
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
@@ -263,10 +311,11 @@ What actually matters in the journal:
 | Peers connect then drop | clock untrusted (check UDP 123 egress) or the peer earned strikes |
 | `height` stuck at 0 | no peers, or the boot node is on a different chain identity |
 
-## 11. What this deployment does not give you
+## 12. What this deployment does not give you
 
 - No public authenticated RPC, no public pool edge, no rate limiting.
-- No metrics endpoint; `/api/info` is the only machine-readable signal.
+- No metrics endpoint; `/healthz` reports liveness and `/api/info` is the only
+  chain-state signal.
 - No live P2P branch intake: the reorg backend is implemented and tested, but
   automatic fork-choice on live competing branches is not wired up.
 - No monetary value. Running this node is a research and testing activity.
@@ -399,7 +448,8 @@ journalctl -u hyphen-node -f
 机器可读的健康信号来自浏览器服务：
 
 ```bash
-curl -s http://127.0.0.1:8080/api/info
+curl -fsS http://127.0.0.1:8080/healthz   # 存活探测，不获取链锁
+curl -s http://127.0.0.1:8080/api/info     # 链尖与供应量
 ```
 
 ```json
@@ -415,7 +465,48 @@ curl -s http://127.0.0.1:8080/api/info
 ss -lntp | grep hyphen
 ```
 
-## 7. 停止、重启、升级
+## 7. Cloudflare 后的公开浏览器
+
+浏览器保持绑定在 `127.0.0.1:8080`。通过 Cloudflare Tunnel 发布，不要把代理 DNS 记录直接指向
+8080 端口：Cloudflare 的 HTTP 代理只接受标准 HTTP/HTTPS 端口。
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+快速隧道只用于测试。生产环境使用带 credentials 文件和 ingress 规则的命名隧道，指向
+`http://127.0.0.1:8080`，并作为独立的 `cloudflared` systemd 服务运行。隧道与节点重启必须
+相互独立：重启节点不应要求重建隧道，隧道失效必须能在 `journalctl -u cloudflared` 中看到。
+
+在怀疑 Cloudflare 之前，先证明源站本地可用：
+
+```bash
+curl -fsS -D- http://127.0.0.1:8080/healthz
+curl -fsS -D- http://127.0.0.1:8080/api/info
+ss -lntp | grep 8080
+systemctl status hyphen-node --no-pager
+journalctl -u hyphen-node -g 'Explorer|panic|ERROR' --since '30 min ago' --no-pager
+journalctl -u cloudflared --since '30 min ago' --no-pager
+```
+
+`/healthz` 是纯存活响应，不获取链锁；Cloudflare 健康检查和监管进程应使用它。
+`/api/info` 还会读取链尖。隧道指向 `127.0.0.1`，不要写 `localhost`：如果 `localhost`
+优先解析到 `::1`，而节点只绑定 IPv4，所有请求都会被拒绝。
+
+Cloudflare 边缘错误是源站诊断，不是 Cloudflare 崩溃：
+
+| 错误 | 含义 |
+| --- | --- |
+| 521 / 522 / 523 | 边缘无法连接源站：节点停止、隧道断开、端口错误或防火墙 |
+| 1033 | 隧道进程未连接 Cloudflare |
+| 502 | 隧道连到了监听器，但 HTTP 交换失败 |
+| 524 | 源站接受连接，但在边缘超时前没有响应 |
+
+浏览器端口被其他进程占用时，节点现在会在启动阶段以
+`bind block explorer …: address in use` 失败，不再带着一个静默失效的公开接口继续运行。如果
+端口被旧节点实例占用，`systemctl restart` 不是正确做法——先停止旧进程。
+
+## 8. 停止、重启、升级
 
 `systemctl stop` 发送 `SIGTERM`；节点跳出主循环、flush sled 后退出。前台运行时 `Ctrl+C` 走 `SIGINT`，路径相同。`TimeoutStopSec=90` 只是给 flush 留余量，不是在等待长时间排空。
 
@@ -437,7 +528,7 @@ the chain database was created with different rules; refusing to open to prevent
 
 这是预期行为，不是要绕过的 bug：配置档改变就是新的链身份，必须换新的数据目录。回滚的办法是装回旧二进制；如果数据目录已被迁移，则从备份恢复。
 
-## 8. 备份与恢复
+## 9. 备份与恢复
 
 sled 数据库唯一一致的备份方式是停机拷贝：
 
@@ -469,7 +560,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
 
 `--verify-history` 与 `--replay-history` 拒绝超过 512 MiB 的归档；链长超过这个规模就直接搬停机后的数据目录。
 
-## 9. 日志与监控
+## 10. 日志与监控
 
 ```bash
 journalctl -u hyphen-node --since '1 hour ago' --no-pager
@@ -489,7 +580,7 @@ journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
 | `Peer … ban expired` | 封禁一小时到期，允许重连 |
 | `Remote … at height …, local at … – in sync` | 同步响应已应用 |
 
-## 10. 故障排查
+## 11. 故障排查
 
 | 现象 | 原因与处理 |
 | --- | --- |
@@ -503,9 +594,9 @@ journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
 | peer 连上又断开 | 时钟不可信（检查出站 UDP 123），或对方已累计过错 |
 | `height` 一直为 0 | 没有 peer，或 boot node 处在另一条链身份上 |
 
-## 11. 这套部署没有提供什么
+## 12. 这套部署没有提供什么
 
 - 没有公开的认证 RPC、没有公开矿池入口、没有限流。
-- 没有指标端点；`/api/info` 是唯一的机器可读信号。
+- 没有指标端点；`/healthz` 报告存活，`/api/info` 是唯一的链状态信号。
 - 没有实时 P2P 分支接入：reorg 后端已实现并有测试，但针对实时竞争分支的自动 fork-choice 尚未接线。
 - 没有货币价值。运行这个节点属于研究与测试活动。

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -768,6 +768,13 @@ fn serve_wasm() -> Response<Body> {
     secure_response(StatusCode::OK, "application/wasm", EXPLORER_WASM)
 }
 
+/// Liveness only: no chain lock, no disk read. A supervisor or Cloudflare
+/// health check must be able to distinguish a live HTTP stack from a stuck
+/// chain without waiting on consensus state.
+fn serve_health() -> Response<Body> {
+    secure_response(StatusCode::OK, "text/plain; charset=utf-8", "ok\n")
+}
+
 fn get_info(state: &ExplorerState) -> Response<Body> {
     let tip = match state.blockchain.tip() {
         Ok(t) => t,
@@ -1040,6 +1047,7 @@ enum Route {
     Index,
     AppJs,
     Wasm,
+    Health,
     Info,
     Updates,
     Blocks,
@@ -1066,6 +1074,7 @@ impl Route {
             [""] => Route::Index,
             ["app.js"] => Route::AppJs,
             ["hyphen_explorer_web.wasm"] => Route::Wasm,
+            ["healthz"] => Route::Health,
             ["api", "info"] => Route::Info,
             ["api", "updates"] => Route::Updates,
             ["api", "blocks"] => Route::Blocks,
@@ -1117,6 +1126,7 @@ impl ExplorerService {
             Route::Index => Ok(serve_frontend()),
             Route::AppJs => Ok(serve_app_js()),
             Route::Wasm => Ok(serve_wasm()),
+            Route::Health => Ok(serve_health()),
             Route::Info => Ok(get_info(state)),
             Route::Updates => get_updates(state, &params),
             Route::Blocks => get_blocks(state, &params),
@@ -1149,6 +1159,21 @@ pub fn serve_explorer(
     blockchain: Arc<Blockchain>,
     cfg: ChainConfig,
 ) -> Result<(), String> {
+    let listener =
+        TcpListener::bind(bind_addr).map_err(|error| format!("bind block explorer: {error}"))?;
+    serve_explorer_on(listener, blockchain, cfg)
+}
+
+/// Serve the explorer on a listener the caller already bound.
+///
+/// Binding before this call lets a supervisor treat "the explorer port is
+/// taken" as a startup failure instead of running a node whose public surface
+/// is silently absent.
+pub fn serve_explorer_on(
+    listener: TcpListener,
+    blockchain: Arc<Blockchain>,
+    cfg: ChainConfig,
+) -> Result<(), String> {
     let state = Arc::new(ExplorerState {
         blockchain,
         cfg,
@@ -1164,8 +1189,8 @@ pub fn serve_explorer(
         max_connections: MAX_CONNECTIONS,
         ..ServerConfig::default()
     };
-    let server = Server::bind_with_config(bind_addr, config)
-        .map_err(|error| format!("bind block explorer: {error}"))?;
+    let server = Server::from_listener(listener, config)
+        .map_err(|error| format!("configure block explorer: {error}"))?;
     let local_addr = server
         .local_addr()
         .map_err(|error| format!("block explorer address: {error}"))?;
@@ -1182,9 +1207,20 @@ pub async fn start_explorer(
     blockchain: Arc<Blockchain>,
     cfg: ChainConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = TcpListener::bind(bind_addr)?;
+    start_explorer_on(listener, blockchain, cfg).await
+}
+
+/// Run the explorer on a caller-bound listener. The bind stays in the caller
+/// so an occupied port fails startup rather than only the explorer task.
+pub async fn start_explorer_on(
+    listener: TcpListener,
+    blockchain: Arc<Blockchain>,
+    cfg: ChainConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Serving blocks its calling thread, so it runs on the blocking pool rather
     // than on the node's reactor.
-    tokio::task::spawn_blocking(move || serve_explorer(bind_addr, blockchain, cfg)).await??;
+    tokio::task::spawn_blocking(move || serve_explorer_on(listener, blockchain, cfg)).await??;
     Ok(())
 }
 
@@ -1198,6 +1234,7 @@ mod tests {
             ("/", Some(Route::Index)),
             ("/app.js", Some(Route::AppJs)),
             ("/hyphen_explorer_web.wasm", Some(Route::Wasm)),
+            ("/healthz", Some(Route::Health)),
             ("/api/info", Some(Route::Info)),
             ("/api/updates", Some(Route::Updates)),
             ("/api/blocks", Some(Route::Blocks)),

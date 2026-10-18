@@ -295,11 +295,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     info!("Template Provider listening on {}", cli.template_bind);
 
     let explorer_addr: std::net::SocketAddr = cli.explorer_bind.parse()?;
+    let explorer_listener = std::net::TcpListener::bind(explorer_addr)
+        .map_err(|error| format!("bind block explorer {explorer_addr}: {error}"))?;
     let bc_explorer = Arc::clone(&blockchain);
     let cfg_explorer = cfg.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            hyphen_explorer::start_explorer(explorer_addr, bc_explorer, cfg_explorer).await
+            hyphen_explorer::start_explorer_on(explorer_listener, bc_explorer, cfg_explorer).await
         {
             error!("Explorer server error: {e}");
         }

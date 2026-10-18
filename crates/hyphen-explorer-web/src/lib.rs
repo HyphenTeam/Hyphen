@@ -458,6 +458,16 @@ fn render_block(payload: &str, now_ms: u64) -> Result<String, String> {
     }
     output
         .push_str("</dl></article></section><section class=\"object-list\"><h2>Transactions</h2>");
+    if block.tx_count == 0 {
+        output.push_str(
+            "<p class=\"empty\">No transactions in this block: the transaction and receipt roots are the empty Merkle root (zero).</p>",
+        );
+    }
+    if h.state_root.bytes().all(|byte| byte == b'0') {
+        output.push_str(
+            "<p class=\"empty\">The unified state root commits to AetherCompute, WASM and H-WES state. It is zero when that state is empty; private outputs and nullifiers are the separate commitment and nullifier roots above.</p>",
+        );
+    }
     if block.tx_hashes.is_empty() {
         output.push_str("<p class=\"empty\">No private transactions in this block.</p>");
     }
