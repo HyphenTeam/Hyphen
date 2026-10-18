@@ -10,6 +10,7 @@ The tracked Hyphen repository owns the base-chain protocol and reference node:
 - state-transition, storage, replay, and chain identity;
 - transaction and cryptographic verification libraries;
 - P2P, RPC, Template Provider transport, and explorer interfaces;
+- the deterministic neural-challenge library and the deployable Alice contract;
 - versioned specifications, machine-readable vectors, fuzz targets, and CI.
 
 The root `Cargo.toml` is the authoritative list of base-chain workspace members.
@@ -28,6 +29,15 @@ No successful build or test in an independent project proves base-chain
 correctness. No successful base-chain test proves an independent project is
 compatible.
 
+## Contract workspace
+
+`contracts/alice-neural` is its own Cargo workspace because it is a
+`wasm32-unknown-unknown` `cdylib` with a different profile and linker settings.
+It depends on `crates/hyphen-neural` with default features disabled, so the
+contract and the prover compile the same fixed-point code. The contract is
+tracked here, built by CI, and executed by `crates/hyphen-vm/tests`; it is not a
+root workspace member and does not affect base-chain builds.
+
 ## Protocol change sequence
 
 A compatibility-affecting base-chain change MUST proceed in this order:
@@ -45,8 +55,9 @@ A compatibility-affecting base-chain change MUST proceed in this order:
 ## CI ownership
 
 Hyphen base-chain CI gates formatting, Clippy, workspace tests, fuzz-target
-compilation, chain-identity vectors, and a Windows node smoke check. Nightly CI
-runs bounded decoder fuzzing on Linux.
+compilation, chain-identity vectors, the Alice contract build and its execution
+inside `hyphen-vm`, and a Windows node smoke check. Nightly CI runs bounded
+decoder fuzzing on Linux.
 
 Cross-project node/miner/pool/wallet tests are compatibility evidence only.
 They require explicit independent checkouts and MUST live in a separate
@@ -79,7 +90,7 @@ clean checkout of the Hyphen base-chain repository.
 
 独立项目构建或测试成功不能证明基础链正确；基础链测试成功也不能证明独立项目兼容。
 
-三个独立项目通过公开 Git revision `3a7effdc74b59bea1792116327e569e1d9bc9e21` 使用共享协议 crate，不允许依赖本机主链路径。升级必须固定新的公开 revision，并重新执行跨项目向量和兼容性测试。
+三个独立项目通过公开 Git revision 使用共享协议 crate，不允许依赖本机主链路径。当前钱包钉定 `576bc67d972d1156fbabb1ddf579104d5ff2ff88`（链身份 v6）；本地签出中的 Miner 与 Pool 使用路径依赖，发布时必须改为钉定同一公开 revision。升级必须固定新的公开 revision，并重新执行跨项目向量和兼容性测试。
 
 ## 协议变更顺序
 
@@ -94,6 +105,6 @@ clean checkout of the Hyphen base-chain repository.
 
 ## CI 所有权
 
-Hyphen 基础链 CI 负责格式检查、Clippy、工作区测试、模糊测试目标编译、链身份向量和 Windows 节点冒烟测试。夜间 CI 在 Linux 上运行有界解码器模糊测试。
+Hyphen 基础链 CI 负责格式检查、Clippy、工作区测试、模糊测试目标编译、链身份向量、Alice 合约构建及其在 `hyphen-vm` 内的执行，以及 Windows 节点冒烟测试。夜间 CI 在 Linux 上运行有界解码器模糊测试。
 
 跨项目的 node/miner/pool/wallet 测试只属于兼容性证据。它们要求显式、独立的代码检出，并且必须位于单独的集成工作流或编排仓库中；基础链仓库的干净检出不能依赖这些项目。

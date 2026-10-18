@@ -20,6 +20,7 @@ members = [
     "crates/hyphen-explorer",
     "crates/hyphen-explorer-web",
     "crates/hyphen-compute",
+    "crates/hyphen-neural",
 ]
 exclude = ["crates/hyphen-fuzz"]
 resolver = "2"
@@ -53,6 +54,7 @@ hyphen-vm = { path = "crates/hyphen-vm" }
 hyphen-explorer = { path = "crates/hyphen-explorer" }
 hyphen-explorer-web = { path = "crates/hyphen-explorer-web" }
 hyphen-compute = { path = "crates/hyphen-compute" }
+hyphen-neural = { path = "crates/hyphen-neural" }
 
 blake3 = "1.8.7"
 curve25519-dalek = { version = "5.0.0", features = [
@@ -78,6 +80,12 @@ wasmi = { version = "2.0.0", default-features = false, features = [
     "validate",
     "deterministic",
     "extra-checks",
+    # Without `auto-dispatch`, Wasmi always selects its tail-call backend. In a
+    # debug build (opt-level 0/1) that backend dispatches with ordinary calls,
+    # so every executed instruction grows the host stack and long-running code
+    # aborts the process. `auto-dispatch` selects the loop backend whenever LLVM
+    # cannot perform sibling-call optimization.
+    "auto-dispatch",
 ] }
 wasmparser = "0.262.0"
 wat = "1.262.0"

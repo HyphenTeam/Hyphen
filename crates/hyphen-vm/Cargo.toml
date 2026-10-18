@@ -21,3 +21,6 @@ wasmparser.workspace    = true
 sled.workspace          = true
 zstd.workspace          = true
 hyphen-wire.workspace   = true
+
+[dev-dependencies]
+hyphen-neural.workspace = true

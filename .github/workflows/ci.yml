@@ -79,6 +79,36 @@ jobs:
           cargo audit
           cargo audit --file crates/hyphen-fuzz/Cargo.lock
 
+  alice-contract:
+    # The contract compiles the shared fixed-point verifier to
+    # wasm32-unknown-unknown and is executed by the chain's own VM in
+    # `crates/hyphen-vm/tests/alice_contract.rs`. A missing artifact would make
+    # that test skip, so this job builds it first and requires it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install pinned Rust toolchain and wasm target
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy,rustfmt
+          rustup default 1.97.0
+          rustup target add wasm32-unknown-unknown
+      - name: Check contract formatting
+        working-directory: contracts/alice-neural
+        run: cargo fmt -- --check
+      - name: Lint the contract
+        working-directory: contracts/alice-neural
+        run: cargo clippy --release --locked -- -D warnings
+      - name: Build the contract module
+        working-directory: contracts/alice-neural
+        run: cargo build --release --locked
+      - name: Execute the contract in the chain VM
+        env:
+          HYPHEN_REQUIRE_ALICE_WASM: "1"
+        run: cargo test -p hyphen-vm --test alice_contract --locked
+      - name: Test the neural prover
+        run: cargo test -p hyphen-neural --locked
+
   windows-node-smoke:
     runs-on: windows-2022
     timeout-minutes: 30

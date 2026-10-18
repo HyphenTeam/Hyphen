@@ -1,4 +1,5 @@
 /target
+/contracts/*/target/
 /HyphenMiner/
 /HyphenPool/
 /HyphenWallet/

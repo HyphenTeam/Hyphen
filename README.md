@@ -9,10 +9,14 @@ grinding. This repository contains the node, consensus and state
 transition code, transaction validation, networking, RPC, cryptographic
 libraries, executable research models, and consensus test vectors.
 
-It does not contain the Hyphen Miner, Hyphen Pool, or Hyphen Wallet products.
-Those are independent repositories with independent lockfiles, CI, releases,
-and security boundaries. A protocol change can require coordinated updates,
-but it does not make those repositories part of this one.
+This repository does not contain the Hyphen Miner, Hyphen Pool, or Hyphen Wallet
+products. They are independent Git repositories with independent lockfiles, CI,
+releases, and security boundaries; this checkout may carry them alongside as
+`HyphenMiner/`, `HyphenPool/`, and `HyphenWallet/`, and `.gitignore` keeps them out
+of this repository's history. `scripts/devnet-smoke.ps1` builds and runs all three
+when they are present, and refuses with a clear message when they are not. A
+protocol change can require coordinated updates, but it does not make those
+repositories part of this one.
 
 ## Read this first
 
@@ -165,6 +169,14 @@ metering, rather than a JIT runtime. That choice is deliberate:
 - Wasmi has been independently audited twice, including by Runtime Verification
   for the Stellar Development Foundation.
 
+The workspace enables Wasmi's `auto-dispatch` feature explicitly. Without it the
+engine always selects its tail-call backend; at `opt-level` 0 or 1 LLVM cannot
+turn those dispatches into sibling calls, so every executed instruction grows the
+host stack and a long-running contract aborts the process. `auto-dispatch` picks
+the loop backend exactly when sibling-call optimization is unavailable, and
+`MAX_CONTRACT_RECURSION_DEPTH` bounds the remaining depth. Both are pinned by the
+contract tests in `crates/hyphen-vm/tests`.
+
 `proc-macro-error2` 2.0.1, which Wasmer pulled in transitively, is gone from
 the graph entirely. Upstream never published a fix for its
 `pub extern crate proc_macro;` visibility bug, so removing the runtime that
@@ -212,6 +224,59 @@ produce a valid commitment. Single-use membership stays a node-local oracle over
 that branch's own claimed set, and a reorg releases the detached block's
 witnesses so the reverted branch can be re-attached unchanged.
 
+## Neural-cryptography challenge (research contract)
+
+The repository also ships the Alice/Bob neural challenge: an on-chain contract
+that publishes a random two-layer perceptron `A` and a target `y* = A(x*)`, and a
+fully specified prover that searches for a preimage `x`. Verification is one
+fixed-point forward pass; the search is Levenberg–Marquardt over Q32.32 integers.
+The design, the soundness argument for using the inverse problem rather than
+"learn Alice's weights", the measured cost envelope, the contract ABI and its open
+obligations are in [docs/research/neural-cryptography.md](docs/research/neural-cryptography.md).
+
+Three things it is not:
+
+- it is not the block proof-of-work, and it does not add chain weight;
+- it is not a ten-minute mining clock — an on-chain verifier must regenerate the
+  weights, so the width axis saturates long before that; the measured envelope is
+  published rather than asserted;
+- it is not a claim about AI usefulness. It is a deterministic inverse problem with
+  a cheap, exact verifier.
+
+The prover is a normal Rust binary, no node required:
+
+```bash
+cargo run --release -p hyphen-neural --bin bob-miner -- solve \
+  --seed <64-hex> --epoch 1 --hidden 512
+```
+
+## What this borrows from Kaspa, and what it does not
+
+Kaspa is the reference point for a mature, high-throughput PoW chain, and several
+of its engineering decisions are worth copying. Hyphen borrows the ones that are
+about process, not consensus:
+
+- **A separated template provider.** The node produces block templates, the pool
+  turns them into share work, and the miner only searches. Hyphen's `hyphen-transport`
+  template protocol follows the same split, with the node as the only source of
+  truth for headers and transaction sets.
+- **Explicit share accounting.** Pool modes (solo, prop, pplns, pps, pps+, fpps)
+  are named, fee-basis-points are explicit, and settlement is persisted before it
+  is reported. The pool never guesses a balance.
+- **Identity pinning per network.** Network magic, consensus-parameter hash and
+  genesis hash are published vectors; node, miner and pool derive them, the wallet
+  pins them with a drift test.
+- **Release discipline.** Reproducible builds, checksummed artifacts, a pinned
+  toolchain, nightly fuzzing and a strict dependency policy.
+
+It does not borrow Kaspa's consensus. Kaspa orders a block DAG with GHOSTDAG's
+blue set; Hyphen's H-BFM fuses a finite braid under a total rank and is explicitly
+not a GHOSTDAG or PHANTOM implementation. Kaspa's kHeavyHash is a digest-grinding
+ASIC workload; Hyphen's PoUW v3 is single-use Cunningham-witness search, and the
+neural challenge is a research contract on top, not a replacement for either.
+Copying Kaspa's hashing or its DAG ordering would have produced a worse copy of a
+chain that already exists.
+
 ## Run a node
 
 Install Rust 1.97.0 and a host C/C++ toolchain, then build with the committed
@@ -233,7 +298,7 @@ The current devnet v2 identity is:
 network=hyphen-devnet-v2
 network_magic=48594456
 consensus_params_hash=521f6cdc47f4424c1ea7b9f4d6770cf114f620cdff62958060f8c6953cb69de8
-genesis_hash=4c24528fa76c896299d5bfa6d7fee28bf39b21c0efd1684d4b8bafa9819bde55
+genesis_hash=5f7c144f0ef27880259b2429e46ef175685da679916fcc6b80c45f457465e32d
 ```
 
 Start a local node:

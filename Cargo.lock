@@ -1582,6 +1582,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyphen-neural"
+version = "0.1.1"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "hyphen-node"
 version = "0.1.1"
 dependencies = [
@@ -1741,6 +1748,7 @@ dependencies = [
  "blake3",
  "hyphen-core",
  "hyphen-crypto",
+ "hyphen-neural",
  "hyphen-token",
  "hyphen-wire",
  "rustbinary",

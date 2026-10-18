@@ -14,6 +14,13 @@ pub const VM_ABI_VERSION: u32 = 1;
 pub const MAX_CONTRACT_CODE_SIZE: usize = 512 * 1024;
 pub const MAX_MEMORY_PAGES: u64 = 64;
 
+/// Maximum nested wasm calls inside one invocation.
+///
+/// Wasmi executes a wasm call by descending into the callee, so the host stack it
+/// consumes is proportional to call depth. The limit is explicit, small, and far
+/// below what the thread stack of any supported host can serve.
+pub const MAX_CONTRACT_RECURSION_DEPTH: usize = 128;
+
 const ALLOWED_IMPORTS: &[&str] = &[
     "h_storage_read",
     "h_storage_write",
@@ -269,6 +276,7 @@ fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| {
         let mut config = Config::default();
         config.consume_fuel(true);
+        config.set_max_recursion_depth(MAX_CONTRACT_RECURSION_DEPTH);
         Engine::new(&config)
     })
 }

@@ -1,0 +1,13 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+# The chain rejects a contract whose memory has no declared maximum and caps it
+# at 64 pages (4 MiB). A 2 MiB stack covers the largest accepted profile: the
+# weight buffer alone is 132 KiB and every scratch buffer is at its maximum too.
+rustflags = [
+    "-C",
+    "link-arg=--max-memory=4194304",
+    "-C",
+    "link-arg=-zstack-size=2097152",
+]

@@ -1,0 +1,22 @@
+[package]
+name = "hyphen-neural"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic fixed-point neural challenge used by the Hyphen Alice contract and Bob miners"
+
+[features]
+default = ["std"]
+# The core (fixed-point arithmetic, PRNG, MLP forward pass, challenge
+# derivation, verifier, wire format) is allocation-free and builds for
+# `wasm32-unknown-unknown` without `std`. Only the trainer, the CLI and the
+# convenience wrappers need an allocator.
+std = ["dep:clap"]
+
+[dependencies]
+clap = { workspace = true, optional = true }
+
+[[bin]]
+name = "bob-miner"
+path = "src/bin/bob_miner.rs"
+required-features = ["std"]

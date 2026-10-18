@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 4 启用 AetherCompute PoUW v2：工作量来自确定性的科学计算加一次精确的 claim 搜索，验证方只复算一次场，而不是重复矿工的全部尝试。当前区块内核没有消费用户科研任务，因此只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
+Hyphen 是一条使用 Rust 实现的实验性隐私主链。区块版本 5 启用 PoUW v3：工作量来自对一次性 Cunningham 链见证的可验证搜索，验证方只做确定性的整数素性检验，而不是重复矿工的全部尝试。AetherCompute 的任务状态机已接入区块执行，但结果结算仍默认拒绝；因此这里只能准确称为科学计算工作证明，不能宣称已经实现任务支撑的生产级有用工作证明。
 
-本仓库包含节点、共识、状态转换、P2P、RPC、密码学库、WASM 执行和共识测试向量。HyphenMiner、HyphenPool、HyphenWallet 是独立仓库，拥有各自的锁文件、CI 和发布边界，但必须使用同一套链身份和 PoUW 测试向量。
+本仓库不包含 HyphenMiner、HyphenPool、HyphenWallet 三个产品。它们是独立的 Git 仓库，拥有各自的锁文件、CI、发布流程和安全边界；本签出可能在同目录并列放置 `HyphenMiner/`、`HyphenPool/` 与 `HyphenWallet/`，`.gitignore` 保证它们不进入本仓库历史。三者存在时，`scripts/devnet-smoke.ps1` 会构建并运行它们；不存在时会给出明确错误而不是静默跳过。协议变更可能需要三端协同升级，但这不会让它们成为本仓库的一部分。
 
 ## 当前边界
 
@@ -44,7 +44,7 @@ PoUW v3 改变了区块版本、共识参数和创世哈希；序列化切换到
 network=hyphen-devnet-v2
 network_magic=48594456
 consensus_params_hash=521f6cdc47f4424c1ea7b9f4d6770cf114f620cdff62958060f8c6953cb69de8
-genesis_hash=4c24528fa76c896299d5bfa6d7fee28bf39b21c0efd1684d4b8bafa9819bde55
+genesis_hash=5f7c144f0ef27880259b2429e46ef175685da679916fcc6b80c45f457465e32d
 block_version=5
 pouw_protocol_version=3
 ```
@@ -95,6 +95,36 @@ Miner 不携带任何代理引擎：`--via-proxy` 自己完成 SOCKS5 或 HTTP `
 Wasmer 间接引入的 `proc-macro-error2` 2.0.1 已彻底离开依赖图。上游从未发布修复其 `pub extern crate proc_macro;` 可见性问题的版本，因此移除需要它的运行时是唯一正确的解法。
 
 合约 gas 单位随运行时改变：指令 fuel 现在按 Wasmi 模型计费，而不是 Wasmer 的每操作一点。主机侧计费（`GAS_STORAGE_READ`、`GAS_HASH`、`GAS_LOG` 等）保持不变。任何按 PoUW v1 的 gas 数值调过的合约预算都必须重新测量。
+
+workspace 显式启用了 Wasmi 的 `auto-dispatch` 特性。缺少它时引擎总是选择 tail-call 后端；在 `opt-level` 0/1 下 LLVM 无法把分派优化成尾调用，于是每执行一条指令都会推高宿主栈，长时间运行的合约会直接把进程打崩。`auto-dispatch` 正是为「LLVM 无法做尾调用优化」这一情况选择循环后端；`MAX_CONTRACT_RECURSION_DEPTH` 则给剩下的调用深度封顶。两点都由 `crates/hyphen-vm/tests` 中的合约测试钉住。
+
+## 神经密码学挑战（研究合约）
+
+仓库同时提供 Alice/Bob 神经挑战：链上合约公布一个随机两层感知机 `A` 与目标 `y* = A(x*)`，Rust 求解器搜索原像 `x`。验证是一次定点前向传播；求解是 Q32.32 整数上的 Levenberg–Marquardt。设计、为什么判定必须是求逆而不是「学习 Alice 权重」、实测成本边界、合约 ABI 与待办事项都在 [docs/research/neural-cryptography.md](docs/research/neural-cryptography.md)。
+
+需要讲清楚的三点：
+
+- 它不是区块工作量证明，也不增加链权重；
+- 它不是十分钟出块时钟——链上验证必须重新生成权重，宽度轴在到达十分钟之前就会饱和；实测边界如实公布，不做承诺；
+- 它不是「AI 有用性」主张。它是一个确定性逆问题，配一个便宜且精确的验证器。
+
+求解器是普通 Rust 二进制，不需要跑节点：
+
+```bash
+cargo run --release -p hyphen-neural --bin bob-miner -- solve \
+  --seed <64-hex> --epoch 1 --hidden 512
+```
+
+## 从 Kaspa 借鉴什么，不借鉴什么
+
+Kaspa 是高吞吐 PoW 链的成熟参照。Hyphen 借鉴的是工程流程，而不是共识：
+
+- **模板提供者分离**：节点产出区块模板，矿池把模板转成分片工作，矿工只负责搜索。`hyphen-transport` 的模板协议遵循同样的分层，区块头与交易集合只有一个真源——节点。
+- **明确的分片记账**：solo、prop、pplns、pps、pps+、fpps 模式具名，费率以基点显式表示，结算先落盘再对外报告；矿池不猜余额。
+- **按网络钉定身份**：network magic、共识参数哈希、创世哈希都是公开向量；节点、矿工、矿池各自派生，钱包钉住并用漂移测试兜底。
+- **发布纪律**：可复现构建、带校验和的产物、钉定工具链、夜间 fuzz 与严格的依赖策略。
+
+不借鉴 Kaspa 的共识。Kaspa 用 GHOSTDAG 的 blue set 给区块 DAG 排序；Hyphen 的 H-BFM 在固定 braid 上按全序 rank 融合，明确不是 GHOSTDAG 或 PHANTOM 实现。Kaspa 的 kHeavyHash 是摘要研磨的 ASIC 工作量；Hyphen 的 PoUW v3 是一次性 Cunningham 见证搜索，神经挑战是叠加其上的研究合约，而不是二者的替代品。照抄 Kaspa 的哈希或 DAG 排序，只会得到一条已有链的更差副本。
 
 ## 许可证
 

@@ -1,0 +1,24 @@
+[package]
+name = "alice-neural-contract"
+version = "0.1.1"
+edition = "2021"
+license = "PolyForm-Strict-1.0.0"
+description = "On-chain Alice challenge contract for the Hyphen neural proof-of-work profile"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The contract compiles the same verification code as every miner. Default
+# features are disabled so `std` and the prover never enter the WASM module.
+hyphen-neural = { path = "../../crates/hyphen-neural", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+overflow-checks = true
