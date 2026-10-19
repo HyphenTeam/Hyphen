@@ -28,6 +28,23 @@ use hyphen_vm::{Contract, ContractAddress, VmTransaction};
 use crate::validator::BlockValidator;
 use hyphen_core::genesis::{build_genesis_block, genesis_epoch_seed};
 
+/// Page cache a node gives its storage engine.
+///
+/// `sled` defaults to one gigabyte, which is larger than the entire memory of a
+/// small host. 64 MiB keeps the hot index resident while leaving room for the
+/// runtime, the explorer and whatever else shares the machine; the node exposes
+/// the knob as `--db-cache-mb`.
+pub const DEFAULT_DB_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+pub const MIN_DB_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
+fn open_db(path: &str, cache_bytes: u64) -> Result<sled::Db, CoreError> {
+    sled::Config::new()
+        .path(path)
+        .cache_capacity(cache_bytes.max(MIN_DB_CACHE_BYTES))
+        .open()
+        .map_err(|e| CoreError::Storage(e.to_string()))
+}
+
 pub struct Blockchain {
     pub cfg: ChainConfig,
     pub db: sled::Db,
@@ -36,14 +53,11 @@ pub struct Blockchain {
     pub nullifiers: NullifierSet,
     pub commitment_tree: RwLock<PersistentCommitmentTree>,
     pub branch_blocks: BranchBlockArchive,
-    /// Legacy H-WES latest-state tree exposed by the bounded proof service.
     pub wes_latest: PersistentSparseMerkleTree,
-    /// Content-addressed storage used by the proof/blob request protocol.
     pub proof_blobs: AuthenticatedBlobStore,
     pub compute_state: RwLock<ComputeStateStore>,
     pub vm_state: RwLock<VmStateStore>,
     pub wes_state: RwLock<WesStateStore>,
-    /// Single-use PoUW witness set. Mutated only while `transition` is held.
     pub witnesses: WitnessSet,
     pub reorg: ReorgCoordinator,
     compute_verifier: Arc<dyn ProofVerifier>,
@@ -52,10 +66,20 @@ pub struct Blockchain {
 
 impl Blockchain {
     pub fn open(path: &str, cfg: ChainConfig) -> Result<Self, CoreError> {
-        let db = sled::open(path).map_err(|e| CoreError::Storage(e.to_string()))?;
-        // Only the one-way work circuit may settle by default: the inverse
-        // challenge derives its own answer from the public seed, so a default
-        // node must never pay for it.
+        Self::open_with_cache(path, cfg, DEFAULT_DB_CACHE_BYTES)
+    }
+
+    /// Open with an explicit page-cache budget.
+    ///
+    /// `sled`'s default is one gigabyte. A node that shares a 2 GiB host with a
+    /// pool, a tunnel and a shell cannot afford to let the storage engine decide
+    /// the process's memory ceiling, so the caller sets it.
+    pub fn open_with_cache(
+        path: &str,
+        cfg: ChainConfig,
+        cache_bytes: u64,
+    ) -> Result<Self, CoreError> {
+        let db = open_db(path, cache_bytes)?;
         Self::open_db_with_verifier(db, cfg, Arc::new(NeuralWorkVerifier))
     }
 
@@ -71,7 +95,7 @@ impl Blockchain {
         cfg: ChainConfig,
         verifier: Arc<dyn ProofVerifier>,
     ) -> Result<Self, CoreError> {
-        let db = sled::open(path).map_err(|e| CoreError::Storage(e.to_string()))?;
+        let db = open_db(path, DEFAULT_DB_CACHE_BYTES)?;
         Self::open_db_with_verifier(db, cfg, verifier)
     }
 
@@ -401,18 +425,14 @@ impl Blockchain {
             // any other block.
             return Ok(());
         }
-        let mut claimed = Vec::with_capacity(block.pow_witnesses.len());
-        for witness in &block.pow_witnesses {
-            match self.witnesses.insert(*witness, block.header.height) {
-                Ok(_) => claimed.push(*witness),
-                Err(error) => {
-                    for rollback in claimed {
-                        let _ = self.witnesses.remove(rollback);
-                    }
-                    return Err(CoreError::Storage(error.to_string()));
-                }
-            }
-        }
+        let claims: Vec<(u64, u64)> = block
+            .pow_witnesses
+            .iter()
+            .map(|witness| (*witness, block.header.height))
+            .collect();
+        self.witnesses
+            .insert_batch(&claims)
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
         Ok(())
     }
 
@@ -422,14 +442,14 @@ impl Blockchain {
         if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
             return;
         }
-        for witness in &block.pow_witnesses {
-            if let Err(error) = self.witnesses.remove(*witness) {
-                tracing::error!(
-                    witness,
-                    height = block.header.height,
-                    "failed to release witness: {error}"
-                );
-            }
+        if block.pow_witnesses.is_empty() {
+            return;
+        }
+        if let Err(error) = self.witnesses.remove_batch(&block.pow_witnesses) {
+            tracing::error!(
+                height = block.header.height,
+                "failed to release witnesses: {error}"
+            );
         }
     }
 

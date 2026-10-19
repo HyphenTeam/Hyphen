@@ -18,12 +18,20 @@
 use hyphen_crypto::Hash256;
 use thiserror::Error;
 
-use crate::persistent_smt::{PersistentSmtError, PersistentSparseMerkleTree};
+use crate::persistent_smt::{PersistentSmtError, PersistentSparseMerkleTree, SmtMutation};
 
 const TREE_NAME: &str = "pow_witness_smt_v1";
 const NAMESPACE_DOMAIN: &[u8] = b"HYPHEN_POW_WITNESS_NAMESPACE_V1";
 const KEY_DOMAIN: &[u8] = b"Hyphen/PoW/witness/v1";
 const VALUE_DOMAIN: &[u8] = b"Hyphen/PoW/witness-height/v1";
+
+/// Witnesses claimed per storage transaction.
+///
+/// Each witness touches a full root-to-leaf path, so the transaction overlay
+/// grows by roughly 256 nodes per witness. A block at the difficulty ceiling
+/// holds thousands of witnesses; committing them in one transaction buffers the
+/// entire overlay and dwarfed the node's memory budget in measurement.
+const WITNESS_CLAIM_CHUNK: usize = 128;
 
 #[derive(Debug, Error)]
 pub enum WitnessSetError {
@@ -68,8 +76,91 @@ impl WitnessSet {
         Ok(self.tree.insert(witness_key(witness), value(height))?)
     }
 
+    /// Claims a whole block's witness list in one storage transaction.
+    ///
+    /// A block at the difficulty ceiling carries thousands of witnesses. One
+    /// transaction per witness rewrites the shared upper levels of the tree
+    /// thousands of times and, because each transaction is flushed, performs
+    /// one fsync per witness. On a small host that turns a single block into
+    /// minutes of disk traffic: the node stops answering, the tunnel times out,
+    /// and the machine looks like it crashed.
+    ///
+    /// The batch is chunked because a single transaction holding every node of
+    /// a 3000-witness block buffers the whole overlay in memory; the chunk
+    /// bounds that working set while still collapsing thousands of flushes into
+    /// a handful.
+    pub fn insert_batch(&self, claims: &[(u64, u64)]) -> Result<Hash256, WitnessSetError> {
+        if claims.is_empty() {
+            return Ok(self.root());
+        }
+
+        let mut seen = std::collections::HashSet::with_capacity(claims.len());
+        for (witness, _) in claims {
+            if !seen.insert(*witness) {
+                return Err(WitnessSetError::AlreadyClaimed(*witness));
+            }
+        }
+
+        let mut root = self.root();
+        let mut claimed: Vec<u64> = Vec::with_capacity(claims.len());
+        for chunk in claims.chunks(WITNESS_CLAIM_CHUNK) {
+            let mut mutations = Vec::with_capacity(chunk.len());
+            for (witness, height) in chunk {
+                if self.tree.get(witness_key(*witness))?.is_some() {
+                    self.rollback_claims(&claimed);
+                    return Err(WitnessSetError::AlreadyClaimed(*witness));
+                }
+                mutations.push(SmtMutation {
+                    key: witness_key(*witness),
+                    value: Some(value(*height)),
+                });
+            }
+            match self.tree.apply_batch(&mutations) {
+                Ok(next) => {
+                    root = next;
+                    claimed.extend(chunk.iter().map(|(witness, _)| *witness));
+                }
+                Err(error) => {
+                    self.rollback_claims(&claimed);
+                    return Err(WitnessSetError::from(error));
+                }
+            }
+        }
+        Ok(root)
+    }
+
+    /// Best-effort undo of a partially applied claim batch. Failure leaves the
+    /// set stricter than the chain, which is fail-closed.
+    fn rollback_claims(&self, claimed: &[u64]) {
+        for chunk in claimed.chunks(WITNESS_CLAIM_CHUNK) {
+            let mutations: Vec<SmtMutation> = chunk
+                .iter()
+                .map(|witness| SmtMutation {
+                    key: witness_key(*witness),
+                    value: None,
+                })
+                .collect();
+            let _ = self.tree.apply_batch(&mutations);
+        }
+    }
+
     pub fn remove(&self, witness: u64) -> Result<Hash256, WitnessSetError> {
         Ok(self.tree.remove(witness_key(witness))?)
+    }
+
+    /// Releases a whole block's witness list in one storage transaction.
+    pub fn remove_batch(&self, witnesses: &[u64]) -> Result<Hash256, WitnessSetError> {
+        if witnesses.is_empty() {
+            return Ok(self.root());
+        }
+        let mutations: Vec<SmtMutation> = witnesses
+            .iter()
+            .map(|witness| SmtMutation {
+                key: witness_key(*witness),
+                value: None,
+            })
+            .collect();
+        Ok(self.tree.apply_batch(&mutations)?)
     }
 }
 
@@ -158,9 +249,6 @@ mod tests {
 
     #[test]
     fn sets_are_namespaced_by_chain_identity() {
-        // Two identities cannot share one tree: the sparse Merkle tree refuses a
-        // namespace change on an existing tree, so each chain identity owns its
-        // own database file.
         let mainnet_db = sled::Config::new().temporary(true).open().unwrap();
         let devnet_db = sled::Config::new().temporary(true).open().unwrap();
         let mainnet = WitnessSet::open(&mainnet_db, Hash256::from_bytes([1u8; 32])).unwrap();
@@ -170,7 +258,6 @@ mod tests {
         assert!(!devnet.contains(89).unwrap());
         assert_ne!(mainnet.root(), devnet.root());
 
-        // Reopening the same identity on the same database keeps the claims.
         let reopened = WitnessSet::open(&mainnet_db, Hash256::from_bytes([1u8; 32])).unwrap();
         assert!(reopened.contains(89).unwrap());
         assert_eq!(reopened.root(), mainnet.root());
