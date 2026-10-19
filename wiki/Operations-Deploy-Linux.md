@@ -95,6 +95,36 @@ sudoedit /etc/hyphen/node.env
   because it cannot be authenticated. Empty is valid on devnet/testnet;
   **mainnet refuses to start without at least one** (a first seed node uses
   `--allow-isolated-mainnet` manually instead).
+- `HYPHEN_DB_CACHE_MB` — page cache for the storage engine. `sled` would
+  otherwise reserve 1 GiB on its own. Default 64, floor 16.
+
+The unit also caps the service's memory (`MemoryMax=1600M`). That value is
+already in `deploy/systemd/hyphen-node.service`, in the `[Service]` section,
+so installing the unit as shown in §3 is enough. If you would rather keep your
+own copy of the unit untouched, override just that key:
+
+```bash
+sudo systemctl edit hyphen-node        # creates /etc/systemd/system/hyphen-node.service.d/override.conf
+```
+
+```ini
+[Service]
+MemoryMax=1200M
+```
+
+Then apply and confirm:
+
+```bash
+sudo systemctl daemon-reload
+systemctl show hyphen-node -p MemoryMax -p MemoryHigh -p MemoryCurrent
+```
+
+The ceiling is a runaway guard, not a budget: the node needs well under 200 MiB
+with a 64 MiB cache. When the limit is reached this service is the one the
+kernel reclaims from, and `Restart=on-failure` brings it back — a node restart
+is a better outcome than the OOM killer taking `cloudflared` or the pool at
+random. `MemoryHigh` throttles instead of killing and is the gentler setting for
+a host that runs other services.
 
 The unit keeps the RPC, the template provider and the explorer on loopback and
 binds only the P2P port publicly. Leave it that way: those three services have
@@ -413,6 +443,30 @@ sudoedit /etc/hyphen/node.env
 - `HYPHEN_P2P_PORT`——必须与第 5 节的防火墙规则一致。各网络默认值：mainnet `18334`、testnet `38334`、devnet `48334`。
 - `HYPHEN_RPC_PORT`——mainnet `18333`、testnet `38333`、devnet `48333`。
 - `HYPHEN_BOOT_NODES`——逗号分隔的 multiaddr，每个都以 `/p2p/<peer-id>` 结尾。没有 peer id 的地址会在启动时被拒绝，因为它无法被认证。devnet/testnet 可以为空；**mainnet 没有至少一个 boot node 就拒绝启动**（首个种子节点改为手工加 `--allow-isolated-mainnet`）。
+- `HYPHEN_DB_CACHE_MB`——存储引擎页缓存。`sled` 自己的默认值是 1 GiB。默认 64，下限 16。
+
+单元文件还给了服务一个内存上限（`MemoryMax=1600M`），位置就在
+`deploy/systemd/hyphen-node.service` 的 `[Service]` 段里——按第 3 节安装单元文件即可生效。
+如果你想保留自己对单元文件的修改，只覆盖这一个键：
+
+```bash
+sudo systemctl edit hyphen-node        # 生成 /etc/systemd/system/hyphen-node.service.d/override.conf
+```
+
+```ini
+[Service]
+MemoryMax=1200M
+```
+
+然后生效并确认：
+
+```bash
+sudo systemctl daemon-reload
+systemctl show hyphen-node -p MemoryMax -p MemoryHigh -p MemoryCurrent
+```
+
+这个上限是防失控的护栏，不是预算：配 64 MiB 缓存时节点实际只需不到 200 MiB。触顶时被回收的是这个服务，`Restart=on-failure` 会把它拉起来——节点自己重启，远好过 OOM killer
+随机挑中 `cloudflared` 或矿池。`MemoryHigh` 是软上限，只节流不杀进程，适合与其他服务共用的机器。
 
 单元文件把 RPC、模板提供者和区块浏览器留在回环地址，只公开 P2P 端口。请保持这样：这三个服务目前既没有认证，也没有限流。
 

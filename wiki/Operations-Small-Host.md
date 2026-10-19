@@ -95,8 +95,10 @@ same way a transfer does.
 
 - Node, pool and tunnel on the 4 vCPU / 2 GiB box.
 - Miner elsewhere.
-- `--db-cache-mb 64`, `MemoryMax=1600M` in the node unit so the kernel kills the
-  node before it kills the tunnel.
+- `--db-cache-mb 64` and the unit's `MemoryMax=1600M` (already in
+  `deploy/systemd/hyphen-node.service`; override with `systemctl edit hyphen-node`
+  if your host needs a different ceiling) so the kernel reclaims from the node
+  rather than from the tunnel.
 - Cloudflare tunnel as its own service, see
   `deploy/systemd/cloudflared.service.example`.
 - Alert on `/healthz` (liveness) and on `df` for the data directory.

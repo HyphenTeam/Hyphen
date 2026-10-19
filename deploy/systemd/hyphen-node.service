@@ -58,6 +58,20 @@ Restart=on-failure
 RestartSec=5s
 
 LimitNOFILE=65536
+
+# Hard memory ceiling for this service.
+#
+# The node needs well under 200 MiB at the devnet witness ceiling with a 64 MiB
+# storage cache, so this is a runaway guard rather than a budget: without it an
+# unbounded allocation makes the kernel pick an OOM victim at random, and that
+# victim is often cloudflared, which then looks like a tunnel outage. With it,
+# this service is the one that dies, and Restart=on-failure brings it back.
+#
+# Raise it on a host that runs a larger cache (`HYPHEN_DB_CACHE_MB`) or a chain
+# with heavier state. `MemoryHigh` (below `MemoryMax`) throttles instead of
+# killing and is the gentler knob for a shared machine.
+MemoryMax=1600M
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
