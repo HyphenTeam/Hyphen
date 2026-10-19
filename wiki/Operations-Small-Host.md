@@ -91,6 +91,55 @@ fee-density order. A transaction that pays more per byte is included before one
 that pays less, which is what makes a contract deployment compete for space the
 same way a transfer does.
 
+## When no block appears
+
+The pool answers "what is the mining loop doing right now" in one read:
+
+```bash
+curl -fsS http://127.0.0.1:8081/api/pool/status
+```
+
+```json
+{
+  "status": "ok",
+  "uptime_secs": 18,
+  "connected_miners": 2,
+  "claimed_witnesses": 1727,
+  "template_refresh_failures": 0,
+  "job": {
+    "job_id": "dae57f02ddc98421257c610c78f994cffcf2a2b88e3f2cdf077a4314268e39b1",
+    "height": 9, "block_difficulty": 1357, "share_difficulty": 10,
+    "transactions": 0, "issued_at": 1792411399, "age_secs": 2
+  },
+  "shares": {
+    "accepted": 18, "rejected": 11,
+    "last_rejection": "stale job", "last_rejection_age_secs": 15
+  },
+  "blocks": { "submitted": 8, "accepted": 8, "rejected": 0 },
+  "last_block": {
+    "height": 8, "hash": "5df26a4d…", "accepted": true, "age_secs": 2, "detail": ""
+  }
+}
+```
+
+That sample is two miners on one pool, eighteen seconds after start.
+
+| What it shows | What it means |
+| --- | --- |
+| `connected_miners: 0` | Nothing authenticated. Check the miner's `--pool` host/port and that the pool is listening on the interface the miner reaches — not the node, not the tunnel. |
+| `job` is absent | No template has arrived from the node yet. The pool does nothing at all in this state. |
+| `job.age_secs` pinned well above the 30 s block target, `blocks.accepted` flat | The pool is still handing out a job the node has already replaced. Look at the node and the path to it (`--node`), not at the miners. |
+| `connected_miners > 0`, `shares.accepted` flat | Miners are attached but nothing is landing: share difficulty set beyond what the hardware can reach in a block time. |
+| `last_rejection: "stale job"` | A candidate arrived for a job another miner had already turned into a block. Normal in bursts, especially on a devnet ramp where the first blocks are near-instant; a constant stream means miners are racing on a job that should have been replaced. |
+| `last_rejection: "witness N was already claimed by another miner on this pool"` | Two miners scanned the same witness lane. Fixed in the current miner: each process takes a private lane derived from `max_chain_origin(chain_length)`. |
+| `blocks.submitted > 0`, `blocks.accepted: 0` | The node refused every block. `last_block.detail` carries the node's own reason — read that before touching anything else. |
+| `template_refresh_failures` climbing | The node did not serve a template after a block was accepted. The pool retries four times and then waits for the node push; a persistent count is a node problem. |
+| `claimed_witnesses` growing without bounds relative to chain length | Witnesses are being credited but not consumed by blocks: the pool is accepting shares for a chain that is not advancing. |
+
+`shares.accepted` counts candidate submissions this pool answered; it is not a
+hashrate estimate. `/api/pool/wallet/{wallet}/balance` is still the authority on
+what a wallet has earned.
+
 ## Recommended layout
 
 - Node, pool and tunnel on the 4 vCPU / 2 GiB box.
