@@ -46,6 +46,14 @@ const INDEX_TREE_PREFIX: &str = "pow_witness_index_v2";
 /// batch in memory. A chunk bounds both.
 const CLAIM_CHUNK: usize = 128;
 
+/// Tree the previous 256-level representation used.
+///
+/// Claims are not migrated: the old tree stores hashed keys and node values,
+/// not the witnesses themselves. Reusing a database that still holds them would
+/// start the node with an empty claim index and let it accept witnesses this
+/// chain has already spent, so the mismatch is refused instead.
+const LEGACY_SMT_TREE: &str = "pow_witness_smt_v1";
+
 #[derive(Debug, Error)]
 pub enum WitnessSetError {
     #[error("witness storage: {0}")]
@@ -70,9 +78,23 @@ impl WitnessSet {
         tree_name.push_str(INDEX_TREE_PREFIX);
         tree_name.push('_');
         tree_name.push_str(&hyphen_crypto::hex_encode(&chain_id.as_bytes()[..8]));
-        Ok(Self {
-            tree: db.open_tree(tree_name)?,
-        })
+        let tree = db.open_tree(tree_name)?;
+
+        if tree.is_empty() {
+            let legacy = db.open_tree(LEGACY_SMT_TREE)?;
+            if !legacy.is_empty() {
+                return Err(WitnessSetError::Storage(format!(
+                    "this database holds {} entries of the legacy 256-level witness set and \
+                     nothing in the claim index; those claims cannot be migrated because the \
+                     old tree stores hashed keys, not witnesses. Resync {} from genesis into a \
+                     fresh data directory",
+                    legacy.len(),
+                    chain_id,
+                )));
+            }
+        }
+
+        Ok(Self { tree })
     }
 
     /// Number of claimed witnesses. Diagnostics and operator output only.
@@ -253,6 +275,26 @@ mod tests {
             reopened.insert(1, 8),
             Err(WitnessSetError::AlreadyClaimed(1))
         ));
+    }
+
+    #[test]
+    fn a_database_holding_the_legacy_set_is_refused_instead_of_reset() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let legacy = db.open_tree(LEGACY_SMT_TREE).unwrap();
+        legacy
+            .insert(b"some-hashed-leaf", b"some-node-value")
+            .unwrap();
+
+        match WitnessSet::open(&db, Hash256::from_bytes([4u8; 32])) {
+            Err(WitnessSetError::Storage(message)) => {
+                assert!(
+                    message.contains("legacy 256-level witness set"),
+                    "the operator must be told why the node refuses to start: {message}"
+                );
+            }
+            Err(other) => panic!("expected a storage refusal, got {other}"),
+            Ok(_) => panic!("expected a refusal, got an opened set"),
+        }
     }
 
     #[test]
