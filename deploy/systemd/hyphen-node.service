@@ -22,6 +22,9 @@ Environment=HYPHEN_NETWORK=devnet
 Environment=HYPHEN_P2P_PORT=48334
 Environment=HYPHEN_RPC_PORT=48333
 Environment=HYPHEN_BOOT_NODES=
+# Page cache for the storage engine. sled's own default is 1 GiB, which is
+# larger than a small host's entire memory budget.
+Environment=HYPHEN_DB_CACHE_MB=64
 Environment=RUST_LOG=info
 EnvironmentFile=-/etc/hyphen/node.env
 
@@ -44,6 +47,7 @@ ExecStart=/opt/hyphen/bin/hyphen-node \
     --rpc-bind 127.0.0.1:${HYPHEN_RPC_PORT} \
     --template-bind 127.0.0.1:3350 \
     --explorer-bind 127.0.0.1:8080 \
+    --db-cache-mb ${HYPHEN_DB_CACHE_MB} \
     --boot-nodes ${HYPHEN_BOOT_NODES}
 
 # SIGTERM is handled: the node stops, flushes sled and exits. TimeoutStopSec
