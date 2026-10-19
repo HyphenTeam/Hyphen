@@ -1,37 +1,50 @@
-//! Single-use proof-of-work witness set.
+//! Single-use proof-of-work witness index.
 //!
 //! PoUW v3 accepts a chain witness exactly once. That is the whole anti-replay
 //! argument of the workload: a precomputed pool of prime chains is worthless
 //! because each entry can be spent a single time, so total work is conserved
 //! and precomputation degenerates into mining in advance.
 //!
-//! The set is a sparse Merkle tree keyed by the witness, so membership,
-//! insertion, removal and the accumulated root are all `O(log n)`. The root is
-//! what the block header commits to, which is why a lightweight verifier can
-//! follow the dataset without holding it.
+//! ## What this store is, and is not
 //!
-//! Every mutation happens inside the exclusive block-transition lock held by
-//! the chain: the set is one more store in the atomic transition, and a reorg
-//! removes exactly the witnesses of the reverted blocks because the undo record
-//! lists them.
+//! The block header commits the witnesses it spends through `pow_commitment`,
+//! which is a root over that block's exact list. This store exists only to answer
+//! one question locally: *has this witness been spent before?* No header field,
+//! state root or fork-choice weight depends on it, so its representation is a
+//! storage decision rather than a consensus rule. That matters, because the
+//! obvious representation is ruinous.
+//!
+//! A 256-level sparse Merkle tree over witness hashes stores roughly 245 nodes
+//! per key. Measured on a devnet block at difficulty 3294 that came to about
+//! 15 KiB of disk per witness, or 45 MiB per block — nine times the block
+//! itself, and the reason a 40 GB disk filled after a few hundred blocks.
+//!
+//! The same question is answered here by one entry per witness: the witness as
+//! an eight-byte big-endian key, its claiming height as an eight-byte value.
+//! Membership is a point lookup, claiming a block is one transaction per chunk,
+//! and a reorg removes exactly the witnesses it listed.
+//!
+//! ## Failure behaviour
+//!
+//! Claiming is fail-closed in both directions: a duplicate inside the batch is
+//! rejected before any write, and a chunk that conflicts with an existing claim
+//! rolls back the chunks already applied by this call. Losing a claim costs
+//! liveness; accepting a spent witness would be unsound.
 
 use hyphen_crypto::Hash256;
+use sled::transaction::{ConflictableTransactionError, TransactionError};
 use thiserror::Error;
 
-use crate::persistent_smt::{PersistentSmtError, PersistentSparseMerkleTree, SmtMutation};
+/// Tree prefix. The chain identity is appended so two networks can never share
+/// a claim set even if they are pointed at the same database file.
+const INDEX_TREE_PREFIX: &str = "pow_witness_index_v2";
 
-const TREE_NAME: &str = "pow_witness_smt_v1";
-const NAMESPACE_DOMAIN: &[u8] = b"HYPHEN_POW_WITNESS_NAMESPACE_V1";
-const KEY_DOMAIN: &[u8] = b"Hyphen/PoW/witness/v1";
-const VALUE_DOMAIN: &[u8] = b"Hyphen/PoW/witness-height/v1";
-
-/// Witnesses claimed per storage transaction.
+/// Witnesses claimed per transaction.
 ///
-/// Each witness touches a full root-to-leaf path, so the transaction overlay
-/// grows by roughly 256 nodes per witness. A block at the difficulty ceiling
-/// holds thousands of witnesses; committing them in one transaction buffers the
-/// entire overlay and dwarfed the node's memory budget in measurement.
-const WITNESS_CLAIM_CHUNK: usize = 128;
+/// A block can carry thousands of witnesses. One transaction per witness costs
+/// a flush per witness; one transaction for the whole block buffers the entire
+/// batch in memory. A chunk bounds both.
+const CLAIM_CHUNK: usize = 128;
 
 #[derive(Debug, Error)]
 pub enum WitnessSetError {
@@ -41,57 +54,45 @@ pub enum WitnessSetError {
     AlreadyClaimed(u64),
 }
 
-impl From<PersistentSmtError> for WitnessSetError {
-    fn from(error: PersistentSmtError) -> Self {
+impl From<sled::Error> for WitnessSetError {
+    fn from(error: sled::Error) -> Self {
         Self::Storage(error.to_string())
     }
 }
 
 pub struct WitnessSet {
-    tree: PersistentSparseMerkleTree,
+    tree: sled::Tree,
 }
 
 impl WitnessSet {
     pub fn open(db: &sled::Db, chain_id: Hash256) -> Result<Self, WitnessSetError> {
-        let namespace = hyphen_crypto::blake3_hash_many(&[NAMESPACE_DOMAIN, chain_id.as_bytes()]);
+        let mut tree_name = String::with_capacity(INDEX_TREE_PREFIX.len() + 17);
+        tree_name.push_str(INDEX_TREE_PREFIX);
+        tree_name.push('_');
+        tree_name.push_str(&hyphen_crypto::hex_encode(&chain_id.as_bytes()[..8]));
         Ok(Self {
-            tree: PersistentSparseMerkleTree::open(db, TREE_NAME, namespace)?,
+            tree: db.open_tree(tree_name)?,
         })
     }
 
-    pub fn root(&self) -> Hash256 {
-        self.tree.root().unwrap_or(Hash256::ZERO)
+    /// Number of claimed witnesses. Diagnostics and operator output only.
+    pub fn claimed_count(&self) -> u64 {
+        self.tree.len() as u64
     }
 
     pub fn contains(&self, witness: u64) -> Result<bool, WitnessSetError> {
-        Ok(self.tree.get(witness_key(witness))?.is_some())
+        Ok(self.tree.contains_key(key(witness))?)
     }
 
-    /// Claims a witness. Claiming one twice is the single failure this store
-    /// exists to prevent, so it is an error rather than an overwrite.
-    pub fn insert(&self, witness: u64, height: u64) -> Result<Hash256, WitnessSetError> {
-        if self.contains(witness)? {
-            return Err(WitnessSetError::AlreadyClaimed(witness));
-        }
-        Ok(self.tree.insert(witness_key(witness), value(height))?)
+    /// Claims a single witness.
+    pub fn insert(&self, witness: u64, height: u64) -> Result<(), WitnessSetError> {
+        self.insert_batch(&[(witness, height)])
     }
 
-    /// Claims a whole block's witness list in one storage transaction.
-    ///
-    /// A block at the difficulty ceiling carries thousands of witnesses. One
-    /// transaction per witness rewrites the shared upper levels of the tree
-    /// thousands of times and, because each transaction is flushed, performs
-    /// one fsync per witness. On a small host that turns a single block into
-    /// minutes of disk traffic: the node stops answering, the tunnel times out,
-    /// and the machine looks like it crashed.
-    ///
-    /// The batch is chunked because a single transaction holding every node of
-    /// a 3000-witness block buffers the whole overlay in memory; the chunk
-    /// bounds that working set while still collapsing thousands of flushes into
-    /// a handful.
-    pub fn insert_batch(&self, claims: &[(u64, u64)]) -> Result<Hash256, WitnessSetError> {
+    /// Claims a block's witness list, chunked and atomic per chunk.
+    pub fn insert_batch(&self, claims: &[(u64, u64)]) -> Result<(), WitnessSetError> {
         if claims.is_empty() {
-            return Ok(self.root());
+            return Ok(());
         }
 
         let mut seen = std::collections::HashSet::with_capacity(claims.len());
@@ -101,89 +102,88 @@ impl WitnessSet {
             }
         }
 
-        let mut root = self.root();
         let mut claimed: Vec<u64> = Vec::with_capacity(claims.len());
-        for chunk in claims.chunks(WITNESS_CLAIM_CHUNK) {
-            let mut mutations = Vec::with_capacity(chunk.len());
-            for (witness, height) in chunk {
-                if self.tree.get(witness_key(*witness))?.is_some() {
-                    self.rollback_claims(&claimed);
-                    return Err(WitnessSetError::AlreadyClaimed(*witness));
-                }
-                mutations.push(SmtMutation {
-                    key: witness_key(*witness),
-                    value: Some(value(*height)),
-                });
-            }
-            match self.tree.apply_batch(&mutations) {
-                Ok(next) => {
-                    root = next;
-                    claimed.extend(chunk.iter().map(|(witness, _)| *witness));
-                }
+        for chunk in claims.chunks(CLAIM_CHUNK) {
+            match claim_chunk(&self.tree, chunk) {
+                Ok(()) => claimed.extend(chunk.iter().map(|(witness, _)| *witness)),
                 Err(error) => {
-                    self.rollback_claims(&claimed);
-                    return Err(WitnessSetError::from(error));
+                    self.release(&claimed)?;
+                    return Err(error);
                 }
             }
         }
-        Ok(root)
+        Ok(())
     }
 
-    /// Best-effort undo of a partially applied claim batch. Failure leaves the
-    /// set stricter than the chain, which is fail-closed.
-    fn rollback_claims(&self, claimed: &[u64]) {
-        for chunk in claimed.chunks(WITNESS_CLAIM_CHUNK) {
-            let mutations: Vec<SmtMutation> = chunk
-                .iter()
-                .map(|witness| SmtMutation {
-                    key: witness_key(*witness),
-                    value: None,
-                })
-                .collect();
-            let _ = self.tree.apply_batch(&mutations);
+    pub fn remove(&self, witness: u64) -> Result<(), WitnessSetError> {
+        self.remove_batch(&[witness])
+    }
+
+    /// Releases a block's witnesses, chunked and atomic per chunk.
+    pub fn remove_batch(&self, witnesses: &[u64]) -> Result<(), WitnessSetError> {
+        self.release(witnesses)
+    }
+
+    /// Best-effort release used by reorgs and by a failed claim.
+    ///
+    /// A failure here leaves the set stricter than the chain — the witness
+    /// stays claimed although no block spends it — which costs liveness for one
+    /// candidate and never admits a spent witness.
+    fn release(&self, witnesses: &[u64]) -> Result<(), WitnessSetError> {
+        for chunk in witnesses.chunks(CLAIM_CHUNK) {
+            let result: Result<(), TransactionError<()>> = self.tree.transaction(|tx| {
+                for witness in chunk {
+                    tx.remove(key(*witness).as_slice())?;
+                }
+                Ok(())
+            });
+            if let Err(TransactionError::Storage(error)) = result {
+                return Err(WitnessSetError::Storage(error.to_string()));
+            }
         }
-    }
-
-    pub fn remove(&self, witness: u64) -> Result<Hash256, WitnessSetError> {
-        Ok(self.tree.remove(witness_key(witness))?)
-    }
-
-    /// Releases a whole block's witness list in one storage transaction.
-    pub fn remove_batch(&self, witnesses: &[u64]) -> Result<Hash256, WitnessSetError> {
-        if witnesses.is_empty() {
-            return Ok(self.root());
-        }
-        let mutations: Vec<SmtMutation> = witnesses
-            .iter()
-            .map(|witness| SmtMutation {
-                key: witness_key(*witness),
-                value: None,
-            })
-            .collect();
-        Ok(self.tree.apply_batch(&mutations)?)
+        Ok(())
     }
 }
 
-fn witness_key(witness: u64) -> Hash256 {
-    hyphen_crypto::blake3_hash_many(&[KEY_DOMAIN, &witness.to_le_bytes()])
+fn claim_chunk(tree: &sled::Tree, chunk: &[(u64, u64)]) -> Result<(), WitnessSetError> {
+    let result: Result<(), TransactionError<u64>> = tree.transaction(|tx| {
+        for (witness, _) in chunk {
+            if tx.get(key(*witness).as_slice())?.is_some() {
+                return Err(ConflictableTransactionError::Abort(*witness));
+            }
+        }
+        for (witness, height) in chunk {
+            tx.insert(key(*witness).as_slice(), &height.to_le_bytes())?;
+        }
+        Ok(())
+    });
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(TransactionError::Abort(witness)) => Err(WitnessSetError::AlreadyClaimed(witness)),
+        Err(TransactionError::Storage(error)) => Err(WitnessSetError::Storage(error.to_string())),
+    }
 }
 
-fn value(height: u64) -> Hash256 {
-    hyphen_crypto::blake3_hash_many(&[VALUE_DOMAIN, &height.to_le_bytes()])
+/// Big-endian so the tree iterates in witness order, which keeps the on-disk
+/// index sorted and lets an operator scan a claimed range without decoding.
+fn key(witness: u64) -> [u8; 8] {
+    witness.to_be_bytes()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn open_set() -> WitnessSet {
+    fn open_set() -> (sled::Db, WitnessSet) {
         let db = sled::Config::new().temporary(true).open().unwrap();
-        WitnessSet::open(&db, Hash256::from_bytes([3u8; 32])).unwrap()
+        let set = WitnessSet::open(&db, Hash256::from_bytes([3u8; 32])).unwrap();
+        (db, set)
     }
 
     #[test]
     fn claims_are_single_use() {
-        let set = open_set();
+        let (_db, set) = open_set();
         assert!(!set.contains(89).unwrap());
         set.insert(89, 1).unwrap();
         assert!(set.contains(89).unwrap());
@@ -194,77 +194,79 @@ mod tests {
     }
 
     #[test]
-    fn removing_restores_the_previous_root_exactly() {
-        let set = open_set();
-        let empty = set.root();
+    fn releasing_restores_the_set_to_empty() {
+        let (_db, set) = open_set();
+        set.insert(89, 1).unwrap();
+        set.insert(179, 1).unwrap();
+        assert_eq!(set.claimed_count(), 2);
 
-        let after_first = set.insert(89, 1).unwrap();
-        assert_ne!(after_first, empty);
-        let after_second = set.insert(179, 1).unwrap();
-        assert_ne!(after_second, after_first);
-
-        assert_eq!(set.remove(179).unwrap(), after_first);
-        assert_eq!(set.remove(89).unwrap(), empty);
+        set.remove_batch(&[89, 179]).unwrap();
         assert!(!set.contains(89).unwrap());
+        assert!(!set.contains(179).unwrap());
+        assert_eq!(set.claimed_count(), 0);
+
+        set.insert(89, 3).unwrap();
+        assert!(set.contains(89).unwrap());
     }
 
     #[test]
-    fn insertion_order_does_not_change_the_root() {
-        let left = open_set();
-        left.insert(89, 1).unwrap();
-        let left_root = left.insert(179, 1).unwrap();
-
-        let right = open_set();
-        right.insert(179, 1).unwrap();
-        let right_root = right.insert(89, 1).unwrap();
-
-        assert_eq!(left_root, right_root, "the set is order independent");
-    }
-
-    #[test]
-    fn the_claimed_height_is_committed() {
-        let first = open_set();
-        let second = open_set();
-        assert_ne!(
-            first.insert(89, 1).unwrap(),
-            second.insert(89, 2).unwrap(),
-            "the recording height is part of the leaf value"
-        );
-    }
-
-    #[test]
-    fn preview_is_gone_but_single_use_is_still_the_guarantee() {
-        let set = open_set();
-        set.insert(3, 7).unwrap();
-        set.insert(5, 7).unwrap();
-        set.insert(11, 7).unwrap();
-        for witness in [3u64, 5, 11] {
-            assert!(set.contains(witness).unwrap());
-        }
+    fn a_duplicate_inside_one_batch_is_rejected_before_any_write() {
+        let (_db, set) = open_set();
         assert!(matches!(
-            set.insert(11, 8),
+            set.insert_batch(&[(11, 1), (11, 1)]),
             Err(WitnessSetError::AlreadyClaimed(11))
+        ));
+        assert_eq!(set.claimed_count(), 0);
+    }
+
+    #[test]
+    fn a_conflicting_batch_rolls_back_the_chunks_it_already_claimed() {
+        let (_db, set) = open_set();
+        set.insert(700, 1).unwrap();
+
+        let mut claims: Vec<(u64, u64)> = (0..CLAIM_CHUNK as u64).map(|i| (i * 2 + 1, 1)).collect();
+        claims.push((700, 2));
+
+        assert!(matches!(
+            set.insert_batch(&claims),
+            Err(WitnessSetError::AlreadyClaimed(700))
+        ));
+        assert_eq!(
+            set.claimed_count(),
+            1,
+            "only the pre-existing claim may remain after a rollback"
+        );
+        assert!(!set.contains(1).unwrap());
+    }
+
+    #[test]
+    fn a_whole_block_batch_is_claimed_and_survives_reopen() {
+        let (db, set) = open_set();
+        let claims: Vec<(u64, u64)> = (0..4_096u64).map(|i| (i * 2 + 1, 7)).collect();
+        set.insert_batch(&claims).unwrap();
+        assert_eq!(set.claimed_count(), claims.len() as u64);
+
+        let reopened = WitnessSet::open(&db, Hash256::from_bytes([3u8; 32])).unwrap();
+        assert_eq!(reopened.claimed_count(), claims.len() as u64);
+        assert!(reopened.contains(1).unwrap());
+        assert!(matches!(
+            reopened.insert(1, 8),
+            Err(WitnessSetError::AlreadyClaimed(1))
         ));
     }
 
     #[test]
     fn sets_are_namespaced_by_chain_identity() {
-        let mainnet_db = sled::Config::new().temporary(true).open().unwrap();
-        let devnet_db = sled::Config::new().temporary(true).open().unwrap();
-        let mainnet = WitnessSet::open(&mainnet_db, Hash256::from_bytes([1u8; 32])).unwrap();
-        let devnet = WitnessSet::open(&devnet_db, Hash256::from_bytes([2u8; 32])).unwrap();
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let mainnet = WitnessSet::open(&db, Hash256::from_bytes([1u8; 32])).unwrap();
+        let devnet = WitnessSet::open(&db, Hash256::from_bytes([2u8; 32])).unwrap();
 
         mainnet.insert(89, 1).unwrap();
-        assert!(!devnet.contains(89).unwrap());
-        assert_ne!(mainnet.root(), devnet.root());
-
-        let reopened = WitnessSet::open(&mainnet_db, Hash256::from_bytes([1u8; 32])).unwrap();
-        assert!(reopened.contains(89).unwrap());
-        assert_eq!(reopened.root(), mainnet.root());
-
-        assert!(matches!(
-            WitnessSet::open(&mainnet_db, Hash256::from_bytes([9u8; 32])),
-            Err(WitnessSetError::Storage(_))
-        ));
+        assert!(mainnet.contains(89).unwrap());
+        assert!(
+            !devnet.contains(89).unwrap(),
+            "a claim on one chain must not be visible on another"
+        );
+        assert_eq!(devnet.claimed_count(), 0);
     }
 }
