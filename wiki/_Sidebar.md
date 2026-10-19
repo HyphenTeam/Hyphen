@@ -17,6 +17,7 @@
 ### Operations
 
 - [Deploy on Linux](Operations-Deploy-Linux)
+- [Small Host (4 vCPU / 2 GiB)](Operations-Small-Host)
 - [Mining Acceleration](Operations-Mining-Acceleration)
 - [Incentivized Testnet](Operations-Incentivized-Testnet)
 

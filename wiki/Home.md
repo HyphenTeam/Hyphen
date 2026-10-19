@@ -16,7 +16,7 @@ layer.
 |---|---|
 | Evaluating the design | [Whitepaper](Whitepaper) |
 | Reviewing consensus changes | [Devnet v2](Consensus-Devnet-V2), [Neural Work](Consensus-Neural-Work) |
-| Operating a node | [Deploy on Linux](Operations-Deploy-Linux) |
+| Operating a node | [Deploy on Linux](Operations-Deploy-Linux), [Small Host](Operations-Small-Host) |
 | Building the miner | [Mining Acceleration](Operations-Mining-Acceleration) |
 | Assessing launch readiness | [Incentivized Testnet](Operations-Incentivized-Testnet) |
 | Auditing trust boundaries | [Cryptographic Activation Gates](Security-Cryptographic-Activation-Gates), [Peer Policy](Security-Peer-Policy) |
@@ -43,6 +43,9 @@ layer.
 
 - [Deploying a Hyphen node on Linux](Operations-Deploy-Linux) — `systemd` runbook for a
   single full node and a private multi-node network.
+- [Running on a small host](Operations-Small-Host) — measured memory and storage on
+  4 vCPU / 2 GiB, the storage cache ceiling, witness-set growth, and what must change
+  before mainnet.
 - [Mining Acceleration](Operations-Mining-Acceleration) — optional CUDA/HIP sieve, ABI,
   verification, and the portable CPU fallback.
 - [Incentivized Testnet Readiness](Operations-Incentivized-Testnet) — open gates that
@@ -92,7 +95,8 @@ Hyphen 是一条以隐私与可验证数学工作为核心的研究型区块链�
 1. [白皮书](Whitepaper)
 2. [Devnet v2](Consensus-Devnet-V2) 与 [神经工作量证明](Consensus-Neural-Work)
 3. [Linux 节点部署](Operations-Deploy-Linux)
-4. [密码学激活门槛](Security-Cryptographic-Activation-Gates) 与
+4. [小配置主机运行](Operations-Small-Host)
+5. [密码学激活门槛](Security-Cryptographic-Activation-Gates) 与
    [对等节点策略](Security-Peer-Policy)
 
 代码与测试是唯一事实来源；文档中的每个结论都应能追溯到测试、向量或明确列出的未关闭门槛。

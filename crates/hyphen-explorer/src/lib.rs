@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::time::Duration;
@@ -309,7 +309,17 @@ struct ExplorerCache {
     indexed_tip_height: Option<u64>,
     indexed_hash_at_tip: Option<String>,
     miner_blocks: HashMap<String, Vec<MinerBlockEvent>>,
+    /// Insertion order of `miner_blocks` keys, so the oldest derived history
+    /// can be dropped instead of letting a public endpoint grow this map
+    /// without bound.
+    miner_order: VecDeque<String>,
 }
+
+/// Distinct reward keys the explorer keeps history for.
+///
+/// This is derived data; a host with 2 GiB must not let a public route decide
+/// how much memory the node holds, so the oldest key is evicted at the limit.
+const MINER_KEY_LIMIT: usize = 4_096;
 
 /// Blocks indexed per refresh.
 ///
@@ -343,10 +353,6 @@ impl ExplorerState {
     /// Indexes at most one batch. Returns `true` while blocks remain.
     fn refresh_cache_once(&self) -> Result<bool, String> {
         let tip = self.blockchain.tip().map_err(|e| e.to_string())?;
-
-        // Decide the window without holding any lock: the indexed position is
-        // a cheap read, and the block loads below must not serialize other
-        // explorer readers.
         let (start_height, stale) = {
             let cache = self.cache.read();
             match (cache.indexed_tip_height, cache.indexed_hash_at_tip.as_ref()) {
@@ -365,10 +371,9 @@ impl ExplorerState {
         };
 
         if stale {
-            // Reorged below the indexed height: drop the derived history and
-            // reindex from genesis in batches.
             let mut cache = self.cache.write();
             cache.miner_blocks.clear();
+            cache.miner_order.clear();
             cache.indexed_tip_height = None;
             cache.indexed_hash_at_tip = None;
         } else if start_height > tip.height {
@@ -404,8 +409,6 @@ impl ExplorerState {
             batch.push((reward_key, event));
         }
 
-        // The block the index will actually reach. Recording its hash — not the
-        // tip's — keeps a reorg below the tip detectable on the next batch.
         let indexed_hash = if end_height == tip.height {
             tip.hash.to_string()
         } else {
@@ -417,9 +420,6 @@ impl ExplorerState {
         };
 
         let mut cache = self.cache.write();
-        // Another request may have advanced the index while this one was
-        // reading blocks. Publishing a stale batch would double-count events,
-        // so only the writer that still sees its own starting point commits.
         let current = cache
             .indexed_tip_height
             .map(|height| height + 1)
@@ -428,6 +428,14 @@ impl ExplorerState {
             return Ok(true);
         }
         for (reward_key, event) in batch {
+            if !cache.miner_blocks.contains_key(&reward_key) {
+                cache.miner_order.push_back(reward_key.clone());
+                while cache.miner_order.len() > MINER_KEY_LIMIT {
+                    if let Some(evicted) = cache.miner_order.pop_front() {
+                        cache.miner_blocks.remove(&evicted);
+                    }
+                }
+            }
             let events = cache.miner_blocks.entry(reward_key).or_default();
             events.push(event);
             if events.len() > MINER_HISTORY_LIMIT {
@@ -1277,8 +1285,6 @@ pub async fn start_explorer_on(
     blockchain: Arc<Blockchain>,
     cfg: ChainConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Serving blocks its calling thread, so it runs on the blocking pool rather
-    // than on the node's reactor.
     tokio::task::spawn_blocking(move || serve_explorer_on(listener, blockchain, cfg)).await??;
     Ok(())
 }
