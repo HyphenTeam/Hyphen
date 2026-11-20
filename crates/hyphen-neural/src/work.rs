@@ -1,35 +1,5 @@
-//! One-way neural work: a threshold puzzle whose per-attempt cost is a
-//! deterministic forward pass.
-//!
-//! # Why this exists
-//!
-//! [`crate::ChallengeDescriptor`] is an *inverse* task: the target is `A(x*)`
-//! and `x*` is derived from the public `chain_seed`, so a prover recomputes the
-//! answer instead of searching for it. That is fine for settling a task whose
-//! result someone declared, and it is unusable as a proof of work: a block
-//! gated on it would be free to produce.
-//!
-//! This module supplies the missing predicate:
-//!
-//! ```text
-//! weights = PRF(chain_seed, epoch)      // public, one network per epoch
-//! y       = A_weights(x)                // Q32.32 forward pass
-//! accept <=> score(y) < threshold        // threshold sets the difficulty
-//! ```
-//!
-//! The seed fixes the *network*, never the *answer*. Every attempt costs one
-//! forward pass, every check costs one forward pass, and because the weights
-//! change with the seed no work found for one epoch is worth anything in the
-//! next. A miner cannot skip the network: the predicate reads `A(x)`.
-//!
-//! # What it is not
-//!
-//! `y` is discarded by the puzzle itself. This is a hash-gated computation, not
-//! useful work: its per-attempt cost is a network forward pass, so it is *less*
-//! energy-efficient per bit of security than a BLAKE3 hash threshold. It exists
-//! to make a *task result* verifiable and non-derivable — a block that requires
-//! one of these results is backed by real, per-block-fresh computation, and a
-//! task consumer is what makes the output useful.
+//! Deterministic candidate generation, fixed-point MLP scoring and descriptor encoding.
+//! The block-work verifier applies the network's additional acceptance gates.
 
 use crate::error::NeuralError;
 use crate::fixed::ONE;

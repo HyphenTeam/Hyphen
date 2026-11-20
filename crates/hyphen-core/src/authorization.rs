@@ -8,7 +8,16 @@ use crate::block::BlockHeader;
 /// Block format 5 activates single-use mathematical witnesses (PoUW v3).
 pub const FROZEN_BLOCK_VERSION: u32 = 5;
 pub const BLOCK_AUTHORIZATION_VERSION: u16 = 1;
-const AUTHORIZATION_DOMAIN: &[u8] = b"Hyphen/NCAP/block-authorization/v1";
+fn signing_profile(magic: [u8; 4]) -> (u16, &'static [u8]) {
+    if magic == *b"HYN3" {
+        (2, b"Hyphen/NCAP/block-authorization/v2")
+    } else {
+        (
+            BLOCK_AUTHORIZATION_VERSION,
+            b"Hyphen/NCAP/block-authorization/v1",
+        )
+    }
+}
 
 pub fn reward_commitment(view: &[u8; 32], spend: &[u8; 32]) -> [u8; 32] {
     *hyphen_crypto::blake3_hash_many(&[b"Hyphen/reward-recipient/v1", view, spend]).as_bytes()
@@ -70,7 +79,7 @@ impl BlockAuthorization {
         );
         let signature = miner_secret.sign(digest.as_bytes());
         Ok(Self {
-            version: BLOCK_AUTHORIZATION_VERSION,
+            version: signing_profile(network_magic).0,
             reward_view_public,
             reward_spend_public,
             miner_signature: signature.as_bytes().to_vec(),
@@ -87,7 +96,7 @@ impl BlockAuthorization {
         if header.version != FROZEN_BLOCK_VERSION {
             return Err(AuthorizationError::UnsupportedBlockVersion(header.version));
         }
-        if self.version != BLOCK_AUTHORIZATION_VERSION {
+        if self.version != signing_profile(network_magic).0 {
             return Err(AuthorizationError::UnsupportedAuthorizationVersion(
                 self.version,
             ));
@@ -124,9 +133,10 @@ pub fn authorization_digest(
     reward_view_public: [u8; 32],
     reward_spend_public: [u8; 32],
 ) -> Hash256 {
+    let (version, domain) = signing_profile(network_magic);
     hyphen_crypto::blake3_hash_many(&[
-        AUTHORIZATION_DOMAIN,
-        &BLOCK_AUTHORIZATION_VERSION.to_le_bytes(),
+        domain,
+        &version.to_le_bytes(),
         &network_magic,
         &consensus_params_hash,
         genesis_hash.as_bytes(),
@@ -231,6 +241,27 @@ mod tests {
                 [22u8; 32],
                 Hash256::from_bytes([23u8; 32])
             ),
+            Err(AuthorizationError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn hyn3_rejects_version_downgrade_and_cross_network_authorizations() {
+        let key = SecretKey([19; 32]);
+        let header = header(miner_key(&key));
+        let genesis = Hash256::from_bytes([3; 32]);
+        let mut auth =
+            BlockAuthorization::sign(&header, *b"HYN3", [2; 32], genesis, [4; 32], [5; 32], &key)
+                .unwrap();
+        assert_eq!(auth.version, 2);
+        auth.verify(&header, *b"HYN3", [2; 32], genesis).unwrap();
+        auth.version = 1;
+        assert_eq!(
+            auth.verify(&header, *b"HYN3", [2; 32], genesis),
+            Err(AuthorizationError::UnsupportedAuthorizationVersion(1))
+        );
+        assert_eq!(
+            auth.verify(&header, *b"HYN2", [2; 32], genesis),
             Err(AuthorizationError::InvalidSignature)
         );
     }

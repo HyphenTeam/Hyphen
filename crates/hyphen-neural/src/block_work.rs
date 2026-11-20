@@ -1,12 +1,14 @@
-//! Neural block work v2. The wire witness is a single little-endian nonce.
+//! HYN3 nonce verification and BLAKE3 scratchpad evaluation.
 
 use crate::{NeuralError, PROFILE_SPEC, WorkDescriptor};
-use argon2::{Algorithm, Argon2, Params, Version};
 
-/// Neural scores below this fixed cutoff enter the memory-hard stage.
+/// Exclusive gate cutoff applied before allocating the scratchpad.
 pub const NEURAL_GATE: u64 = 1 << 60;
+/// Number of full digests retained by the reference evaluator.
+pub const MEMORY_CELLS: usize = 32_768;
+const _: () = assert!(MEMORY_CELLS.is_power_of_two());
 
-/// Recompute the consensus MLP score from the public challenge and nonce.
+/// Integer output fold shared with the CUDA evaluator.
 pub fn nonce_score(work: &WorkDescriptor, weights: &[i64], nonce: u64) -> Result<u64, NeuralError> {
     if work.spec != PROFILE_SPEC {
         return Err(NeuralError::InvalidSpec);
@@ -16,56 +18,55 @@ pub fn nonce_score(work: &WorkDescriptor, weights: &[i64], nonce: u64) -> Result
     work.score(weights, &input, &mut [0; 64], &mut [0; 16])
 }
 
-/// Rejection at the neural gate avoids allocating the Argon2 buffer. Callers
-/// verifying untrusted work must independently recompute `score` for this nonce.
-pub fn qualifies(work: &WorkDescriptor, nonce: u64, score: u64) -> Result<bool, NeuralError> {
-    if score >= NEURAL_GATE {
-        return Ok(false);
+/// Bind the public challenge, nonce and folded MLP output before sampling.
+pub fn gate_digest(seed: &[u8; 32], nonce: u64, score: u64) -> blake3::Hash {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"Hyphen/neural-gate/v3\0");
+    hash.update(seed);
+    hash.update(&nonce.to_le_bytes());
+    hash.update(&score.to_le_bytes());
+    hash.finalize()
+}
+
+/// First eight digest bytes interpreted as a little-endian integer.
+pub fn low_word(hash: &blake3::Hash) -> u64 {
+    u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap())
+}
+
+/// Each cell stores a complete 32-byte digest. A distinct public key (the
+/// gate digest) separates the traversal for each candidate. The 32-byte fill
+/// inputs and 64-byte read inputs cannot alias within keyed BLAKE3.
+pub fn memory_digest(gate: blake3::Hash) -> blake3::Hash {
+    let key = gate.as_bytes();
+    let mut cells = Vec::with_capacity(MEMORY_CELLS);
+    let mut state = blake3::keyed_hash(key, b"Hyphen/neural-memory/v3\0");
+    for _ in 0..MEMORY_CELLS {
+        cells.push(state);
+        state = blake3::keyed_hash(key, state.as_bytes());
     }
-    Ok(memory_score(&work.chain_seed, nonce, score)? < work.threshold)
+    let mut pair = [0; 64];
+    for _ in 0..MEMORY_CELLS {
+        let index = (low_word(&state) & (MEMORY_CELLS as u64 - 1)) as usize;
+        pair[..32].copy_from_slice(state.as_bytes());
+        pair[32..].copy_from_slice(cells[index].as_bytes());
+        state = blake3::keyed_hash(key, &pair);
+    }
+    let mut final_hash = blake3::Hasher::new();
+    final_hash.update(b"Hyphen/neural-final/v3\0");
+    final_hash.update(key);
+    final_hash.update(state.as_bytes());
+    final_hash.finalize()
 }
 
-fn memory_score(seed: &[u8; 32], nonce: u64, score: u64) -> Result<u64, NeuralError> {
-    const DOMAIN: &[u8] = b"Hyphen/neural-memory/v2\0";
-    let offset = DOMAIN.len();
-    let mut input = [0; DOMAIN.len() + 16];
-    input[..offset].copy_from_slice(DOMAIN);
-    input[offset..offset + 8].copy_from_slice(&nonce.to_le_bytes());
-    input[offset + 8..].copy_from_slice(&score.to_le_bytes());
-    let params = Params::new(1024, 2, 1, Some(32)).map_err(|_| NeuralError::InvalidSpec)?;
-    let mut digest = [0; 32];
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(&input, seed, &mut digest)
-        .map_err(|_| NeuralError::HostFailure)?;
-    Ok(u64::from_le_bytes(digest[..8].try_into().unwrap()))
+/// Mining fast path. Validators recompute `score` via `verify_nonce`.
+pub fn qualifies(work: &WorkDescriptor, nonce: u64, score: u64) -> Result<bool, NeuralError> {
+    let gate = gate_digest(&work.chain_seed, nonce, score);
+    Ok(low_word(&gate) < NEURAL_GATE && low_word(&memory_digest(gate)) < work.threshold)
 }
 
-/// Verify a wire nonce using locally derived weights and both acceptance gates.
+/// Verify a wire nonce from the public descriptor alone.
 pub fn verify_nonce(work: &WorkDescriptor, nonce: u64) -> Result<bool, NeuralError> {
-    let mut weights = vec![0; PROFILE_SPEC.weight_count()];
+    let mut weights = [0; PROFILE_SPEC.weight_count()];
     work.derive_weights(&mut weights)?;
     qualifies(work, nonce, nonce_score(work, &weights, nonce)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn memory_gate_matches_reference_argon2id() {
-        let seed = core::array::from_fn(|i| i as u8);
-        // Reference libargon2 v19, raw 32-byte digest begins ff1847bdbdac5428.
-        let expected = 0x2854_acbd_bd47_18ff;
-        assert_eq!(memory_score(&seed, 123, 456).unwrap(), expected);
-        let mut work = WorkDescriptor {
-            chain_seed: seed,
-            epoch: 1,
-            spec: PROFILE_SPEC,
-            threshold: expected,
-        };
-        assert!(!qualifies(&work, 123, 456).unwrap());
-        work.threshold += 1;
-        assert!(qualifies(&work, 123, 456).unwrap());
-        assert!(!qualifies(&work, 123, NEURAL_GATE).unwrap());
-    }
 }

@@ -217,7 +217,7 @@ impl ChainConfig {
         }
         if self.feature_enabled(FEATURE_NEURAL_MEMORY_WORK) {
             buf.extend_from_slice(
-                b"neural-work/v2/nonce/mlp16-64-16/gate60/argon2id-19-m1024-t2-p1-out32/window-work16",
+                b"neural-work/v3/nonce/mlp16-64-16/blake3-gate60/keyed-fill32768-read32768-cell32/window-work16/auth2",
             );
         }
         *hyphen_crypto::blake3_hash(&buf).as_bytes()
@@ -375,8 +375,8 @@ impl ChainConfig {
     /// Unified development genesis for neural mining, payments and contracts.
     pub fn neural_devnet() -> Self {
         Self {
-            network_name: "hyphen-neural-devnet-v2".into(),
-            network_magic: *b"HYN2",
+            network_name: "hyphen-neural-devnet-v3".into(),
+            network_magic: *b"HYN3",
             consensus_features: FEATURE_NEURAL_WORK
                 | FEATURE_NEURAL_MEMORY_WORK
                 | FEATURE_WASM

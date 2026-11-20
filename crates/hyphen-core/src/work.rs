@@ -1,10 +1,4 @@
-//! Shared derivations for the one-way neural work profile.
-//!
-//! These two functions are the only parts of the block work rule that the node,
-//! the pool and the miner must all compute identically. Keeping a single
-//! definition here is what stops a client from deriving a different network or
-//! committing a different header than the chain expects; the arithmetic itself
-//! lives in `hyphen-neural`, which is dependency-free and compiles for wasm.
+//! Canonical BLAKE3 transcripts for the mining challenge and work commitment.
 
 use hyphen_crypto::{Hash256, blake3_hash_many};
 
@@ -14,11 +8,7 @@ pub const NEURAL_WORK_SEED_DOMAIN: &[u8] = b"Hyphen/neural-work-seed/v1";
 /// Domain tag of the header commitment.
 pub const NEURAL_WORK_COMMITMENT_DOMAIN: &[u8] = b"Hyphen/neural-work-commitment/v1";
 
-/// Seed the block's network is derived from.
-///
-/// Mixing in the miner's public key is what makes a solution non-transferable:
-/// without it, a solution found for one miner's block is valid for every other
-/// miner's block at the same height and could be copied out of the mempool.
+/// Bind the challenge to the parent, child height and miner's public key.
 pub fn neural_work_seed(parent_hash: &Hash256, height: u64, miner_pubkey: &[u8; 32]) -> Hash256 {
     blake3_hash_many(&[
         NEURAL_WORK_SEED_DOMAIN,
