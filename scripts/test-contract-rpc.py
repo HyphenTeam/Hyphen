@@ -35,7 +35,7 @@ def wait_json(url, processes):
         except HTTPError as error:
             if error.code != 404:
                 raise
-        except (URLError, TimeoutError):
+        except (URLError, TimeoutError, ConnectionResetError):
             pass
         time.sleep(0.5)
     raise TimeoutError(url)

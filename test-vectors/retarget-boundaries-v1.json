@@ -1,0 +1,9 @@
+[
+  {"case":"initial", "profile":"mainnet", "timestamps":[100], "difficulties":[8], "expected_raw":8, "expected_count":8},
+  {"case":"truncated mean and estimate", "profile":"devnet", "timestamps":[0,30001,60002], "difficulties":[8,9,10], "expected_raw":8, "expected_count":8},
+  {"case":"minimum under slow samples", "profile":"devnet", "timestamps":[0,18446744073709551615], "difficulties":[1,1], "expected_raw":1, "expected_count":1},
+  {"case":"upper multiplication saturates", "profile":"mainnet", "timestamps":[0,1,2,3], "difficulties":[18446744073709551615,18446744073709551615,18446744073709551615,18446744073709551615], "expected_raw":18446744073709551615, "expected_count":4096},
+  {"case":"reversed timestamps, controller input only", "profile":"devnet", "timestamps":[18446744073709551615,0], "difficulties":[8,8], "expected_raw":24, "expected_count":24},
+  {"case":"fast-span guard", "profile":"mainnet", "timestamps":[0,360000,720000,1080000,1440000,1454999,1469998,1484997,1499996,1514995], "difficulties":[80,80,80,80,80,80,80,80,80,80], "expected_raw":240, "expected_count":240},
+  {"case":"exactly one quarter releases guard", "profile":"mainnet", "timestamps":[0,360000,720000,1080000,1440000,1455000,1470000,1485000,1500000,1515000], "difficulties":[80,80,80,80,80,80,80,80,80,80], "expected_raw":26, "expected_count":26}
+]

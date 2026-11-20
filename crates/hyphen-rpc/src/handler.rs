@@ -57,6 +57,7 @@ impl RpcHandler {
             METHOD_GET_TX_LOCATION => self.handle_get_tx_location(&request.payload),
             METHOD_GET_RANDOM_OUTPUTS => self.handle_get_random_outputs(&request.payload),
             METHOD_GET_OUTPUT_INFO => self.handle_get_output_info(&request.payload),
+            METHOD_GET_OFFLINE_SPEND => self.handle_get_offline_spend(&request.payload),
             METHOD_GET_COMPUTE_TASK => self.handle_get_compute_task(&request.payload),
             METHOD_GET_VM_CONTRACT => self.handle_get_vm_contract(&request.payload),
             METHOD_GET_VM_STORAGE => self.handle_get_vm_storage(&request.payload),
@@ -461,6 +462,38 @@ impl RpcHandler {
         }
         let resp = GetOutputInfoResponse { outputs };
         Ok(resp.encode_to_vec())
+    }
+
+    fn handle_get_offline_spend(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        let req = GetOfflineSpendRequest::decode(payload)?;
+        let image = decode_hash("reserve_spend", &req.reserve_spend)?;
+        Ok(OfflineSpendResponse::from_chain(&self.chain, image)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?
+            .encode_to_vec())
+    }
+}
+
+impl OfflineSpendResponse {
+    pub fn from_chain(
+        chain: &Blockchain,
+        image: hyphen_crypto::Hash256,
+    ) -> Result<Self, hyphen_core::error::CoreError> {
+        let (tip, spend) = chain.offline_spend(image)?;
+        Ok(Self {
+            tip: tip.hash.to_vec(),
+            tip_height: tip.height,
+            spend: spend.map(|s| OfflineSpendRecord {
+                transaction: s.transaction,
+                block: s.block.to_vec(),
+                height: s.height,
+                source: Some(OutputInfo {
+                    one_time_pubkey: s.source.one_time_pubkey.to_vec(),
+                    commitment: s.source.commitment.to_vec(),
+                    global_index: s.source.global_index,
+                    block_height: s.source.block_height,
+                }),
+            }),
+        })
     }
 }
 

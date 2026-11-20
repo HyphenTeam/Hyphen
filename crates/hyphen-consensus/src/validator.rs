@@ -109,15 +109,40 @@ impl<'a> BlockValidator<'a> {
         prev_timestamp: u64,
         now_ms: u64,
     ) -> Result<(), ValidationError> {
+        self.validate_history_header(header, prev_height, prev_hash, prev_timestamp)?;
+        self.check_arrival_time(header, now_ms)
+    }
+
+    pub(crate) fn check_arrival_time(
+        &self,
+        header: &BlockHeader,
+        now_ms: u64,
+    ) -> Result<(), ValidationError> {
+        if header.timestamp > now_ms.saturating_add(self.cfg.timestamp_future_limit_ms) {
+            return Err(ValidationError::TimestampFuture);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_history_header(
+        &self,
+        header: &BlockHeader,
+        prev_height: u64,
+        prev_hash: &Hash256,
+        prev_timestamp: u64,
+    ) -> Result<(), ValidationError> {
         if header.version != FROZEN_BLOCK_VERSION {
             return Err(ValidationError::UnsupportedBlockVersion {
                 expected: FROZEN_BLOCK_VERSION,
                 got: header.version,
             });
         }
-        if header.height != prev_height + 1 {
+        let next_height = prev_height
+            .checked_add(1)
+            .ok_or_else(|| CoreError::Validation("chain height exhausted".into()))?;
+        if header.height != next_height {
             return Err(CoreError::HeightMismatch {
-                expected: prev_height + 1,
+                expected: next_height,
                 got: header.height,
             }
             .into());
@@ -130,11 +155,6 @@ impl<'a> BlockValidator<'a> {
         // H2 fix: Reject blocks with timestamps not strictly after parent
         if header.timestamp <= prev_timestamp && prev_height > 0 {
             return Err(ValidationError::TimestampTooOld);
-        }
-
-        let max_future = now_ms.saturating_add(self.cfg.timestamp_future_limit_ms);
-        if header.timestamp > max_future {
-            return Err(ValidationError::TimestampFuture);
         }
 
         Ok(())

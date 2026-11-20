@@ -129,10 +129,10 @@ pool policy.
 ## Archive, reference verification, and replay
 
 Archive version 1 contains network magic, consensus parameters hash, genesis
-hash, and contiguous post-genesis blocks. The lightweight reference verifier
-checks archive identity, linkage, timestamps, roots, and miner authorization.
-Full replay additionally executes authoritative PoW, transaction, and state
-validation into a fresh height-zero database.
+hash, and contiguous post-genesis blocks. The current node validates the full
+history from genesis in a temporary database with `--verify-history`.
+`--replay-history` additionally enforces live future-time admission and writes
+the validated blocks into the specified fresh database.
 
 ```bash
 # Export from a stopped or separately copied source database.
@@ -140,7 +140,7 @@ cargo run -p hyphen-node --locked -- \
   --network devnet --data-dir ./data/devnet-source \
   --export-history ./devnet-history-v1.bin
 
-# Lightweight verification without writing chain state.
+# Verify all historical transitions in a temporary database.
 cargo run -p hyphen-node --locked -- \
   --network devnet --verify-history ./devnet-history-v1.bin
 
@@ -150,9 +150,7 @@ cargo run -p hyphen-node --locked -- \
   --replay-history ./devnet-history-v1.bin
 ```
 
-Archive files are currently Rust/`hyphen-codec` v1 implementation artifacts, capped at
-512 MiB by the CLI. A language-neutral canonical block/archive encoding and
-cross-implementation vectors remain required before production consensus.
+The current CLI commands above operate on the selected active identity. In its compact encoding the archive fields are `version:u16`, four bytes of magic, 32 bytes of parameter hash, 32 bytes of genesis hash, and a vector of post-genesis blocks. The CLI reads up to 512 MiB. The retired v1 identity belongs to the historical implementation. [Active wire format](Consensus-Profiles.md)
 
 ## Change policy
 
@@ -260,7 +258,7 @@ reward_spend_public
 
 ## 归档、参考验证与重放
 
-Archive v1 包含 network magic、共识参数哈希、创世哈希和连续创世后区块。轻量参考 verifier 检查 archive 身份、链接、时间戳、根和矿工授权。完整重放还会把权威 PoW、交易和状态验证执行到全新高度零数据库。
+Archive v1 包含 network magic、共识参数哈希、创世哈希和连续创世后区块。当前节点的 `--verify-history` 在临时数据库中从创世验证全部状态转移。`--replay-history` 另行执行实时接收的未来时间限制，并将验证通过的区块写入指定的新数据库。
 
 ```bash
 # 从已停止节点或单独复制的源数据库导出。
@@ -268,7 +266,7 @@ cargo run -p hyphen-node --locked -- \
   --network devnet --data-dir ./data/devnet-source \
   --export-history ./devnet-history-v1.bin
 
-# 不写链状态的轻量验证。
+# 在临时数据库中验证全部历史状态转移。
 cargo run -p hyphen-node --locked -- \
   --network devnet --verify-history ./devnet-history-v1.bin
 
@@ -278,7 +276,7 @@ cargo run -p hyphen-node --locked -- \
   --replay-history ./devnet-history-v1.bin
 ```
 
-Archive 文件目前使用 RustBinary 0.1.2 的固定宽度、小端 legacy profile，严格拒绝尾随字节，CLI 上限为 512 MiB。生产共识前仍需语言无关的规范 block/archive 编码和跨实现向量。
+以上当前 CLI 命令作用于选定的现行网络身份。归档依次紧凑编码版本 u16、4 字节网络标识、32 字节参数哈希、32 字节创世哈希与创世之后的区块向量。CLI 最多读取 512 MiB。退役 v1 身份由其历史实现定义。[现行编码](Consensus-Profiles.md)
 
 ## 变更政策
 

@@ -227,6 +227,11 @@ def main():
         cmd('transfer','sender.ck','root','fork.request',public,net,'retry-wallet','retried',seed=1)
         cmd('transfer','sender.ck','root','fork.request',public,net,'rolled-back-sender','fork',seed=1)
         assert (work/'retried').read_bytes() == (work/'fork').read_bytes()
+        signer = cmd('public-key',seed=1)
+        evidence = cmd('verify-conflict','last','fork')
+        assert 'signer='+signer in evidence and 'request_a=' in evidence and 'request_b=' in evidence
+        cmd('verify-conflict','last','first',reject='no conflicting signed requests')
+        cmd('verify-conflict','last','last',reject='no conflicting signed requests')
         cmd('accept','fork.wallet.ck','fork','fork.request',net,'fork.wallet',seed=4)
         cmd('accept','last.wallet.ck','last','fork.request',net,'last.wallet',seed=3,reject='retained request')
         cmd('request','last.wallet.ck','root',net+1,'last.wallet','wrong-amount',seed=3,reject='amount')
@@ -237,6 +242,8 @@ def main():
         lost = cmd('redeem','fork.wallet.ck','fork',alternate,net,'fork.wallet','lose.tx',seed=4).split('=')[1]
         def confirm(db, packet='last', invoice='last.request', address=payout, amount=net, *args, **options):
             return cmd('confirm', db, packet, invoice, address, amount, *args, **options)
+        def online(port=rpc, packet='last', invoice='last.request', address=payout, amount=net, *args, **options):
+            return cmd('confirm-online', '--rpc', addr(port), packet, invoice, address, amount, *args, **options)
         confirm('node', reject='no confirmed settlement')
         assert 'status=funded_unsettled' in cmd('status','node','last')
         running = start('settle',False)
@@ -246,6 +253,7 @@ def main():
         STOP(running[0])
         running = start('settle-short',False)
         assert cmd('submit','win.tx','--rpc',addr(rpc)).endswith(signed)
+        online(reject='no confirmed settlement')
         cmd('submit','lose.tx','--rpc',addr(rpc),reject='replacement')
         # Keep the node and its mempool alive while starting the pool and miner.
         p = launch(pool, 'pool-settle','--node',addr(templates),'--bind',addr(mining),'--api-bind',addr(health),'--pool-state-dir',work/'pool','--payout-mode','solo')
@@ -260,9 +268,24 @@ def main():
         assert balance['balance'] == net and losing['balance'] == 0
         assert [o['received_tx_hash'] for o in balance['outputs']] == [signed]
         first_tip = WAIT(base+'/info',running)
+        live_receipt = online()
+        for _ in range(2):
+            online(rpc, 'fork', 'fork.request', alternate, net, '--save-settlement', 'observed.tx', reject='signer='+signer)
+        assert (work/'observed.tx').read_bytes() == (work/'win.tx').read_bytes()
+        assert 'signer='+signer in cmd('verify-conflict','fork','observed.tx','--settlement')
+        cmd('verify-conflict','last','observed.tx','--settlement',reject='no conflicting signed requests')
+        former_holder = 'redeemed_and_delegated_by=' + cmd('public-key',seed=3)
+        online(packet=offer, invoice=request, address=last_address, reject=former_holder)
+        assert former_holder in cmd('verify-conflict',offer,'observed.tx','--settlement')
+        online(invoice='fork.request', reject='retained request')
+        online(amount=net+1, reject='expected amount')
+        online(address=alternate, reject='expected payout address')
+        online(rpc, 'last', 'last.request', payout, net, '--min-confirmations', first_tip['height']+1,
+               reject='insufficient settlement confirmations')
         STOP(running[0]); cmd('checkpoint','node','settled.ck','fork.wallet')
         assert 'status=confirmed ' in cmd('status','node','last','--expected-tx',signed)
         verified = confirm('node')
+        assert verified == live_receipt
         assert 'transaction='+signed in verified and f'net_atomic={net}' in verified
         assert confirm('node') == verified
         depth = int(re.search(r'\bconfirmations=(\d+)', verified)[1])
@@ -298,11 +321,17 @@ def main():
         reverted = json.loads(pay('balance',addr(peer_rpc),seed=3))['balance']
         adopted = json.loads(pay('balance',addr(peer_rpc),seed=4))['balance']
         assert reverted == 0 and adopted == net
+        online(peer_rpc, reject='signer='+signer)
+        live_adopted = online(peer_rpc, 'fork', 'fork.request', alternate)
+        overwritten = subprocess.run([offline, 'confirm-online', '--rpc', addr(peer_rpc), 'fork', 'fork.request', alternate,
+                                      str(net), '--save-settlement', 'observed.tx'], cwd=work, capture_output=True)
+        assert overwritten.returncode and (work/'observed.tx').read_bytes() == (work/'win.tx').read_bytes()
         STOP(original); STOP(other)
         assert 'status=conflicting_claim_confirmed ' in cmd('status','node','last','--expected-tx',signed)
         assert 'status=confirmed ' in cmd('status','node','fork','--expected-tx',lost)
         confirm('node', reject='competing receipt')
         adopted_receipt = confirm('node', 'fork', 'fork.request', alternate)
+        assert adopted_receipt == live_adopted
         assert 'transaction='+lost in adopted_receipt
         history('node','--export-history','reorg.archive')
         reorg_replay = history('independent-reorg','--replay-history','reorg.archive').splitlines()[-1]
@@ -336,6 +365,7 @@ def main():
         moved_tip = WAIT(base+'/info', running[:1])
         joined = join_peer('relocated', 'independent-settlement', 'later', running[0], moved_tip['tip_hash'])
         assert json.loads(pay('balance', addr(peer_rpc), seed=3))['balance'] == 0
+        online(peer_rpc, reject='no confirmed settlement')
         STOP(joined); STOP(running[0])
         moved_index = int(cmd('locate', 'independent-settlement', fund_hash))
         assert moved_index > index and moved['block_height'] > location['block_height']
@@ -350,6 +380,7 @@ def main():
         moved_settlement = WAIT(base+'/tx/'+moved_claim, running)
         for process in reversed(running[1:]): STOP(process)
         assert json.loads(pay('balance', addr(rpc), seed=3))['balance'] == net
+        live_relocated = online()
         STOP(running[0])
         history('independent-settlement', '--export-history', 'relocated.archive')
         moved_report = history('relocated-replay', '--replay-history', 'relocated.archive').splitlines()[-1]
@@ -357,12 +388,13 @@ def main():
         assert 'status=confirmed ' in moved_status
         assert moved_status == cmd('status', 'relocated-replay', 'moved.packet', '--expected-tx', moved_claim)
         relocated_receipt = confirm('relocated-replay')  # locally retained packet still has the old index
+        assert live_relocated == relocated_receipt
         assert 'transaction='+moved_claim in relocated_receipt
         def reserve_spend(report): return re.search(r'\breserve_spend=([0-9a-f]{64})\b', report)[1]
         assert reserve_spend(verified) == reserve_spend(adopted_receipt) == reserve_spend(relocated_receipt)
         result = dict(funding=fund_hash, funding_height=location['block_height'], reserve_index=index,
                       unfunded_wallets_rejected=len(empty_wallets), verified_receipt=verified,
-                      adopted_receipt=adopted_receipt, relocated_receipt=relocated_receipt,
+                       adopted_receipt=adopted_receipt, relocated_receipt=relocated_receipt, conflict_evidence=evidence,
                       locked=funding, fee=fee, winner=signed, claim_height=confirmed['block_height'],
                       winner_balance=balance['balance'], conflicting_balance=losing['balance'],
                       final_replay=replay_report, measurements=measurements,

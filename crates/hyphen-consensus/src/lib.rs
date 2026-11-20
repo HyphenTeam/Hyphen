@@ -58,6 +58,6 @@ pub use private_fair_ordering::{
 };
 pub use replay::{
     CHAIN_ARCHIVE_VERSION, ChainArchive, ReplayReport, export_archive, replay_archive,
-    verify_archive_envelopes,
+    verify_archive_envelopes, verify_historical_archive,
 };
 pub use validator::BlockValidator;

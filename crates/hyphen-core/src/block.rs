@@ -45,9 +45,8 @@ impl BlockHeader {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Block {
     pub header: BlockHeader,
-    /// Single-use mathematical witnesses claimed by this block. The header's
-    /// `pow_commitment` is the witness-set root after claiming them, so the
-    /// commitment binds the exact list without storing it twice.
+    /// Cunningham origins committed in order with the parent's work commitment,
+    /// or the solution components on the neural-work profile.
     pub pow_witnesses: Vec<u64>,
     pub transactions: Vec<Vec<u8>>,
     pub uncle_headers: Vec<BlockHeader>,

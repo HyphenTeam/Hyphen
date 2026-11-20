@@ -161,6 +161,35 @@ pub const METHOD_GET_H_WES_ROOTS: u32 = 12;
 pub const METHOD_LIST_COMPUTE_TASKS: u32 = 13;
 pub const METHOD_ESTIMATE_FEE: u32 = 14;
 pub const METHOD_GET_VM_QUERY_SNAPSHOT: u32 = 15;
+pub const METHOD_GET_OFFLINE_SPEND: u32 = 16;
+
+#[derive(Clone, prost::Message)]
+pub struct GetOfflineSpendRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub reserve_spend: Vec<u8>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct OfflineSpendResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub tip: Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub tip_height: u64,
+    #[prost(message, optional, tag = "3")]
+    pub spend: Option<OfflineSpendRecord>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct OfflineSpendRecord {
+    #[prost(bytes = "vec", tag = "1")]
+    pub transaction: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub block: Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    pub height: u64,
+    #[prost(message, optional, tag = "4")]
+    pub source: Option<OutputInfo>,
+}
 
 #[derive(Clone, prost::Message)]
 pub struct GetComputeTaskRequest {

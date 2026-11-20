@@ -129,12 +129,23 @@ enum Command {
     /// Succeed only for the canonical payout of this invoice to the expected wallet address.
     Confirm {
         data_dir: PathBuf,
-        packet: PathBuf,
-        invoice: PathBuf,
-        destination: String,
-        net_amount: u64,
-        #[arg(long, default_value = "1")]
-        min_confirmations: std::num::NonZeroU64,
+        #[command(flatten)]
+        order: confirmation::Order,
+    },
+    /// Reconcile a retained order with your own running, synchronized HYOF node.
+    ConfirmOnline {
+        #[arg(long, default_value = "127.0.0.1:48333")]
+        rpc: SocketAddr,
+        #[command(flatten)]
+        order: confirmation::Order,
+    },
+    /// Verify two signed deliveries and identify a key that authorized conflicting requests.
+    VerifyConflict {
+        first: PathBuf,
+        second: PathBuf,
+        /// Read a signed settlement transaction as the second artifact.
+        #[arg(long)]
+        settlement: bool,
     },
 }
 
@@ -221,6 +232,15 @@ fn db(dir: &Path) -> Result<Blockchain> {
         dir.to_str().ok_or("invalid database path")?,
         ChainConfig::offline_devnet(),
     )?)
+}
+
+fn connect(rpc: SocketAddr, cfg: &ChainConfig) -> Result<TcpStream> {
+    let timeout = Duration::from_secs(15);
+    let mut stream = TcpStream::connect_timeout(&rpc, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    common::check_identity(&mut stream, cfg)?;
+    Ok(stream)
 }
 
 fn put_u64(writer: &mut impl Write, n: u64) -> std::io::Result<()> {
@@ -473,12 +493,15 @@ fn independently_signed_offers_require_locally_verified_funding() {
         };
         let mut foreign_tree = hyphen_crypto::MerkleTree::new();
         foreign_tree.append(funding.output().unwrap().note_hash());
-        let invoice = Invoice::new(funding.id(), &receiver, [id; 32]);
+        let intermediary = SecretKey([79; 32]);
+        let invoice = Invoice::new(funding.id(), &intermediary, [id; 32]);
         let mut voucher = Voucher {
             funding,
             transfers: vec![],
         };
         voucher.transfer(chain, &payer, invoice).unwrap();
+        let request = Invoice::new(voucher.holder(chain).unwrap().0, &receiver, [id; 32]);
+        voucher.transfer(chain, &intermediary, request).unwrap();
         assert_eq!(voucher.holder(chain).unwrap().1, receiver.public_key());
         let packet = Packet {
             voucher,
@@ -514,7 +537,11 @@ fn main() -> Result<()> {
             let locked = funding.output()?;
             let image = spent_image(chain, &locked);
             let db = db(&data_dir)?;
-            if let Some(spend) = confirmation::canonical_spend(&db, image)? {
+            if let Some(spend) = confirmation::canonical_spend(
+                OfflineSpendResponse::from_chain(&db, image)?,
+                chain,
+                image,
+            )? {
                 let status = match (spend.claim.receipt == head, expected_tx) {
                     (true, None) => "settled",
                     (true, Some(expected)) if expected == spend.transaction.to_string() => {
@@ -543,31 +570,45 @@ fn main() -> Result<()> {
                 println!("status={status} tip_height={} tip={}", tip.height, tip.hash);
             }
         }
-        Command::Confirm {
-            data_dir,
-            packet,
-            invoice,
-            destination,
-            net_amount,
-            min_confirmations,
+        Command::Confirm { data_dir, order } => {
+            let db = db(&data_dir)?;
+            order.confirm(chain, |image| {
+                Ok(OfflineSpendResponse::from_chain(&db, image)?)
+            })?;
+        }
+        Command::ConfirmOnline { rpc, order } => {
+            if !rpc.ip().is_loopback() {
+                return Err("confirmation requires your own node on a loopback endpoint".into());
+            }
+            order.confirm(chain, |image| {
+                common::request(
+                    &mut connect(rpc, &cfg)?,
+                    METHOD_GET_OFFLINE_SPEND,
+                    GetOfflineSpendRequest {
+                        reserve_spend: image.to_vec(),
+                    },
+                )
+            })?;
+        }
+        Command::VerifyConflict {
+            first,
+            second,
+            settlement,
         } => {
-            let spend = confirmation::confirm(
-                &db(&data_dir)?,
-                &load(&packet)?,
-                &load(&invoice)?,
-                &destination,
-                net_amount,
-                min_confirmations,
-            )?;
+            let a: Packet = load(&first)?;
+            let evidence = if settlement {
+                let bytes = common::read_bytes(&second, PACKET_LIMIT)?;
+                let claim =
+                    confirmation::verify_saved_settlement(&bytes, &a.voucher.funding, chain)?;
+                confirmation::competing_settlement(&a.voucher, &claim, chain)?
+            } else {
+                let b: Packet = load(&second)?;
+                confirmation::conflict_evidence(&a.voucher, &b.voucher, chain)?
+            }
+            .ok_or("no conflicting signed requests or conflicting redemption for this delivery")?;
             println!(
-                "status=confirmed reserve_spend={} receipt={} transaction={} block={} height={} confirmations={} tip={} net_atomic={net_amount}",
-                spend.image,
-                spend.claim.receipt,
-                spend.transaction,
-                spend.block,
-                spend.height,
-                spend.confirmations,
-                spend.tip
+                "status=conflicting_authorizations funding={} {evidence}",
+                a.voucher.funding.id()
             );
         }
         Command::Locate {
@@ -807,11 +848,7 @@ fn main() -> Result<()> {
                 return Err("expected signed redemption".into());
             }
             let hash = blake3_hash(&bytes);
-            let timeout = Duration::from_secs(15);
-            let mut stream = TcpStream::connect_timeout(&rpc, timeout)?;
-            stream.set_read_timeout(Some(timeout))?;
-            stream.set_write_timeout(Some(timeout))?;
-            common::check_identity(&mut stream, &cfg)?;
+            let mut stream = connect(rpc, &cfg)?;
             let result: SubmitTransactionResponse = common::request(
                 &mut stream,
                 METHOD_SUBMIT_TX,

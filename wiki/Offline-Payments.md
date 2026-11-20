@@ -32,11 +32,21 @@ cargo build --release --locked --manifest-path HyphenWallet/rust/Cargo.toml --bi
 | 收款人核验返回文件 | `hyphen-offline accept own.ck delivery.bin request.bin NET own-wallet-db`，`new=false` 表示重复导入 |
 | 末端持有人离线签署兑付，任何转发者可在联网后提交原文件 | `hyphen-offline redeem own.ck delivery.bin PAYOUT_ADDRESS NET own-wallet-db claim.tx`，然后 `hyphen-offline submit claim.tx --rpc RPC` |
 | 从收款方自己的节点确认一笔到账 | `hyphen-offline confirm OWN_NODE_DB delivery.bin request.bin OWN_PAYOUT_ADDRESS NET --min-confirmations N` |
+| 从运行中的自有节点核对同一笔订单并保留签名交易 | `hyphen-offline confirm-online --rpc 127.0.0.1:48333 delivery.bin request.bin OWN_PAYOUT_ADDRESS NET --min-confirmations N --save-settlement observed.tx` |
+| 离线复核冲突签名 | 两份交付凭证用 `hyphen-offline verify-conflict delivery.bin other.bin`。另一份材料是签名兑付交易时用 `hyphen-offline verify-conflict delivery.bin observed.tx --settlement` |
 | 查询竞争索偿及可花余额 | `hyphen-offline status OWN_NODE_DB delivery.bin --expected-tx CLAIM_TXID`；用 `hyphen-reserve-wallet balance RPC` 重扫自己的运行中节点 |
 
 每笔订单保留收款方自己生成的 `request.bin`、预期净额和自己的常规钱包地址。`confirm` 读取自己已同步并停止的完整节点，核对该预锁的规范兑付、末端授权、请求、目的地址、金额及确认深度。只有全部匹配才以退出码 0 输出 `status=confirmed`。默认深度为 1，即首次入块，后续重组仍可撤销它。每次查询都会重新计算结果。业务账本可用 `reserve_spend` 作为唯一键，保存对应的收款请求、交易号及区块哈希；重试更新同一条记录，重组后重新核验并撤销失效入账。`accept` 产生的 `conditional_receipt` 仅代表离线索偿。即使付款方创建或丢弃许多钱包，收款方的检查点和节点仍逐笔验证真实预锁。
 
 `NET = GROSS − FEE`。首次普通付款的 `FUNDING_FEE` 单独支付。继续转付时，将 `delivery.bin` 用作下一轮的 `offer.bin`。节点数据库命令使用已关闭的本地数据库；提交和扫描命令使用运行中的 RPC。若资金交易重新确认在另一位置，当前持有人可用 `locate` 获取新索引，用 `hyphen-offline refresh NODE_DB delivery.bin NEW_INDEX renewed.bin` 更新证明，安装新的本地检查点，再用同一日志和同一目的地址重签。若资金交易本身脱链且未重新确认，索偿没有规范链资金可供兑付。
+
+### 甲经乙向丙付款
+
+丙用自己断网前安装的检查点检验预锁，再对自己留存的订单验签。甲在自己的数据库中虚构资金，即使乙签名转交，丙也无法验出对应的规范链预锁。若检查点尚未覆盖资金证明所在的区块，丙必须先同步自己的节点并更新检查点。对确有资金的付款，丙可以在甲、乙均失联后独立签署和提交兑付。检查点之后有人从同一预锁另行兑付的风险，持续到丙恢复联网并重新核验。需要以到账为条件交货的订单，应等到自己的节点确认该请求、地址、净额及约定深度后再交货。
+
+`confirm-online` 使用本机回环地址上的自有同步节点，在一次链状态读取中取得链顶、花费标识对应的交易、区块及资金输出。客户端复核签名和兑付条款。仅进入交易池、节点离线、查询失败或确认深度不足时，订单均不能据此入账。重组后按原订单再查一次：若另一笔授权胜出，原确认作废；若节点暂时不可达，当前状态待核验。`--save-settlement` 可选，会保存当时观察到的规范兑付原文，包括竞争方的有效兑付。相同字节可重复保存，换链后请为新交易使用新文件名。留存原交易及查询时的区块哈希，日后可分别核对谁签过什么，以及当时观察到哪一条链。
+
+`verify-conflict` 会验证两条完整授权链。若同一公钥从同一前序状态授权两份不同的请求，结果给出公钥、前序摘要及两份请求摘要。若旧持有人既签出转付，又在同一状态签署兑付，搭配原始兑付交易可验证 `redeemed_and_delegated_by`。仅有一条授权链及其前缀不足以证明双签。上述离线证据可以验证密钥行为；确认交易是否仍在规范链上需要自有节点。协议未登记现实身份，也没有自动赔付资金来源。
 
 ## 检查点、恢复和数据开销
 
@@ -102,6 +112,8 @@ The parent at height 1,023 held 75,015,400 bytes of compressed undo values befor
 ## English protocol and operations
 
 To confirm an order, supply the recipient's retained invoice, expected net amount and payout address to `hyphen-offline confirm`. The command reads the recipient's synchronized, stopped node and exits successfully only after the matching settlement has reached the requested depth on that node's canonical chain. The default is one block. The returned `reserve_spend` stays the same across retries, competing authorizations and funding relocation. Use it as a unique ledger key and reconcile its block hash after a reorganization. A sender can discard every wallet it created without affecting these checks. Offline acceptance establishes a conditional claim until settlement.
+
+With your own synchronized node running, use `confirm-online` as shown in the command table. The node reads the source, spending transaction, block and tip in one chain state. The client verifies the signed claim and checks it against the retained order. A mempool entry, insufficient depth or an unavailable node leaves that order unconfirmed by the query. Recheck after a reorganization. Use `--save-settlement` to preserve the signed transaction even when a competing receipt won. Use a fresh filename for a different winner. The saved transaction and signed delivery allow `verify-conflict --settlement` to identify a key that both delegated and redeemed the same state, or authorized two different requests from it. Two delivery files alone can prove the latter. Offline signature evidence survives a reorganization. Canonical inclusion, the operator's legal identity and compensation each require separate evidence or arrangements.
 
 Each hop uses one recipient key to sign the request and one current-holder key to authorize delivery. The current signer exposes a single holder key per hop. M-of-N custody is outside this signer. Colluding key holders can authorize competing histories. The canonical reserve marker still limits the chain to one payout, and each recipient checks their retained order against that payout.
 

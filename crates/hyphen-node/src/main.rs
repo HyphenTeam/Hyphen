@@ -16,7 +16,7 @@ use p2p::{PeerSync, purge_block_transactions};
 
 use hyphen_consensus::{
     Blockchain, ChainArchive, build_genesis_block, export_archive, replay_archive,
-    verify_archive_envelopes,
+    verify_historical_archive,
 };
 use hyphen_core::config::{ChainConfig, GENESIS_TIMESTAMP_MS};
 use hyphen_core::timestamp::{ntp_adjusted_timestamp_ms, start_ntp_sync_task};
@@ -75,7 +75,7 @@ struct Cli {
     #[arg(long)]
     replay_history: Option<PathBuf>,
 
-    /// Verify archive identity, linkage, roots and miner authorization without applying state.
+    /// Verify all historical transitions in a disposable database, independent of the local clock.
     #[arg(long)]
     verify_history: Option<PathBuf>,
 
@@ -169,11 +169,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(path) = &cli.verify_history {
         let archive = read_chain_archive(path)?;
-        let report = verify_archive_envelopes(
-            &cfg,
-            &archive,
-            hyphen_core::timestamp::ntp_adjusted_timestamp_ms(),
-        )?;
+        let report = verify_historical_archive(&cfg, &archive)?;
         println!(
             "verified_blocks={} final_height={} final_hash={}",
             report.blocks_applied, report.final_height, report.final_hash
@@ -214,18 +210,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(path) = &cli.replay_history {
         let archive = read_chain_archive(path)?;
-        let envelope_report = verify_archive_envelopes(
-            &cfg,
-            &archive,
-            hyphen_core::timestamp::ntp_adjusted_timestamp_ms(),
-        )?;
         let replay_report = replay_archive(&blockchain, &archive)?;
         println!(
-            "verified_blocks={} replayed_blocks={} final_height={} final_hash={}",
-            envelope_report.blocks_applied,
+            "verified_blocks={} replayed_blocks={} final_height={} final_hash={} observation_ms={}",
+            archive.blocks.len(),
             replay_report.blocks_applied,
             replay_report.final_height,
-            replay_report.final_hash
+            replay_report.final_hash,
+            replay_report.time_horizon_ms
         );
         return Ok(());
     }

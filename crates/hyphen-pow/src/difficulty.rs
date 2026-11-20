@@ -1,10 +1,8 @@
 //! Difficulty control in the work domain.
 //!
-//! `difficulty` is the expected number of field evaluations a solver performs
-//! before it finds a claim that meets the target, and cumulative difficulty is
-//! the fork-choice weight. The controller therefore estimates a work magnitude:
-//! it scales the previous value by the ratio of target block time to observed
-//! solve time.
+//! On Cunningham profiles `difficulty` counts distinct origins required for
+//! this block. The retarget uses observed timestamps. Neither the count nor
+//! the timestamps measure when the underlying prime chains were discovered.
 //!
 //! Everything on the consensus path is integer-only by construction. A
 //! difficulty value decides which branch wins, so a `libm` result that differs

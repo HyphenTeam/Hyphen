@@ -304,7 +304,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
   --export-history /var/backups/hyphen.chain
 sudo systemctl start hyphen-node
 
-# verify without touching any database
+# verify every historical transition in a temporary database
 sudo /opt/hyphen/bin/hyphen-node --network devnet --verify-history /var/backups/hyphen.chain
 
 # or rebuild a fresh data directory from it
@@ -313,8 +313,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
   --replay-history /var/backups/hyphen.chain
 ```
 
-`--verify-history` and `--replay-history` reject archives above 512 MiB; past
-that size move the stopped data directory instead.
+Live import reports one `observation_ms` for the entire archive. A future-time error reports the clock and height before any archived block is applied. A later failure during state execution can leave a validated prefix in the destination. Use a fresh destination for a retry. Both commands accept archives up to 512 MiB. For larger histories, copy a stopped database from a trusted source.
 
 ## 10. Logs and monitoring
 
@@ -623,7 +622,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
   --export-history /var/backups/hyphen.chain
 sudo systemctl start hyphen-node
 
-# 不碰任何数据库，只验证
+# 在临时数据库中验证全部历史状态转移
 sudo /opt/hyphen/bin/hyphen-node --network devnet --verify-history /var/backups/hyphen.chain
 
 # 或用它重建一个全新数据目录
@@ -632,7 +631,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
   --replay-history /var/backups/hyphen.chain
 ```
 
-`--verify-history` 与 `--replay-history` 拒绝超过 512 MiB 的归档；链长超过这个规模就直接搬停机后的数据目录。
+现场导入对整份归档使用同一 `observation_ms`。未来时间错误会在写入第一个归档区块之前报告观察时刻和高度。后续状态执行出错时，目标库可能已有通过验证的前缀，重试应使用新目标目录。两条命令的输入上限均为 512 MiB。更长历史可从可信来源复制停机后的数据库。
 
 ## 10. 日志与监控
 

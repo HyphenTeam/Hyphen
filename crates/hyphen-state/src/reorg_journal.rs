@@ -62,6 +62,10 @@ pub trait ReorgBackend {
     /// Atomically attach `block`; an error must leave the backend unchanged.
     fn attach(&mut self, block: Hash256) -> Result<(), Self::Error>;
     fn flush(&mut self) -> Result<(), Self::Error>;
+
+    /// Notification between a successful journal write and its durability barrier.
+    /// Recovery tests can terminate the process at this exact boundary.
+    fn journal_changed(&self) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,7 +147,7 @@ impl ReorgCoordinator {
             .journal
             .compare_and_swap(JOURNAL_KEY, None as Option<&[u8]>, Some(encoded))?
         {
-            Ok(()) => self.flush_journal()?,
+            Ok(()) => self.flush_journal(backend)?,
             Err(_) => return Err(ReorgCoordinatorError::JournalAlreadyPending),
         }
         self.drive(backend, journal)
@@ -195,7 +199,7 @@ impl ReorgCoordinator {
                             let previous = journal.clone();
                             journal.mode = ReorgMode::RestoringOriginal;
                             journal.rejection_reason = Some(bounded_reason(&error.to_string()));
-                            self.replace_journal(&previous, &journal)?;
+                            self.replace_journal(backend, &previous, &journal)?;
                         } else {
                             backend.flush().map_err(backend_error)?;
                         }
@@ -203,7 +207,7 @@ impl ReorgCoordinator {
                     }
 
                     backend.flush().map_err(backend_error)?;
-                    self.clear_journal(&journal)?;
+                    self.clear_journal(backend, &journal)?;
                     return Ok(ReorgOutcome::AppliedCandidate { new_tip: tip });
                 }
                 ReorgMode::RestoringOriginal => {
@@ -238,7 +242,7 @@ impl ReorgCoordinator {
                         .rejection_reason
                         .clone()
                         .ok_or(ReorgCoordinatorError::InvalidRejectionReason)?;
-                    self.clear_journal(&journal)?;
+                    self.clear_journal(backend, &journal)?;
                     return Ok(ReorgOutcome::RestoredOriginal {
                         old_tip: tip,
                         reason,
@@ -250,6 +254,7 @@ impl ReorgCoordinator {
 
     fn replace_journal(
         &self,
+        backend: &impl ReorgBackend,
         expected: &ReorgJournal,
         replacement: &ReorgJournal,
     ) -> Result<(), ReorgCoordinatorError> {
@@ -261,24 +266,29 @@ impl ReorgCoordinator {
             Some(expected.as_slice()),
             Some(replacement),
         )? {
-            Ok(()) => self.flush_journal(),
+            Ok(()) => self.flush_journal(backend),
             Err(_) => Err(ReorgCoordinatorError::ConcurrentChange),
         }
     }
 
-    fn clear_journal(&self, expected: &ReorgJournal) -> Result<(), ReorgCoordinatorError> {
+    fn clear_journal(
+        &self,
+        backend: &impl ReorgBackend,
+        expected: &ReorgJournal,
+    ) -> Result<(), ReorgCoordinatorError> {
         let encoded = encode(expected)?;
         match self.journal.compare_and_swap(
             JOURNAL_KEY,
             Some(encoded.as_slice()),
             None as Option<&[u8]>,
         )? {
-            Ok(()) => self.flush_journal(),
+            Ok(()) => self.flush_journal(backend),
             Err(_) => Err(ReorgCoordinatorError::ConcurrentChange),
         }
     }
 
-    fn flush_journal(&self) -> Result<(), ReorgCoordinatorError> {
+    fn flush_journal(&self, backend: &impl ReorgBackend) -> Result<(), ReorgCoordinatorError> {
+        backend.journal_changed();
         self.journal.flush()?;
         Ok(())
     }

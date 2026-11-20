@@ -187,7 +187,51 @@ pub struct Voucher {
     pub transfers: Vec<Transfer>,
 }
 
+/// Two different requests authorized by the same key from the same delegation state.
+pub struct ConflictingAuthorization {
+    pub head: Hash256,
+    pub signer: PublicKey,
+    pub first_request: Hash256,
+    pub second_request: Hash256,
+}
+
 impl Voucher {
+    /// Authenticate both complete histories before reporting any signer. Different
+    /// encodings/signatures of the same request do not prove different instructions.
+    pub fn conflicting_authorization(
+        &self,
+        other: &Self,
+        chain: Hash256,
+    ) -> Result<Option<ConflictingAuthorization>> {
+        let mut left = Vec::new();
+        self.verify_history(chain, |head, signer, invoice| {
+            left.push((
+                head,
+                signer,
+                Invoice::digest(head, invoice.recipient, &invoice.nonce),
+            ));
+        })?;
+        let mut edges = left.into_iter();
+        let mut conflict = None;
+        other.verify_history(chain, |head, signer, invoice| {
+            if let Some((previous_head, previous_signer, first_request)) = edges.next()
+                && previous_head == head
+                && previous_signer == signer
+            {
+                let second_request = Invoice::digest(head, invoice.recipient, &invoice.nonce);
+                if first_request != second_request {
+                    conflict = Some(ConflictingAuthorization {
+                        head,
+                        signer,
+                        first_request,
+                        second_request,
+                    });
+                }
+            }
+        })?;
+        Ok(conflict)
+    }
+
     pub fn holder(&self, chain: Hash256) -> Result<(Hash256, PublicKey)> {
         self.verify_history(chain, |_, _, _| {})
     }
@@ -321,6 +365,7 @@ pub fn verify_claim(
 pub struct VerifiedSettlement {
     pub receipt: Hash256,
     pub destination: StealthAddress,
+    pub voucher: Voucher,
 }
 
 pub fn verified_settlement(
@@ -397,6 +442,7 @@ pub fn verified_settlement(
     Ok(VerifiedSettlement {
         receipt: head,
         destination: claim.destination,
+        voucher: claim.voucher,
     })
 }
 

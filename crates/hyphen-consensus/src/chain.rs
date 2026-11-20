@@ -112,6 +112,13 @@ pub struct CanonicalOutput {
     pub output_index: u32,
 }
 
+pub struct OfflineSpend {
+    pub transaction: Vec<u8>,
+    pub block: Hash256,
+    pub height: u64,
+    pub source: IndexedOutput,
+}
+
 /// Protocol envelopes occupy block positions but do not create shielded outputs.
 pub fn protocol_envelope(blob: &[u8]) -> bool {
     [
@@ -162,19 +169,18 @@ impl Blockchain {
         cache_bytes: u64,
     ) -> Result<Self, CoreError> {
         let db = open_db(path, cache_bytes)?;
-        let verifier: Arc<dyn ProofVerifier> = if cfg.feature_enabled(FEATURE_INLINE_COMPUTE) {
-            Arc::new(InlineNeuralVerifier)
-        } else {
-            Arc::new(NeuralWorkVerifier)
-        };
-        Self::open_db_with_verifier(db, cfg, verifier)
+        Self::open_db(db, cfg)
     }
 
-    /// Tests that exercise unrelated consensus rules keep the fail-closed
-    /// verifier, so a neural settlement cannot change their expectations.
-    #[cfg(test)]
-    fn open_db(db: sled::Db, cfg: ChainConfig) -> Result<Self, CoreError> {
-        Self::open_db_with_verifier(db, cfg, Arc::new(hyphen_compute::RejectingVerifier))
+    pub(crate) fn open_db(db: sled::Db, cfg: ChainConfig) -> Result<Self, CoreError> {
+        let verifier: Arc<dyn ProofVerifier> = if cfg.feature_enabled(FEATURE_INLINE_COMPUTE) {
+            Arc::new(InlineNeuralVerifier)
+        } else if cfg.feature_enabled(hyphen_core::FEATURE_USEFUL_WORK) {
+            Arc::new(NeuralWorkVerifier)
+        } else {
+            Arc::new(hyphen_compute::RejectingVerifier)
+        };
+        Self::open_db_with_verifier(db, cfg, verifier)
     }
 
     pub fn open_with_compute_verifier(
@@ -182,9 +188,9 @@ impl Blockchain {
         cfg: ChainConfig,
         verifier: Arc<dyn ProofVerifier>,
     ) -> Result<Self, CoreError> {
-        if cfg.feature_enabled(FEATURE_INLINE_COMPUTE) {
+        if cfg.feature_enabled(FEATURE_INLINE_COMPUTE | hyphen_core::FEATURE_USEFUL_WORK) {
             return Err(CoreError::Validation(
-                "inline compute network requires its consensus verifier".into(),
+                "compute-enabled network requires its profile verifier".into(),
             ));
         }
         let db = open_db(path, DEFAULT_DB_CACHE_BYTES)?;
@@ -409,6 +415,79 @@ impl Blockchain {
     pub fn canonical_output(&self, index: u64) -> Result<CanonicalOutput, CoreError> {
         let _view = self.canonical_view()?;
         let _transition = self.transition.lock();
+        self.canonical_output_locked(index)
+    }
+
+    /// Resolve a reserve spend and its source against one committed tip, including during peer reorgs.
+    pub fn offline_spend(
+        &self,
+        image: Hash256,
+    ) -> Result<(ChainTip, Option<OfflineSpend>), CoreError> {
+        use hyphen_tx::offline::{CLAIM_VERSION, SPENT_PREFIX};
+        if !self
+            .cfg
+            .feature_enabled(hyphen_core::config::FEATURE_OFFLINE_CLAIMS)
+            || !image.as_bytes().starts_with(SPENT_PREFIX)
+        {
+            return Err(CoreError::Validation(
+                "expected an offline reserve marker on an active network".into(),
+            ));
+        }
+        let _transition = self.transition.lock();
+        self.ensure_reorg_complete()?;
+        let tip = self.tip()?;
+        let Some(height) = self
+            .nullifiers
+            .spent_height(image.as_bytes())
+            .map_err(|e| CoreError::Storage(e.to_string()))?
+        else {
+            return Ok((tip, None));
+        };
+        let block = self
+            .blocks
+            .get_block_by_height(height)
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
+        let hash = block.hash();
+        for blob in block.transactions {
+            if blob.first() != Some(&CLAIM_VERSION) {
+                continue;
+            }
+            let tx = Transaction::deserialise_limited(&blob)
+                .map_err(|e| CoreError::Serialisation(e.to_string()))?;
+            let [input] = tx.inputs.as_slice() else {
+                continue;
+            };
+            if input.key_image != image.0 {
+                continue;
+            }
+            let [reference] = input.ring.as_slice() else {
+                return Err(CoreError::Storage(
+                    "malformed canonical reserve spend".into(),
+                ));
+            };
+            let entry = self.canonical_output_locked(reference.global_index)?;
+            let output = &entry.transaction.outputs[entry.output_index as usize];
+            return Ok((
+                tip,
+                Some(OfflineSpend {
+                    transaction: blob,
+                    block: hash,
+                    height,
+                    source: IndexedOutput {
+                        global_index: reference.global_index,
+                        one_time_pubkey: output.one_time_pubkey,
+                        commitment: *output.commitment.as_bytes(),
+                        block_height: entry.block_height,
+                    },
+                }),
+            ));
+        }
+        Err(CoreError::Storage(
+            "canonical spend missing from indexed block".into(),
+        ))
+    }
+
+    fn canonical_output_locked(&self, index: u64) -> Result<CanonicalOutput, CoreError> {
         let tip = self.tip()?;
         if index >= tip.total_outputs {
             return Err(CoreError::Validation(
@@ -724,10 +803,25 @@ impl Blockchain {
     }
 
     pub fn accept_block(&self, block: &Block) -> Result<(), CoreError> {
+        self.accept_block_at(block, ntp_adjusted_timestamp_ms())
+    }
+
+    pub(crate) fn accept_block_at(
+        &self,
+        block: &Block,
+        observation_ms: u64,
+    ) -> Result<(), CoreError> {
         let _visibility = self.reorg_visibility.write();
         let _transition = self.transition.lock();
         self.ensure_reorg_complete()?;
+        self.check_arrival_time(block, observation_ms)?;
         self.accept_block_locked(block)
+    }
+
+    fn check_arrival_time(&self, block: &Block, now_ms: u64) -> Result<(), CoreError> {
+        BlockValidator::new(&self.cfg)
+            .check_arrival_time(&block.header, now_ms)
+            .map_err(|_| CoreError::FutureTimestamp)
     }
 
     /// A template-provider client may retry after the acknowledgement is lost.
@@ -749,12 +843,12 @@ impl Blockchain {
         {
             return Ok(());
         }
+        self.check_arrival_time(block, ntp_adjusted_timestamp_ms())?;
         self.accept_block_locked(block)
     }
 
     fn accept_block_locked(&self, block: &Block) -> Result<(), CoreError> {
         let tip = self.tip()?;
-        let now_ms = ntp_adjusted_timestamp_ms();
 
         let parent_header = self
             .blocks
@@ -772,7 +866,7 @@ impl Blockchain {
         let validator = BlockValidator::new(&self.cfg);
 
         validator
-            .validate_header(&block.header, tip.height, &tip.hash, prev_timestamp, now_ms)
+            .validate_history_header(&block.header, tip.height, &tip.hash, prev_timestamp)
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
         validator
@@ -1146,7 +1240,7 @@ impl Blockchain {
     pub fn execute_reorg(&self, plan: ReorgPlan) -> Result<ReorgOutcome, CoreError> {
         let _visibility = self.reorg_visibility.write();
         let _transition = self.transition.lock();
-        self.execute_reorg_locked(plan)
+        self.execute_reorg_locked(plan, ntp_adjusted_timestamp_ms())
     }
 
     pub fn canonical_view(&self) -> Result<parking_lot::RwLockReadGuard<'_, ()>, CoreError> {
@@ -1169,8 +1263,12 @@ impl Blockchain {
         Ok(())
     }
 
-    fn execute_reorg_locked(&self, plan: ReorgPlan) -> Result<ReorgOutcome, CoreError> {
-        self.validate_reorg_plan(&plan)?;
+    fn execute_reorg_locked(
+        &self,
+        plan: ReorgPlan,
+        observation_ms: u64,
+    ) -> Result<ReorgOutcome, CoreError> {
+        self.validate_reorg_plan(&plan, observation_ms)?;
         let mut backend = BlockchainReorgBackend { chain: self };
         self.reorg
             .execute(&mut backend, plan)
@@ -1197,6 +1295,15 @@ impl Blockchain {
         &self,
         blocks: &[Block],
         claimed_work: u128,
+    ) -> Result<Vec<Hash256>, CoreError> {
+        self.accept_peer_branch_at(blocks, claimed_work, ntp_adjusted_timestamp_ms())
+    }
+
+    pub(crate) fn accept_peer_branch_at(
+        &self,
+        blocks: &[Block],
+        claimed_work: u128,
+        observation_ms: u64,
     ) -> Result<Vec<Hash256>, CoreError> {
         let _visibility = self.reorg_visibility.write();
         let _transition = self.transition.lock();
@@ -1266,12 +1373,11 @@ impl Blockchain {
             }
             let parent = history.last().expect("ancestor header is present");
             validator
-                .validate_header(
+                .validate_history_header(
                     &block.header,
                     parent.height,
                     &parent.hash(),
                     parent.timestamp,
-                    ntp_adjusted_timestamp_ms(),
                 )
                 .and_then(|_| validator.validate_block_authorization(block, self.chain_id()))
                 .and_then(|_| validator.validate_tx_root(block))
@@ -1319,7 +1425,7 @@ impl Blockchain {
             .and_then(|_| self.peer_candidate.apply_batch(batch))
             .and_then(|_| self.peer_candidate.flush())
             .map_err(|e| CoreError::Storage(e.to_string()))?;
-        let outcome = self.execute_reorg_locked(plan);
+        let outcome = self.execute_reorg_locked(plan, observation_ms);
         self.ensure_reorg_complete()?;
         self.peer_candidate
             .clear()
@@ -1330,7 +1436,7 @@ impl Blockchain {
         }
     }
 
-    fn validate_reorg_plan(&self, plan: &ReorgPlan) -> Result<(), CoreError> {
+    fn validate_reorg_plan(&self, plan: &ReorgPlan, observation_ms: u64) -> Result<(), CoreError> {
         let tip = self.tip()?;
         let expected_tip = plan.detach.first().copied().unwrap_or(plan.common_ancestor);
         if expected_tip != tip.hash || plan.old_work != tip.cumulative_difficulty {
@@ -1389,6 +1495,9 @@ impl Blockchain {
                 .checked_add(1)
                 .ok_or_else(|| CoreError::Validation("reorg height overflow".into()))?;
             let block = self.load_reorg_block(expected)?;
+            // Admission happens before the journal is persisted. Recovery may
+            // subsequently run with a different clock, including during rollback.
+            self.check_arrival_time(&block, observation_ms)?;
             if block.header.prev_hash != parent || block.header.height != height {
                 return Err(CoreError::Validation(
                     "reorg attach path is not contiguous".into(),
@@ -1544,6 +1653,10 @@ fn ensure_chain_identity(db: &sled::Db, cfg: &ChainConfig) -> Result<sled::Tree,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transition_vectors.rs"]
+mod transition_vectors;
 
 #[cfg(test)]
 mod tests {
@@ -1713,6 +1826,57 @@ mod tests {
         assert!(chain.accept_submitted_block(&block).is_err());
         assert!(chain.accept_submitted_block(&genesis).is_err());
         assert_eq!(chain.tip().unwrap().height, 1);
+    }
+
+    #[test]
+    fn future_block_can_be_resubmitted_at_exact_clock_boundary() {
+        let cfg = ChainConfig::devnet();
+        let chain = Blockchain::open_db(
+            sled::Config::new().temporary(true).open().unwrap(),
+            cfg.clone(),
+        )
+        .unwrap();
+        let genesis = build_genesis_block(&cfg);
+        let first = child(&cfg, &genesis, 11, 30_000);
+        let earliest = first.header.timestamp - cfg.timestamp_future_limit_ms;
+        assert!(matches!(
+            chain.accept_block_at(&first, earliest - 1),
+            Err(CoreError::FutureTimestamp)
+        ));
+        assert_eq!(chain.tip().unwrap().hash, genesis.hash());
+        chain.accept_block_at(&first, earliest).unwrap();
+        let second = child(&cfg, &first, 12, 0);
+        assert!(
+            chain
+                .accept_block_at(&second, u64::MAX)
+                .unwrap_err()
+                .to_string()
+                .contains("timestamp too old")
+        );
+        let mut future = first;
+        future.header.timestamp = ntp_adjusted_timestamp_ms() + 86_400_000;
+        authorize_block(&cfg, &mut future, 11);
+        let mut archive = crate::export_archive(&chain).unwrap();
+        archive.blocks = vec![future.clone()];
+        assert_eq!(
+            crate::verify_historical_archive(&cfg, &archive)
+                .unwrap()
+                .final_hash,
+            future.hash()
+        );
+        let live = Blockchain::open_db(
+            sled::Config::new().temporary(true).open().unwrap(),
+            cfg.clone(),
+        )
+        .unwrap();
+        assert!(
+            crate::replay_archive(&live, &archive)
+                .unwrap_err()
+                .contains("archive admission")
+        );
+        assert_eq!(live.height().unwrap(), 0);
+        archive.blocks.push(second);
+        assert!(crate::verify_historical_archive(&cfg, &archive).is_err());
     }
 
     #[test]
@@ -2062,7 +2226,9 @@ mod tests {
             chain.stage_reorg_block(block).unwrap();
         }
         let reorg_plan = plan(&genesis, &old, &new);
-        chain.validate_reorg_plan(&reorg_plan).unwrap();
+        chain
+            .validate_reorg_plan(&reorg_plan, ntp_adjusted_timestamp_ms())
+            .unwrap();
         {
             let _transition = chain.transition.lock();
             let mut backend = InterruptingBackend {
@@ -2079,6 +2245,186 @@ mod tests {
         assert_eq!(reopened.tip().unwrap().hash, new[2].hash());
         assert_eq!(reopened.tip().unwrap().cumulative_difficulty, 6);
         assert!(reopened.reorg.pending().unwrap().is_none());
+    }
+
+    #[test]
+    fn durable_reorg_stages_match_genesis_replay() {
+        use std::{cell::Cell, process::Command};
+        struct StopAt<'a> {
+            inner: BlockchainReorgBackend<'a>,
+            calls: Cell<usize>,
+            stop: usize,
+        }
+        impl StopAt<'_> {
+            fn boundary(&self, stage: &str) {
+                let at = self.calls.replace(self.calls.get() + 1);
+                if at == self.stop {
+                    eprintln!("cut={at} stage={stage}");
+                    std::process::exit(if at == 0 { 85 } else { 86 });
+                }
+            }
+        }
+        impl ReorgBackend for StopAt<'_> {
+            type Error = CoreError;
+            fn tip(&self) -> Result<Hash256, CoreError> {
+                self.boundary("before_tip_read");
+                self.inner.tip()
+            }
+            fn detach_tip(&mut self, hash: Hash256) -> Result<(), CoreError> {
+                self.boundary("before_detach");
+                self.inner.detach_tip(hash)
+            }
+            fn attach(&mut self, hash: Hash256) -> Result<(), CoreError> {
+                self.boundary("before_attach");
+                self.inner.attach(hash)
+            }
+            fn flush(&mut self) -> Result<(), CoreError> {
+                self.boundary("before_backend_flush");
+                self.inner.flush()
+            }
+            fn journal_changed(&self) {
+                self.boundary("after_journal_cas_before_flush");
+            }
+        }
+        let cfg = test_config();
+        let (genesis, old, mut candidate) = competing_branches(&cfg);
+        if let Ok(path) = std::env::var("HYPHEN_REORG_TEST_DB") {
+            if std::env::var("HYPHEN_REORG_TEST_RESTORE").unwrap() == "true" {
+                candidate[2].header.state_root = Hash256::from_bytes([4; 32]);
+                authorize_block(&cfg, &mut candidate[2], 23);
+            }
+            let chain = Blockchain::open(&path, cfg).unwrap();
+            for b in &old {
+                chain.accept_block(b).unwrap();
+            }
+            for b in &candidate {
+                chain.stage_reorg_block(b).unwrap();
+            }
+            chain.db.flush().unwrap();
+            let plan = plan(&genesis, &old, &candidate);
+            chain
+                .validate_reorg_plan(&plan, ntp_adjusted_timestamp_ms())
+                .unwrap();
+            let mut backend = StopAt {
+                inner: BlockchainReorgBackend { chain: &chain },
+                calls: Cell::new(0),
+                stop: std::env::var("HYPHEN_REORG_TEST_CUT")
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+            };
+            chain.reorg.execute(&mut backend, plan).unwrap();
+            backend.boundary("after_journal_cleanup_flush");
+            return;
+        }
+        let reference = |blocks: &[Block]| {
+            let chain = Blockchain::open_db(
+                sled::Config::new().temporary(true).open().unwrap(),
+                cfg.clone(),
+            )
+            .unwrap();
+            for b in blocks {
+                chain.accept_block(b).unwrap();
+            }
+            chain
+        };
+        let original = reference(&old);
+        let winner = reference(&candidate);
+        let stem = std::env::temp_dir().join(format!(
+            "hyphen-journal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&stem).unwrap();
+        for restore in [false, true] {
+            for cut in 0..100 {
+                let path = stem.join(format!("{restore}-{cut}"));
+                let child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "chain::tests::durable_reorg_stages_match_genesis_replay",
+                        "--nocapture",
+                    ])
+                    .env("HYPHEN_REORG_TEST_DB", &path)
+                    .env("HYPHEN_REORG_TEST_RESTORE", restore.to_string())
+                    .env("HYPHEN_REORG_TEST_CUT", cut.to_string())
+                    .output()
+                    .unwrap();
+                let code = child.status.code().unwrap();
+                assert!(
+                    matches!(code, 0 | 85 | 86),
+                    "{cut} {} {}",
+                    String::from_utf8_lossy(&child.stdout),
+                    String::from_utf8_lossy(&child.stderr)
+                );
+                let actual = Blockchain::open(path.to_str().unwrap(), cfg.clone()).unwrap();
+                // At cut 1 the intent entered sled's cache. Either durable
+                // result is legal until the initial journal flush returns.
+                let initial_intent_lost =
+                    cut == 1 && actual.tip().unwrap().hash == original.tip().unwrap().hash;
+                let expected = if restore || code == 85 || initial_intent_lost {
+                    &original
+                } else {
+                    &winner
+                };
+                assert!(actual.reorg.pending().unwrap().is_none());
+                assert_eq!(actual.tip().unwrap(), expected.tip().unwrap());
+                assert_eq!(actual.state_root().unwrap(), expected.state_root().unwrap());
+                assert_eq!(
+                    actual.commitment_tree.read().root(),
+                    expected.commitment_tree.read().root()
+                );
+                assert_eq!(
+                    actual.nullifiers.root_hash().unwrap(),
+                    expected.nullifiers.root_hash().unwrap()
+                );
+                assert_eq!(
+                    actual.witnesses.claimed_count(),
+                    expected.witnesses.claimed_count()
+                );
+                // Compare every stored (origin, claiming height) byte pair,
+                // including any unexpected records outside the two paths.
+                let claims = |chain: &Blockchain| {
+                    let index = chain
+                        .db
+                        .tree_names()
+                        .into_iter()
+                        .find(|name| name.starts_with(b"pow_witness_index_v2_"))
+                        .unwrap();
+                    chain
+                        .db
+                        .open_tree(index)
+                        .unwrap()
+                        .iter()
+                        .collect::<sled::Result<Vec<_>>>()
+                        .unwrap()
+                };
+                assert_eq!(claims(&actual), claims(expected));
+                if code != 0 {
+                    eprintln!(
+                        "restore={restore} {} recovered_height={}",
+                        String::from_utf8_lossy(&child.stderr).trim(),
+                        actual.height().unwrap()
+                    );
+                }
+                drop(actual);
+                std::fs::remove_dir_all(path).unwrap();
+                if code == 0 {
+                    assert!(cut > 10);
+                    eprintln!(
+                        "restore={restore} process_cuts={cut} tip={} height={}",
+                        expected.tip().unwrap().hash,
+                        expected.height().unwrap()
+                    );
+                    break;
+                }
+                assert!(cut < 99, "all recovery stages must be reached");
+            }
+        }
+        std::fs::remove_dir(stem).unwrap();
     }
 
     /// Builds a block that satisfies the neural work rule for `parent`.

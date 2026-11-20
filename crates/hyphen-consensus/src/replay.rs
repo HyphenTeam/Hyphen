@@ -21,9 +21,12 @@ pub struct ReplayReport {
     pub blocks_applied: u64,
     pub final_height: u64,
     pub final_hash: Hash256,
+    /// Live observation time, or the maximum archived timestamp for historical verification.
+    pub time_horizon_ms: u64,
 }
 
 pub fn export_archive(blockchain: &Blockchain) -> Result<ChainArchive, String> {
+    let _view = blockchain.canonical_view().map_err(|e| e.to_string())?;
     let tip = blockchain.tip().map_err(|error| error.to_string())?;
     let mut blocks = Vec::with_capacity(tip.height as usize);
     for height in 1..=tip.height {
@@ -87,6 +90,7 @@ pub fn verify_archive_envelopes(
         blocks_applied: archive.blocks.len() as u64,
         final_height: previous_height,
         final_hash: previous_hash,
+        time_horizon_ms: now_ms,
     })
 }
 
@@ -95,6 +99,41 @@ pub fn verify_archive_envelopes(
 pub fn replay_archive(
     blockchain: &Blockchain,
     archive: &ChainArchive,
+) -> Result<ReplayReport, String> {
+    let observed = hyphen_core::timestamp::ntp_adjusted_timestamp_ms();
+    verify_archive_envelopes(&blockchain.cfg, archive, observed)
+        .map_err(|e| format!("archive admission at {observed}: {e}"))?;
+    replay_at(blockchain, archive, observed)
+}
+
+/// Fully verify historical bytes in a disposable database. No live chain or
+/// clock is an input. Live import separately checks the observed future limit.
+pub fn verify_historical_archive(
+    cfg: &ChainConfig,
+    archive: &ChainArchive,
+) -> Result<ReplayReport, String> {
+    verify_archive_identity(cfg, archive)?;
+    let db = sled::Config::new()
+        .temporary(true)
+        .cache_capacity(crate::chain::DEFAULT_DB_CACHE_BYTES)
+        .open()
+        .map_err(|e| e.to_string())?;
+    let chain = Blockchain::open_db(db, cfg.clone()).map_err(|e| e.to_string())?;
+    // The observation horizon is the supplied history itself. Parent-relative
+    // chronology, retarget and every state transition are still checked.
+    let horizon = archive
+        .blocks
+        .iter()
+        .map(|b| b.header.timestamp)
+        .max()
+        .unwrap_or(0);
+    replay_at(&chain, archive, horizon)
+}
+
+fn replay_at(
+    blockchain: &Blockchain,
+    archive: &ChainArchive,
+    observation_ms: u64,
 ) -> Result<ReplayReport, String> {
     verify_archive_identity(&blockchain.cfg, archive)?;
     let tip = blockchain.tip().map_err(|error| error.to_string())?;
@@ -107,7 +146,7 @@ pub fn replay_archive(
 
     for block in &archive.blocks {
         blockchain
-            .accept_block(block)
+            .accept_block_at(block, observation_ms)
             .map_err(|error| format!("replay rejected height {}: {error}", block.header.height))?;
     }
     let tip = blockchain.tip().map_err(|error| error.to_string())?;
@@ -115,6 +154,7 @@ pub fn replay_archive(
         blocks_applied: archive.blocks.len() as u64,
         final_height: tip.height,
         final_hash: tip.hash,
+        time_horizon_ms: observation_ms,
     })
 }
 

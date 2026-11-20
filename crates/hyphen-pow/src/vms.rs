@@ -19,18 +19,10 @@
 //!
 //! # Why witnesses are single-use
 //!
-//! Any scheme that binds a witness to a header with a derived filter or residue
-//! class is unsound. A solver who builds a pool of `m / p` chains can satisfy
-//! every future header: the filter is evaluated independently per header, the
-//! pool persists, and the marginal cost of each additional block is a handful
-//! of hashes. Residue binding of width `b` fails the same way, because covering
-//! every class costs exactly one block's worth of work.
-//!
-//! Single-use witnesses close the loop: a precomputed pool can be spent once,
-//! so total work is conserved and precomputation degenerates into mining in
-//! advance. Uniqueness is the caller's job ([`search`] takes an `is_claimed`
-//! predicate), because it is a consensus-state question: the block builder and
-//! the validator must agree on the set of witnesses already recorded on chain.
+//! The mathematical predicate depends on the origin and length. The caller
+//! enforces one claim per origin on its current branch. Precomputed origins
+//! and origins from sibling branches can be consumed if absent from that
+//! branch. The commitment authenticates the submitted list and its position.
 
 use alloc::vec::Vec;
 use core::fmt;
