@@ -225,9 +225,16 @@ pub async fn write_envelope<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     env: &SignedEnvelope,
 ) -> Result<(), TPError> {
+    if env.encoded_len() > MAX_ENVELOPE_SIZE as usize {
+        return Err(TPError::Protocol("outgoing envelope too large".into()));
+    }
     let data = env.encode_to_vec();
-    writer.write_u32(data.len() as u32).await?;
-    writer.write_all(&data).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        writer.write_u32(data.len() as u32).await?;
+        writer.write_all(&data).await
+    })
+    .await
+    .map_err(std::io::Error::from)??;
     Ok(())
 }
 

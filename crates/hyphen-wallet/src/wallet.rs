@@ -257,11 +257,15 @@ impl Wallet {
             .collect()
     }
 
-    pub fn save(&self, path: &std::path::Path) -> Result<(), WalletError> {
-        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+    fn snapshot(&self) -> Result<zeroize::Zeroizing<Vec<u8>>, WalletError> {
+        crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .serialize(self)
-            .map_err(|e| WalletError::Serialize(e.to_string()))?;
-        std::fs::write(path, &data)?;
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| WalletError::Serialize(e.to_string()))
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> Result<(), WalletError> {
+        keystore::write_snapshot(path, &self.snapshot()?)?;
         Ok(())
     }
 
@@ -270,15 +274,12 @@ impl Wallet {
         path: &std::path::Path,
         password: &[u8],
     ) -> Result<(), WalletError> {
-        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-            .serialize(self)
-            .map_err(|e| WalletError::Serialize(e.to_string()))?;
-        keystore::seal_to_path(path, &data, password)?;
+        keystore::seal_to_path(path, &self.snapshot()?, password)?;
         Ok(())
     }
 
     pub fn load(path: &std::path::Path) -> Result<Self, WalletError> {
-        let data = std::fs::read(path)?;
+        let data = keystore::read_snapshot(path, crate::DEFAULT_WIRE_BYTES)?;
         let w: Self = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .deserialize(&data)
             .map_err(|e| WalletError::Serialize(e.to_string()))?;
@@ -286,7 +287,7 @@ impl Wallet {
     }
 
     pub fn load_encrypted(path: &std::path::Path, password: &[u8]) -> Result<Self, WalletError> {
-        let plaintext = keystore::open_from_path(path, password)?;
+        let plaintext = zeroize::Zeroizing::new(keystore::open_from_path(path, password)?);
         let wallet: Self = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .deserialize(&plaintext)
             .map_err(|e| WalletError::Serialize(e.to_string()))?;

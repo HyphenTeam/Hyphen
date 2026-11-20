@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::ReferenceExpiringState;
 use crate::chain_state::{ChainState, ChainTip, EPOCH_SEED_PREFIX, TIP_KEY};
-use crate::commitment_tree::{PersistentCommitmentTree, TREE_STATE_KEY};
+use crate::commitment_tree::{PersistentCommitmentTree, TREE_STATE_KEY, snapshot_codec};
 use crate::compress::{compress, decompress};
 use crate::compute_state::{COMPUTE_STATE_KEY, ComputeStateStore};
 use crate::nullifier_set::NullifierSet;
@@ -140,7 +140,7 @@ fn wes_consensus_root(state: &ReferenceExpiringState) -> Hash256 {
 fn compressed_snapshot(
     value: &impl rustbinary::CompactEncode,
 ) -> Result<Vec<u8>, AtomicStateError> {
-    let bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+    let bytes = snapshot_codec()
         .serialize(value)
         .map_err(|e| AtomicStateError::Serialize(e.to_string()))?;
     compress(&bytes).map_err(|e| AtomicStateError::Compress(e.to_string()))
@@ -661,7 +661,7 @@ pub fn revert_block_update(
         .get(block_hash.as_bytes())
         .map_err(|error| AtomicStateError::Storage(error.to_string()))?
         .ok_or(AtomicStateError::MissingUndo(*block_hash))?;
-    let undo: BlockUndo = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+    let undo: BlockUndo = snapshot_codec()
         .deserialize(&undo_bytes)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     if undo.block_hash != *block_hash {

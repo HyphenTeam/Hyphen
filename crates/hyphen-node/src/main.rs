@@ -1,7 +1,7 @@
 use clap::Parser;
 use parking_lot::RwLock;
 use prost::Message;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -434,12 +434,15 @@ async fn shutdown_signal() {
 }
 
 fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::Error>> {
-    let metadata = std::fs::metadata(path)?;
-    if metadata.len() > 512 * 1024 * 1024 {
+    const LIMIT: usize = 512 * 1024 * 1024;
+    let file = std::fs::File::open(path)?;
+    let mut encoded = Vec::new();
+    if file.metadata()?.len() > LIMIT as u64
+        || file.take(LIMIT as u64 + 1).read_to_end(&mut encoded)? > LIMIT
+    {
         return Err("chain archive exceeds the 512 MiB CLI limit".into());
     }
-    let encoded = std::fs::read(path)?;
-    Ok(wire_config(512 * 1024 * 1024).deserialize(&encoded)?)
+    Ok(wire_config(LIMIT).deserialize(&encoded)?)
 }
 
 /// Parses `--boot-nodes` into validated multiaddrs.
@@ -532,30 +535,37 @@ fn pair_with_peers(
 fn load_or_create_p2p_identity(
     path: &Path,
 ) -> Result<libp2p::identity::Keypair, Box<dyn std::error::Error>> {
-    if path.exists() {
-        let encoded = std::fs::read(path)?;
-        return libp2p::identity::Keypair::from_protobuf_encoding(&encoded)
-            .map_err(|e| format!("invalid p2p identity {}: {e}", path.display()).into());
+    let load = |file: std::fs::File| -> Result<_, Box<dyn std::error::Error>> {
+        let mut encoded = zeroize::Zeroizing::new(Vec::new());
+        if file.take(64 * 1024 + 1).read_to_end(&mut encoded)? > 64 * 1024 {
+            return Err("oversized p2p identity".into());
+        }
+        Ok(libp2p::identity::Keypair::from_protobuf_encoding(&encoded)?)
+    };
+    match std::fs::File::open(path) {
+        Ok(file) => return load(file),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
     let identity = libp2p::identity::Keypair::generate_ed25519();
-    let encoded = identity.to_protobuf_encoding()?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        // A default umask would leave this private key group/world readable.
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    let encoded = zeroize::Zeroizing::new(identity.to_protobuf_encoding()?);
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(&encoded)?;
+    staged.as_file().sync_all()?;
+    match staged.persist_noclobber(path) {
+        Ok(_) => {}
+        Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return load(std::fs::File::open(path)?);
+        }
+        Err(e) => return Err(e.into()),
     }
-    let mut file = options
-        .open(path)
-        .map_err(|e| format!("cannot create p2p identity {}: {e}", path.display()))?;
-    file.write_all(&encoded)?;
-    file.sync_all()?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
     info!("Created persistent P2P identity at {}", path.display());
     Ok(identity)
 }
@@ -569,15 +579,23 @@ async fn template_provider_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
     info!("Template Provider server listening on {addr}");
+    const MAX_TEMPLATE_CONNECTIONS: usize = 16;
+    let mut sessions = tokio::task::JoinSet::new();
 
     loop {
-        let (stream, peer_addr) = listener.accept().await?;
+        let (stream, peer_addr) = tokio::select! {
+            Some(done) = sessions.join_next(), if !sessions.is_empty() => {
+                if let Err(error) = done { warn!("TP session stopped: {error}"); }
+                continue;
+            }
+            incoming = listener.accept(), if sessions.len() < MAX_TEMPLATE_CONNECTIONS => incoming?,
+        };
         info!("TP client connected from {peer_addr}");
         let bc = Arc::clone(&blockchain);
         let mp = Arc::clone(&mempool);
         let cfg = cfg.clone();
         let events = block_events.clone();
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             if let Err(e) = handle_tp_client(stream, bc, mp, cfg, events).await {
                 warn!("TP client {peer_addr} disconnected: {e}");
             }
@@ -597,7 +615,11 @@ async fn handle_tp_client(
     let node_sk = hyphen_crypto::SecretKey::generate();
 
     loop {
-        let env = read_envelope(&mut reader).await?;
+        let env = tokio::time::timeout(
+            std::time::Duration::from_secs(90),
+            read_envelope(&mut reader),
+        )
+        .await??;
         if !env.verify() {
             return Err("invalid or stale TP envelope signature".into());
         }
@@ -670,140 +692,119 @@ async fn handle_tp_client(
                 write_envelope(&mut writer, &resp).await?;
                 info!("TP client subscribed for template updates");
 
-                let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<SignedEnvelope>(32);
-                tokio::spawn(async move {
-                    while let Ok(env) = read_envelope(&mut reader).await {
-                        if msg_tx.send(env).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-
+                use tokio::io::AsyncBufReadExt;
+                let mut reader = tokio::io::BufReader::new(reader);
                 let mut interval = tokio::time::interval(cfg.block_time / 2);
                 let mut last_parent = tpl.prev_hash;
 
                 loop {
-                    tokio::select! {
-                        _ = interval.tick() => {
-                            if blockchain.tip().is_ok_and(|tip|tip.hash.as_bytes().as_slice() != last_parent) {
-                                match build_template(&blockchain, &mempool, &cfg) {
-                                    Ok(tpl) => {
-                                        last_parent.clone_from(&tpl.prev_hash);
-                                        let env = SignedEnvelope::sign(
-                                            TP_TEMPLATE,
-                                            tpl.encode_to_vec(),
-                                            &node_sk,
-                                        );
-                                        if write_envelope(&mut writer, &env)
-                                            .await
-                                            .is_err()
-                                        {
-                                            return Ok(());
+                    let mut read = std::pin::pin!(async {
+                        reader.fill_buf().await?;
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(90),
+                            read_envelope(&mut reader),
+                        )
+                        .await
+                        .map_err(std::io::Error::from)?
+                    });
+                    let incoming = loop {
+                        tokio::select! {
+                            _ = interval.tick() => {
+                                if blockchain.tip().is_ok_and(|tip|tip.hash.as_bytes().as_slice() != last_parent) {
+                                    match build_template(&blockchain, &mempool, &cfg) {
+                                        Ok(tpl) => {
+                                            last_parent.clone_from(&tpl.prev_hash);
+                                            let env = SignedEnvelope::sign(
+                                                TP_TEMPLATE,
+                                                tpl.encode_to_vec(),
+                                                &node_sk,
+                                            );
+                                            if write_envelope(&mut writer, &env)
+                                                .await
+                                                .is_err()
+                                            {
+                                                return Ok(());
+                                            }
                                         }
-                                    }
-                                    Err(e) => {
-                                        warn!("Failed to build template: {e}");
+                                        Err(e) => {
+                                            warn!("Failed to build template: {e}");
+                                        }
                                     }
                                 }
                             }
+
+                            message = &mut read => break message?,
+                        }
+                    };
+                    if !incoming.verify() {
+                        return Err("invalid or stale subscribed TP envelope".into());
+                    }
+                    match incoming.msg_type {
+                        TP_SUBMIT_BLOCK => {
+                            let req = SubmitBlockRequest::decode(&incoming.payload[..])?;
+                            let result = handle_block_submission(
+                                &req.block_data,
+                                &blockchain,
+                                &mempool,
+                                &block_events,
+                            );
+                            let resp_env = SignedEnvelope::sign(
+                                TP_SUBMIT_RESULT,
+                                result.encode_to_vec(),
+                                &node_sk,
+                            );
+                            write_envelope(&mut writer, &resp_env).await?;
+
+                            if result.accepted
+                                && let Ok(tpl) = build_template(&blockchain, &mempool, &cfg)
+                            {
+                                last_parent.clone_from(&tpl.prev_hash);
+                                let env = SignedEnvelope::sign(
+                                    TP_TEMPLATE,
+                                    tpl.encode_to_vec(),
+                                    &node_sk,
+                                );
+                                write_envelope(&mut writer, &env).await?;
+                            }
                         }
 
-                        msg = msg_rx.recv() => {
-                            match msg {
-                                Some(incoming) => {
-                                    if !incoming.verify() {
-                                        return Err("invalid or stale subscribed TP envelope".into());
-                                    }
-                                    match incoming.msg_type {
-                                    TP_SUBMIT_BLOCK => {
-                                        let req = SubmitBlockRequest::decode(
-                                            &incoming.payload[..],
-                                        )?;
-                                        let result = handle_block_submission(
-                                            &req.block_data,
-                                            &blockchain,
-                                            &mempool,
-                                            &block_events,
-                                        );
-                                        let resp_env = SignedEnvelope::sign(
-                                            TP_SUBMIT_RESULT,
-                                            result.encode_to_vec(),
-                                            &node_sk,
-                                        );
-                                        write_envelope(&mut writer, &resp_env)
-                                            .await?;
+                        TP_DECLARE_JOB => {
+                            let result = handle_job_declaration(
+                                &incoming.payload,
+                                &blockchain,
+                                &mempool,
+                                &cfg,
+                            );
+                            let resp_env = SignedEnvelope::sign(
+                                TP_DECLARE_JOB_RESULT,
+                                result.encode_to_vec(),
+                                &node_sk,
+                            );
+                            write_envelope(&mut writer, &resp_env).await?;
+                        }
 
-                                        if result.accepted
-                                            && let Ok(tpl) = build_template(
-                                                &blockchain,
-                                                &mempool,
-                                                &cfg,
-                                            ) {
-                                                last_parent.clone_from(&tpl.prev_hash);
-                                                let env = SignedEnvelope::sign(
-                                                    TP_TEMPLATE,
-                                                    tpl.encode_to_vec(),
-                                                    &node_sk,
-                                                );
-                                                let _ = write_envelope(
-                                                    &mut writer,
-                                                    &env,
-                                                )
-                                                .await;
-                                            }
-                                    }
+                        TP_GET_TEMPLATE => {
+                            let req =
+                                hyphen_transport::TemplateRequest::decode(&incoming.payload[..])?;
+                            validate_template_request(&req, &cfg)?;
+                            let tpl = build_template(&blockchain, &mempool, &cfg)?;
+                            let resp =
+                                SignedEnvelope::sign(TP_TEMPLATE, tpl.encode_to_vec(), &node_sk);
+                            write_envelope(&mut writer, &resp).await?;
+                        }
 
-                                    TP_DECLARE_JOB => {
-                                        let req = DeclareJobRequest::decode(
-                                            &incoming.payload[..],
-                                        )?;
-                                        let result = handle_job_declaration(
-                                            &req,
-                                            &blockchain,
-                                            &mempool,
-                                            &cfg,
-                                        );
-                                        let resp_env = SignedEnvelope::sign(
-                                            TP_DECLARE_JOB_RESULT,
-                                            result.encode_to_vec(),
-                                            &node_sk,
-                                        );
-                                        write_envelope(&mut writer, &resp_env)
-                                            .await?;
-                                    }
-
-                                    TP_GET_TEMPLATE => {
-                                        let tpl = build_template(
-                                            &blockchain,
-                                            &mempool,
-                                            &cfg,
-                                        )?;
-                                        let resp = SignedEnvelope::sign(
-                                            TP_TEMPLATE,
-                                            tpl.encode_to_vec(),
-                                            &node_sk,
-                                        );
-                                        write_envelope(&mut writer, &resp).await?;
-                                    }
-
-                                    other => {
-                                        warn!(
-                                            "Unknown TP msg during subscribe: \
+                        other => {
+                            warn!(
+                                "Unknown TP msg during subscribe: \
                                              {other}"
-                                        );
-                                    }
-                                    }
-                                },
-                                None => return Ok(()),
-                            }
+                            );
                         }
                     }
                 }
             }
 
             TP_DECLARE_JOB => {
-                let req = DeclareJobRequest::decode(&env.payload[..])?;
-                let result = handle_job_declaration(&req, &blockchain, &mempool, &cfg);
+                let result = handle_job_declaration(&env.payload, &blockchain, &mempool, &cfg);
                 let resp_env =
                     SignedEnvelope::sign(TP_DECLARE_JOB_RESULT, result.encode_to_vec(), &node_sk);
                 write_envelope(&mut writer, &resp_env).await?;
@@ -966,7 +967,7 @@ fn handle_block_submission(
 }
 
 fn handle_job_declaration(
-    req: &DeclareJobRequest,
+    mut payload: &[u8],
     blockchain: &Arc<Blockchain>,
     mempool: &Arc<RwLock<Mempool>>,
     cfg: &ChainConfig,
@@ -977,11 +978,28 @@ fn handle_job_declaration(
         error,
         updated_header: Vec::new(),
     };
+    const MAX_DECLARED_TXS: usize = 10_000;
+    if payload.len() > cfg.max_block_size + 4096 + 128 + 6 * MAX_DECLARED_TXS {
+        return reject("job declaration exceeds byte limit".into());
+    }
+    let mut req = DeclareJobRequest::default();
+    while !payload.is_empty() {
+        let (tag, ty) = match prost::encoding::decode_key(&mut payload) {
+            Ok(key) => key,
+            Err(e) => return reject(e.to_string()),
+        };
+        if tag == 2 && req.custom_transactions.len() == MAX_DECLARED_TXS {
+            return reject("transaction count exceeds declaration limit".into());
+        }
+        if let Err(e) = req.merge_field(tag, ty, &mut payload, Default::default()) {
+            return reject(e.to_string());
+        }
+    }
     if req.coinbase_script.len() > 4 * 1024 {
         return reject("coinbase script exceeds 4 KiB".into());
     }
-    if req.custom_transactions.len() > 10_000 {
-        return reject("transaction count exceeds declaration limit".into());
+    if req.custom_transactions.iter().map(Vec::len).sum::<usize>() > cfg.max_block_size {
+        return reject("transactions exceed block byte limit".into());
     }
     let base_template = match build_template(blockchain, mempool, cfg) {
         Ok(template) => template,
@@ -1014,7 +1032,7 @@ fn handle_job_declaration(
     let custom_block = hyphen_core::Block {
         pow_witnesses: Vec::new(),
         header: header.clone(),
-        transactions: req.custom_transactions.clone(),
+        transactions: req.custom_transactions,
         uncle_headers: Vec::new(),
         block_authorization: Vec::new(),
     };

@@ -33,6 +33,7 @@
 //! precisely so that change is a format bump rather than a migration crisis.
 
 use std::fmt;
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use zeroize::Zeroize;
@@ -134,12 +135,83 @@ pub fn open(container: &[u8], password: &[u8]) -> Result<Vec<u8>, KeystoreError>
 }
 
 pub fn seal_to_path(path: &Path, plaintext: &[u8], password: &[u8]) -> Result<(), KeystoreError> {
+    if plaintext.len() > crate::DEFAULT_WIRE_BYTES {
+        return Err(KeystoreError::Io(
+            "wallet snapshot exceeds byte limit".into(),
+        ));
+    }
     let container = seal(plaintext, password);
-    std::fs::write(path, container).map_err(|error| KeystoreError::Io(error.to_string()))
+    write_snapshot(path, &container).map_err(|error| KeystoreError::Io(error.to_string()))
+}
+
+pub(crate) fn write_snapshot(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    #[cfg(windows)]
+    replace_windows_snapshot(file, path)?;
+    #[cfg(not(windows))]
+    file.persist(path)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_windows_snapshot(file: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+    let staged = match file.persist_noclobber(path) {
+        Ok(_) => return Ok(()),
+        Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => e.file.into_temp_path(),
+        Err(e) => return Err(e.error),
+    };
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>()
+    };
+    let target = wide(path);
+    let source = wide(&staged);
+    // Preserve the existing snapshot's ACL when installing its replacement.
+    let ok = unsafe {
+        ReplaceFileW(
+            target.as_ptr(),
+            source.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+pub(crate) fn read_snapshot(path: &Path, limit: usize) -> io::Result<zeroize::Zeroizing<Vec<u8>>> {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > limit as u64
+        || file.take(limit as u64 + 1).read_to_end(&mut bytes)? > limit
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "wallet snapshot exceeds byte limit",
+        ));
+    }
+    Ok(bytes)
 }
 
 pub fn open_from_path(path: &Path, password: &[u8]) -> Result<Vec<u8>, KeystoreError> {
-    let container = std::fs::read(path).map_err(|error| KeystoreError::Io(error.to_string()))?;
+    let container = read_snapshot(path, crate::DEFAULT_WIRE_BYTES + HEADER_LEN)
+        .map_err(|error| KeystoreError::Io(error.to_string()))?;
     open(&container, password)
 }
 
@@ -167,7 +239,7 @@ fn open_current(container: &[u8], password: &[u8]) -> Result<Vec<u8>, KeystoreEr
     let ciphertext = &container[HEADER_LEN..];
     let stored_mac = &container[MAGIC_LEN + ITERATIONS_LEN + SALT_LEN..HEADER_LEN];
     let expected = tag_of(&keys.mac, signed_header, ciphertext);
-    if !constant_time_eq(stored_mac, expected.as_bytes()) {
+    if expected != blake3::Hash::from_bytes(stored_mac.try_into().expect("32-byte tag")) {
         return Err(KeystoreError::Authentication);
     }
 
@@ -188,7 +260,7 @@ fn open_legacy(container: &[u8], password: &[u8]) -> Result<Vec<u8>, KeystoreErr
 
     let mut key = legacy_root_key(password, &salt);
     let expected = blake3::keyed_hash(&key, ciphertext);
-    if !constant_time_eq(stored_mac, expected.as_bytes()) {
+    if expected != blake3::Hash::from_bytes(stored_mac.try_into().expect("32-byte tag")) {
         key.zeroize();
         return Err(KeystoreError::Authentication);
     }
@@ -216,7 +288,7 @@ impl Drop for Keys {
 }
 
 fn derive_keys(password: &[u8], salt: &[u8; SALT_LEN], iterations: u32) -> Keys {
-    let material = [password, salt.as_slice()].concat();
+    let material = zeroize::Zeroizing::new([password, salt.as_slice()].concat());
     let mut state = blake3::derive_key(KDF_CONTEXT, &material);
 
     // Each round is salted and indexed, so a precomputed chain for one salt is
@@ -279,7 +351,7 @@ fn apply_stream(
 
 /// Original key schedule, retained so that existing version 1 files open.
 fn legacy_root_key(password: &[u8], salt: &[u8; SALT_LEN]) -> [u8; 32] {
-    let mut state = hyphen_crypto::hash::blake3_hash(&[salt.as_slice(), password].concat());
+    let mut state = hyphen_crypto::hash::blake3_hash_many(&[salt, password]);
     for _ in 0..100_000 {
         state = hyphen_crypto::hash::blake3_hash(state.as_bytes());
     }
@@ -293,17 +365,6 @@ fn legacy_keystream(key: &[u8; 32], length: usize) -> Vec<u8> {
     let mut keystream = vec![0u8; length];
     xof.fill(&mut keystream);
     keystream
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut difference = 0u8;
-    for (a, b) in left.iter().zip(right.iter()) {
-        difference |= a ^ b;
-    }
-    difference == 0
 }
 
 #[cfg(test)]
@@ -442,11 +503,24 @@ mod tests {
     }
 
     #[test]
-    fn constant_time_comparison_matches_semantics() {
-        assert!(constant_time_eq(b"", b""));
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"ab"));
+    fn replacement_preserves_the_previous_open_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet");
+        write_snapshot(&path, b"old").unwrap();
+        let mut previous = std::fs::File::open(&path).unwrap();
+        let replacement = write_snapshot(&path, b"current");
+        let mut bytes = Vec::new();
+        previous.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"old");
+        drop(previous);
+        if cfg!(windows) && replacement.is_err() {
+            assert_eq!(read_snapshot(&path, 3).unwrap().as_slice(), b"old");
+            write_snapshot(&path, b"current").unwrap();
+        } else {
+            replacement.unwrap();
+        }
+        assert_eq!(read_snapshot(&path, 7).unwrap().as_slice(), b"current");
+        assert!(read_snapshot(&path, 6).is_err());
     }
 
     #[test]

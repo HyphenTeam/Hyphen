@@ -19,7 +19,11 @@ rand_core.workspace = true
 getrandom.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
+tempfile = "3.27.0"
 hyphen-wire.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 serde_json.workspace = true

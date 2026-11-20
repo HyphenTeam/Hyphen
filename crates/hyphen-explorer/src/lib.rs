@@ -542,7 +542,7 @@ fn block_summary(block: &Block) -> BlockSummary {
     }
 }
 
-fn scientific_task(task_id: Hash256, record: TaskRecord) -> ScientificTaskResponse {
+fn scientific_task(task_id: Hash256, record: &TaskRecord) -> ScientificTaskResponse {
     let spec = &record.task.spec;
     let domain = match spec.domain {
         ScientificDomain::QuantumChromodynamics => "QCD",
@@ -633,11 +633,13 @@ fn get_scientific_tasks(
         .number::<usize>("limit")?
         .unwrap_or(PAGE_LIMIT_DEFAULT)
         .clamp(1, PAGE_LIMIT_MAX);
-    let (records, total) = state.blockchain.compute_tasks(offset, limit);
-    let tasks = records
-        .into_iter()
-        .map(|(task_id, record)| scientific_task(task_id, record))
-        .collect();
+    let (tasks, total) = state.blockchain.with_compute_state(|compute| {
+        let tasks = compute
+            .task_entries(offset, limit)
+            .map(|(id, record)| scientific_task(*id, record))
+            .collect();
+        (tasks, compute.task_count())
+    });
     Ok(json_response(
         StatusCode::OK,
         &ScientificTasksResponse {
@@ -661,7 +663,7 @@ fn get_scientific_task(state: &ExplorerState, task_id: &str) -> Result<Response<
     };
     Ok(json_response(
         StatusCode::OK,
-        &scientific_task(task_id, record),
+        &scientific_task(task_id, &record),
     ))
 }
 

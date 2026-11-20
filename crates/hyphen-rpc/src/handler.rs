@@ -248,31 +248,42 @@ impl RpcHandler {
         let offset = usize::try_from(req.offset).map_err(|_| {
             HandlerError::InvalidRequest("task offset exceeds this platform".into())
         })?;
-        let (records, total) = self.chain.compute_tasks(offset, limit as usize);
-        let tasks = records
-            .into_iter()
-            .map(|(task_id, record)| {
+        self.chain.with_compute_state(|state| {
+            let mut response = ListComputeTasksResponse {
+                tasks: Vec::new(),
+                total: state.task_count() as u64,
+                offset: req.offset,
+                limit,
+            };
+            let max_bytes = crate::server::MAX_FRAME_SIZE as usize;
+            let mut used = response.encoded_len();
+            for (task_id, record) in state.task_entries(offset, limit as usize) {
                 let (status, challenge_deadline, retain_until_height) =
                     task_status_fields(&record.status);
-                let record_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-                    .serialize(&record)
-                    .map_err(|error| HandlerError::Internal(error.to_string()))?;
-                Ok(ComputeTaskItem {
+                let record_data = crate::wire_config(max_bytes - used)
+                    .serialize(record)
+                    .map_err(|_| {
+                        HandlerError::InvalidRequest(
+                            "task page exceeds frame limit; request fewer tasks".into(),
+                        )
+                    })?;
+                let item = ComputeTaskItem {
                     task_id: task_id.to_vec(),
                     record_data,
                     status,
                     challenge_deadline,
                     retain_until_height,
-                })
-            })
-            .collect::<Result<Vec<_>, HandlerError>>()?;
-        Ok(ListComputeTasksResponse {
-            tasks,
-            total: total as u64,
-            offset: req.offset,
-            limit,
-        }
-        .encode_to_vec())
+                };
+                used += prost::encoding::message::encoded_len(1, &item);
+                if used > max_bytes {
+                    return Err(HandlerError::InvalidRequest(
+                        "task page exceeds frame limit; request fewer tasks".into(),
+                    ));
+                }
+                response.tasks.push(item);
+            }
+            Ok(response.encode_to_vec())
+        })
     }
 
     fn handle_get_vm_contract(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
@@ -385,6 +396,11 @@ impl RpcHandler {
 
     fn handle_get_mempool(&self) -> Result<Vec<u8>, HandlerError> {
         let pool = self.mempool.read();
+        if pool.len() > crate::server::MAX_FRAME_SIZE as usize / 34 {
+            return Err(HandlerError::InvalidRequest(
+                "mempool exceeds response frame limit".into(),
+            ));
+        }
         let tx_hashes: Vec<Vec<u8>> = pool
             .hashes()
             .into_iter()
@@ -431,6 +447,12 @@ impl RpcHandler {
     }
 
     fn handle_get_output_info(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        // 256 unpacked u64 fields can use up to 11 bytes each.
+        if payload.len() > 256 * 11 {
+            return Err(HandlerError::InvalidRequest(
+                "output index request exceeds byte limit".into(),
+            ));
+        }
         let req = GetOutputInfoRequest::decode(payload)?;
         if req.global_indices.len() > 256 {
             return Err(HandlerError::InvalidRequest(

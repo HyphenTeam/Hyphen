@@ -468,12 +468,17 @@ impl ComputeState {
     /// Returns a deterministic page ordered by task ID. The caller owns the
     /// records, so storage locks never escape the state boundary.
     pub fn tasks_page(&self, offset: usize, limit: usize) -> Vec<(Hash256, TaskRecord)> {
-        self.tasks
-            .iter()
-            .skip(offset)
-            .take(limit)
+        self.task_entries(offset, limit)
             .map(|(task_id, record)| (*task_id, record.clone()))
             .collect()
+    }
+
+    pub fn task_entries(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> impl Iterator<Item = (&Hash256, &TaskRecord)> {
+        self.tasks.iter().skip(offset).take(limit)
     }
 
     pub fn is_available_through(&self, task_id: Hash256, height: u64) -> bool {

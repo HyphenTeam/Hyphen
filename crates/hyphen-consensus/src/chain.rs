@@ -335,10 +335,16 @@ impl Blockchain {
         offset: usize,
         limit: usize,
     ) -> (Vec<(Hash256, TaskRecord)>, usize) {
+        self.with_compute_state(|state| (state.tasks_page(offset, limit), state.task_count()))
+    }
+
+    pub fn with_compute_state<R>(
+        &self,
+        read: impl FnOnce(&hyphen_compute::ComputeState) -> R,
+    ) -> R {
         let _transition = self.transition.lock();
         let store = self.compute_state.read();
-        let state = store.committed();
-        (state.tasks_page(offset, limit), state.task_count())
+        read(store.committed())
     }
 
     pub fn vm_contract(&self, address: ContractAddress) -> Option<Contract> {

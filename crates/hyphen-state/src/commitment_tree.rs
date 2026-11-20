@@ -18,6 +18,14 @@ type Result<T> = std::result::Result<T, CommitmentTreeError>;
 
 pub(crate) const TREE_STATE_KEY: &[u8] = b"merkle_tree_state";
 
+pub(crate) fn snapshot_codec() -> rustbinary::CompactConfig {
+    // Every stored node needs two position integers and a 32-byte hash.
+    crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .base_config()
+        .with_collection_limit((crate::DEFAULT_WIRE_BYTES / 34) as u64)
+        .with_compact_format()
+}
+
 pub struct PersistentCommitmentTree {
     pub(crate) tree_data: CompressedTree,
     inner: MerkleTree,
@@ -33,7 +41,7 @@ impl PersistentCommitmentTree {
                 let data = zstd::bulk::decompress(&frame, crate::DEFAULT_WIRE_BYTES)
                     .map_err(|e| crate::compress::CompressError::Decompress(e.to_string()))?;
                 drop(frame);
-                crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                snapshot_codec()
                     .deserialize(&data)
                     .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?
             }
@@ -51,8 +59,15 @@ impl PersistentCommitmentTree {
     }
 
     pub fn append(&mut self, leaf: Hash256) -> Result<u64> {
-        let idx = self.inner.append(leaf);
-        self.persist()?;
+        let mut next = self.inner.clone();
+        let idx = next.append(leaf);
+        let data = snapshot_codec()
+            .serialize(&next)
+            .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?;
+        self.tree_data
+            .inner()
+            .insert(TREE_STATE_KEY, crate::compress::compress(&data)?)?;
+        self.inner = next;
         Ok(idx)
     }
 
@@ -68,16 +83,32 @@ impl PersistentCommitmentTree {
         self.inner = inner;
     }
 
-    fn persist(&self) -> Result<()> {
-        let data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-            .serialize(&self.inner)
-            .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?;
-        self.tree_data.insert(TREE_STATE_KEY, &data)?;
-        Ok(())
-    }
-
     pub fn flush(&self) -> Result<()> {
         self.tree_data.flush()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reopens_tree_above_the_network_collection_budget() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let mut stored = PersistentCommitmentTree::open(&db).unwrap();
+        for index in 0..500_000u64 {
+            stored
+                .inner
+                .append(hyphen_crypto::blake3_hash(&index.to_le_bytes()));
+        }
+        let last = hyphen_crypto::blake3_hash(b"next");
+        let index = stored.append(last).unwrap();
+        let root = stored.root();
+        drop(stored);
+        let reopened = PersistentCommitmentTree::open(&db).unwrap();
+        assert_eq!(reopened.count(), index + 1);
+        assert_eq!(reopened.root(), root);
+        assert!(reopened.prove(index).unwrap().verify(&last, &root));
     }
 }
