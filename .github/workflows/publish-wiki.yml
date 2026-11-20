@@ -1,0 +1,50 @@
+name: Publish wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+      - 'scripts/render-wiki.py'
+      - '.github/workflows/publish-wiki.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository_owner == 'HyphenTeam' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: publish-project-wiki
+      cancel-in-progress: false
+    steps:
+      - name: Check out the protocol documentation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: HyphenTeam/Hyphen
+          ref: main
+          path: protocol
+          persist-credentials: false
+      - name: Check out the client documentation
+        if: github.repository != 'HyphenTeam/Hyphen'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+          path: client
+          persist-credentials: false
+      - name: Publish tracked pages to the project wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git clone --depth 1 "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.wiki.git" published
+          python3 protocol/scripts/render-wiki.py --project "${GITHUB_REPOSITORY#*/}" --protocol protocol --client client --output published
+          git -C published add --all
+          if git -C published diff --cached --quiet; then exit 0; fi
+          git -C published -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Synchronize project documentation'
+          git -C published push origin HEAD

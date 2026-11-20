@@ -4,7 +4,7 @@ Status: research. `crates/hyphen-neural` and `contracts/alice-neural` are
 executable, tested and deployable on any chain in this repository that runs the
 `hyphen-vm` contract ABI. The challenge is **not** the block proof-of-work: block
 eligibility remains the PoUW v3 Cunningham-witness rule described in the
-[whitepaper](Whitepaper). Nothing here changes chain weight, issuance or
+[whitepaper](Whitepaper.md). Nothing here changes chain weight, issuance or
 fork choice.
 
 ## The mechanism in one paragraph
@@ -211,9 +211,9 @@ bodies and the `hyphen-vm` ledger, exactly like any other application contract.
 
 ## Related reading
 
-- [Useful-work augmented PoW](Research-Useful-Work-Augmented-PoW) — why external tasks
+- [Useful-work augmented PoW](Research-Useful-Work-Augmented-PoW.md) — why external tasks
   do not replace the block work rule.
-- [AetherCompute](Research-Aether-Compute) — the fail-closed settlement layer for
+- [AetherCompute](Research-Aether-Compute.md) — the fail-closed settlement layer for
   user-funded work.
 
 ---

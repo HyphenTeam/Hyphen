@@ -22,6 +22,12 @@ An additional live check of iterative DNS resolution for `one.one.one.one` timed
 
 The full node, VM and wire libraries share the root Cargo lockfile. The fuzz workspace, on-chain Alice contract and three independent clients each pin their own dependency graph. A change to a chain identity or signed encoding requires matching vectors and checks in each consumer. [Repository boundaries](Architecture-Repository-Boundaries.md)
 
+## Maintaining the project wikis
+
+Edit shared protocol pages in `Hyphen/wiki/`. Each client repository maintains its own `wiki/Home.md` and `wiki/Operations.md`. Merging documentation into `main` triggers publication to that repository’s GitHub Wiki. The three client repositories also check the shared pages hourly. To publish between scheduled runs, open **Actions → Publish wiki → Run workflow** on the client’s `main` branch. Publication preserves wiki pages maintained outside the synchronized set.
+
+协议文档统一在主仓库的 `wiki/` 目录维护。矿工、矿池和钱包的首页与操作指南由各自仓库维护。文档合入 `main` 后，GitHub Actions 会更新该项目的 Wiki。三个客户端每小时还会检查一次共享文档。如需提前同步，可在对应项目的 **Actions → Publish wiki → Run workflow** 中选择 `main` 并运行。
+
 ## Node checks
 
 Run from the root with the pinned Rust toolchain, a C/C++ toolchain and the WebAssembly target. Build the Alice contract from its own directory configuration before running the VM integration tests. The PowerShell command works on hosts with `pwsh`.

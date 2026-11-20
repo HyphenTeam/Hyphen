@@ -3,7 +3,7 @@
 > Withdrawn on 2026-07-30. V1 generated coinbase outputs with node-local
 > randomness, so equal block histories could produce unequal spendable-output
 > state. Its identity is retained only as historical evidence and MUST NOT be
-> used for a new database. Active development uses [devnet v2](Consensus-Devnet-V2).
+> used for a new database. Active development uses [devnet v2](Consensus-Devnet-V2.md).
 
 Status: frozen for reproducible development and adversarial testing. This is
 not a production-mainnet specification or a security claim.
@@ -169,7 +169,7 @@ No in-place activation is allowed on devnet v1. Any consensus change requires:
 
 # Hyphen 冻结 Devnet v1 共识 Profile（历史）
 
-> 已于 2026-07-30 撤回。V1 使用节点本地随机性生成 coinbase 输出，因此相同区块历史可能产生不同的可花费输出状态。其身份仅作为历史证据保留，禁止用于新数据库。当前开发使用 [devnet v2](Consensus-Devnet-V2)。
+> 此配置已于 2026 年 7 月 30 日撤回。V1 节点使用本地随机数生成区块奖励输出，相同的区块历史可能因此产生不同的可花费输出。该网络标识仅供历史核验。创建新数据库时，请使用当前的 [devnet v2 配置](Consensus-Devnet-V2.md)。
 
 状态：为可复现开发和对抗测试而冻结。这不是生产 mainnet 规范或安全声明。MUST、MUST NOT 等规范词适用于 `hyphen-devnet-v1`，本仓库 Rust 实现是参考实现。
 

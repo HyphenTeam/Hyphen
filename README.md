@@ -2,7 +2,7 @@
 
 [简体中文](README_CN.md)
 
-Hyphen is a personal research project in private blockchain transactions and verifiable computational work. This Rust workspace contains the full node, consensus rules, state storage and block explorer. On the standard devnet, miners find single-use Cunningham prime chains and full nodes independently verify each block. Mainnet remains a research profile pending independent review.
+Hyphen is a personal research project in private blockchain transactions and verifiable computational work. This Rust workspace contains the full node, consensus rules, state storage and block explorer. On the standard devnet, miners search for Cunningham prime chains. Full nodes verify each block and allow each qualifying starting value to be claimed once per branch. Mainnet remains a research profile pending independent review.
 
 ## Run a local node
 
@@ -24,7 +24,7 @@ Open the [local explorer](http://127.0.0.1:8080) to inspect the chain. To join a
 | Conditional offline payments on offline-devnet | [Reserve funding, transfer and settlement](wiki/Offline-Payments.md) |
 | Related software | [Miner](https://github.com/HyphenTeam/HyphenMiner) · [Pool](https://github.com/HyphenTeam/HyphenPool) · [Wallet](https://github.com/HyphenTeam/HyphenWallet) |
 
-[Project Wiki](wiki/Home.md)
+[Protocol and node documentation](https://github.com/HyphenTeam/Hyphen/wiki)
 
 ## License
 

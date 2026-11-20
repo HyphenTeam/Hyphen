@@ -66,7 +66,7 @@ The node validates height, parent hash, epoch seed, work commitment and the requ
 
 ### 3.2 Cunningham witnesses
 
-Primecoin pioneered prime-chain proof of work and constrains its origin by divisibility by the block-header hash. Hyphen accepts mathematically valid origins found before the parent existed. Each branch maintains a consumed-origin index. Overlapping windows can have distinct origins, and detached origins can be claimed on another branch. This changes both storage costs and the assumptions required for fork security. [Primecoin paper](https://primecoin.io/bin/primecoin-paper.pdf)
+Primecoin pioneered prime-chain proof of work and constrains its origin by divisibility by the block-header hash. Hyphen accepts mathematically valid origins found before the parent existed. Each branch maintains a consumed-origin index. Overlapping windows can have distinct origins, and detached origins can be claimed on another branch. This changes both storage costs and the assumptions required for fork security. [Primecoin proof verification](https://github.com/primecoin/primecoin/blob/8acbee471c69a39bdb04ac2a941edb7112fb5dfa/src/prime.cpp#L385-L419)
 
 ### 3.3 Difficulty
 
@@ -238,7 +238,7 @@ Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞
 
 ### 3.2 数论见证
 
-Primecoin 要求素数链 origin 能被区块头哈希整除。Hyphen 的数学有效性只依赖链长和起点，分支状态决定该起点还能否认领。较长链的重叠窗口可以分别计权。重组释放分离区块的起点，公开见证可跨分支复用。[Primecoin 论文](https://primecoin.io/bin/primecoin-paper.pdf)
+Primecoin 要求素数链 origin 能被区块头哈希整除。Hyphen 的数学有效性只依赖链长和起点，分支状态决定该起点还能否认领。较长链的重叠窗口可以分别计权。重组释放分离区块的起点，公开见证可跨分支复用。[Primecoin 验证源码](https://github.com/primecoin/primecoin/blob/8acbee471c69a39bdb04ac2a941edb7112fb5dfa/src/prime.cpp#L385-L419)
 
 ### 3.3 难度与权重
 

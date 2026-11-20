@@ -1,41 +1,41 @@
-### Hyphen
+### Hyphen protocol
 
-- [Home](Home)
-- [Whitepaper](Whitepaper)
+- [Protocol overview](Home.md)
+- [Whitepaper](Whitepaper.md)
+- [Repository and compatibility boundaries](Architecture-Repository-Boundaries.md)
+- [Mempool policy](Architecture-Mempool.md)
 
-### Architecture
+### Consensus and payments
 
-- [Repository Boundaries](Architecture-Repository-Boundaries)
-- [Mempool Policy](Architecture-Mempool)
+- [Consensus profiles](Consensus-Profiles.md)
+- [Standard devnet](Consensus-Devnet-V2.md)
+- [Neural proof of work](Consensus-Neural-Work.md)
+- [Historical devnet v1](Consensus-Devnet-V1.md)
+- [Witness inventory and fork weight](Witness-Inventory-Measurements.md)
+- [Conditional offline payments](Offline-Payments.md)
 
-### Consensus
+### Node operations
 
-- [Devnet v2](Consensus-Devnet-V2)
-- [Neural Work](Consensus-Neural-Work)
-- [Devnet v1 (historical)](Consensus-Devnet-V1)
-
-### Operations
-
-- [Peer networking](Operations-Peer-Network) · [中文](Operations-Peer-Network-CN)
-- [Build and verification](Operations-Verification)
-- [Deploy on Linux](Operations-Deploy-Linux)
-- [Small Host (4 vCPU / 2 GiB)](Operations-Small-Host)
-- [Mining Acceleration](Operations-Mining-Acceleration)
-- [Incentivized Testnet](Operations-Incentivized-Testnet)
-
-### Research
-
-- [Four Core Innovations](Research-Four-Core-Innovations)
-- [AetherCompute](Research-Aether-Compute)
-- [Useful-Work Augmented PoW](Research-Useful-Work-Augmented-PoW)
-- [Neural-Cryptography](Research-Neural-Cryptography)
-- [Non-Custodial Pool](Research-Non-Custodial-Pool)
-- [Private Fair Ordering](Research-Private-Visible-Fair-Ordering)
-- [H-WES](Research-H-WES-Theorem-and-Object-Model)
-- [H-SAC](Research-H-SAC-Leakage-Lower-Bound)
+- [Peer configuration and recovery](Operations-Peer-Network.md) · [中文](Operations-Peer-Network-CN.md)
+- [Linux deployment](Operations-Deploy-Linux.md)
+- [Memory and storage requirements](Operations-Small-Host.md)
+- [Mining acceleration](Operations-Mining-Acceleration.md)
+- [Build and verification](Operations-Verification.md)
+- [Incentivized testnet readiness](Operations-Incentivized-Testnet.md)
 
 ### Security
 
-- [Wallet and consensus asset review](Security-Asset-Review)
-- [Activation Gates](Security-Cryptographic-Activation-Gates)
-- [Peer Policy](Security-Peer-Policy)
+- [Wallet and consensus security review](Security-Asset-Review.md)
+- [Cryptographic requirements for activation](Security-Cryptographic-Activation-Gates.md)
+- [Peer policy](Security-Peer-Policy.md)
+
+### Research
+
+- [Protocol research proposals](Research-Four-Core-Innovations.md)
+- [AetherCompute settlement](Research-Aether-Compute.md)
+- [Useful work and proof of work](Research-Useful-Work-Augmented-PoW.md)
+- [Neural cryptography](Research-Neural-Cryptography.md)
+- [Non-custodial mining pools](Research-Non-Custodial-Pool.md)
+- [Fair ordering of private transactions](Research-Private-Visible-Fair-Ordering.md)
+- [Expirable authenticated objects (H-WES)](Research-H-WES-Theorem-and-Object-Model.md)
+- [Minimum disclosure for compliance (H-SAC)](Research-H-SAC-Leakage-Lower-Bound.md)

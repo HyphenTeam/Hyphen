@@ -2,8 +2,7 @@
 
 This is the operator runbook for a single full node under `systemd`. It covers
 the "local devnet" and "private multi-node" stages of
-[incentivized-testnet.md](Operations-Incentivized-Testnet); the entry blockers listed
-there are still open, so nothing in this guide makes a balance worth money.
+[Incentivized testnet readiness](Operations-Incentivized-Testnet.md). The requirements for a public testnet remain open. Balances on these development networks have no monetary value.
 
 Every `hyphen-node` command below was executed against a binary built from this
 tree on Linux (Ubuntu 24.04, Rust 1.97.1). The unit file passes
@@ -333,7 +332,7 @@ What actually matters in the journal:
 | --- | --- |
 | `Chain tip: height=…, hash=…, cum_diff=…` | per-block progress; `cum_diff` is the fork-choice weight |
 | `Disconnected from` | isolation; check firewall, boot node multiaddrs and that the boot node is up |
-| `Peer … banned for …` | three proven-fault strikes in ten minutes; see [../security/peer-policy.md](Security-Peer-Policy) |
+| `Peer … banned for …` | The peer accumulated three verified faults in ten minutes. See [Peer policy](Security-Peer-Policy.md). |
 | `Peer … ban expired` | the hour elapsed, reconnects are allowed |
 | `Remote … at height …, local at … – in sync` | sync responses applied |
 
@@ -366,7 +365,7 @@ What actually matters in the journal:
 
 # 在 Linux 上部署 Hyphen 节点
 
-这是单台 `systemd` 全节点运维手册。它覆盖 [incentivized-testnet.md](Operations-Incentivized-Testnet) 里的"本地 devnet"与"私有多节点"阶段；该文档列出的准入阻断项仍未关闭，因此本文任何步骤都不会让余额具备货币价值。
+本指南介绍如何使用 `systemd` 部署和维护全节点，适用于本地开发网和私有多节点网络。公开激励测试网的启动条件尚未满足，这些开发网上的余额不具备货币价值。[激励测试网启动条件](Operations-Incentivized-Testnet.md)
 
 以下 `hyphen-node` 命令都在本仓库构建出的二进制上、在 Linux 上实际执行过（Ubuntu 24.04，Rust 1.97.1）。单元文件通过 `systemd-analyze verify`；`systemctl` 那几步需要在真实主机上执行。
 
@@ -649,7 +648,7 @@ journalctl -u hyphen-node -g 'Connected to|Disconnected from|Processed sync batc
 | --- | --- |
 | `Chain tip: height=…, hash=…, cum_diff=…` | 逐块进展；`cum_diff` 是分叉选择权重 |
 | `Disconnected from` | 网络孤立；检查防火墙、boot node 的 multiaddr，以及对方是否在线 |
-| `Peer … banned for …` | 十分钟内三次可证过错；见 [../security/peer-policy.md](Security-Peer-Policy) |
+| `Peer … banned for …` | 该节点在十分钟内累计出现三次经核实的违规行为。详见[对等节点策略](Security-Peer-Policy.md)。 |
 | `Peer … ban expired` | 封禁一小时到期，允许重连 |
 | `Remote … at height …, local at … – in sync` | 同步响应已应用 |
 

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Hyphen 是一个研究隐私交易与可验证计算工作量的个人区块链项目。本 Rust 工作区包含全节点、共识规则、状态存储和区块浏览器。在标准开发网上，矿工搜索只能使用一次的坎宁安素数链，全节点独立验证每个区块。主网配置仍处于研究阶段，项目尚待独立审计。
+Hyphen 是一个研究隐私交易与可验证计算工作量的个人区块链项目。本 Rust 工作区包含全节点、共识规则、状态存储和区块浏览器。在标准开发网上，矿工搜索坎宁安素数链，全节点独立验证每个区块，并确保每个符合条件的起点在同一分支上只被认领一次。主网配置仍处于研究阶段，项目尚待独立审计。
 
 ## 启动本地节点
 
@@ -24,7 +24,7 @@ cargo run --release --locked -p hyphen-node -- --network devnet --data-dir data/
 | 双离线开发网付款 | [预锁、离线转付及规范链结算](wiki/Offline-Payments.md) |
 | 配套软件 | [矿工](https://github.com/HyphenTeam/HyphenMiner) · [矿池](https://github.com/HyphenTeam/HyphenPool) · [钱包](https://github.com/HyphenTeam/HyphenWallet) |
 
-[项目 Wiki](wiki/Home.md)
+[协议与节点文档](https://github.com/HyphenTeam/Hyphen/wiki#中文导览)
 
 ## 许可证
 
