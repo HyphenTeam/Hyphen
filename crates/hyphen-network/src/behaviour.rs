@@ -1,8 +1,9 @@
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, identity, kad, noise, ping, request_response,
+    Multiaddr, PeerId, StreamProtocol, Swarm, connection_limits, gossipsub, identify, identity,
+    kad, noise, ping, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm,
+    tcp, yamux,
 };
 use libp2p_allow_block_list as allow_block_list;
 use std::collections::hash_map::DefaultHasher;
@@ -12,12 +13,13 @@ use std::time::Duration;
 use hyphen_consensus::{InclusionReceiptVoteGossip, QuorumInclusionReceiptGossip};
 
 use crate::protocol::{
-    NetworkMessage, SyncRequest, SyncResponse, MAX_GOSSIP_BLOCK_SIZE, MAX_GOSSIP_ENVELOPE_SIZE,
-    MAX_GOSSIP_TRANSACTION_SIZE,
+    MAX_GOSSIP_BLOCK_SIZE, MAX_GOSSIP_ENVELOPE_SIZE, MAX_GOSSIP_TRANSACTION_SIZE, NetworkMessage,
+    SyncRequest, SyncResponse,
 };
 
 #[derive(NetworkBehaviour)]
 pub struct HyphenBehaviour {
+    pub limits: connection_limits::Behaviour,
     pub gossipsub: gossipsub::Behaviour,
     pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
     pub request_response: request_response::cbor::Behaviour<SyncRequest, SyncResponse>,
@@ -31,6 +33,12 @@ pub struct HyphenNetwork {
     pub block_topic: gossipsub::IdentTopic,
     pub tx_topic: gossipsub::IdentTopic,
     pub receipt_topic: gossipsub::IdentTopic,
+    sync_range: Option<(
+        PeerId,
+        request_response::OutboundRequestId,
+        std::ops::RangeInclusive<u64>,
+    )>,
+    identify_protocol: String,
 }
 
 impl HyphenNetwork {
@@ -44,7 +52,7 @@ impl HyphenNetwork {
         let sync_protocol =
             StreamProtocol::try_from_owned(format!("/hyphen/{network_tag}/sync/2"))?;
         let identify_protocol = format!("/hyphen/{network_tag}/id/2");
-        let behaviour_sync_protocol = sync_protocol.clone();
+        let kad_protocol = StreamProtocol::try_from_owned(format!("/hyphen/{network_tag}/kad/1"))?;
         let behaviour_identify_protocol = identify_protocol.clone();
 
         let mut swarm = libp2p::SwarmBuilder::with_existing_identity(identity)
@@ -56,9 +64,9 @@ impl HyphenNetwork {
             )?
             .with_behaviour(move |key| {
                 let message_id_fn = |message: &gossipsub::Message| {
-                    let mut s = DefaultHasher::new();
-                    message.data.hash(&mut s);
-                    gossipsub::MessageId::from(s.finish().to_string())
+                    let mut digest = DefaultHasher::new();
+                    message.data.hash(&mut digest);
+                    gossipsub::MessageId::from(digest.finish().to_string())
                 };
                 let gossipsub_config = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(1))
@@ -75,15 +83,27 @@ impl HyphenNetwork {
                 .expect("gossipsub behaviour");
 
                 let peer_id = key.public().to_peer_id();
-                let store = kad::store::MemoryStore::new(peer_id);
-                let kademlia = kad::Behaviour::new(peer_id, store);
+                // The DHT provides peer routing only. Application data travels via sync or gossip.
+                let store = kad::store::MemoryStore::with_config(
+                    peer_id,
+                    kad::store::MemoryStoreConfig {
+                        max_records: 0,
+                        max_value_bytes: 0,
+                        max_provided_keys: 0,
+                        ..Default::default()
+                    },
+                );
+                let mut discovery = kad::Config::new(kad_protocol);
+                discovery.set_kbucket_inserts(kad::BucketInserts::Manual);
+                discovery.set_record_filtering(kad::StoreInserts::FilterBoth);
+                let mut kademlia = kad::Behaviour::with_config(peer_id, store, discovery);
+                kademlia.set_mode(Some(kad::Mode::Server));
 
                 let rr = request_response::cbor::Behaviour::new(
-                    [(
-                        behaviour_sync_protocol.clone(),
-                        request_response::ProtocolSupport::Full,
-                    )],
-                    request_response::Config::default(),
+                    [(sync_protocol, request_response::ProtocolSupport::Full)],
+                    request_response::Config::default()
+                        .with_request_timeout(Duration::from_secs(20))
+                        .with_max_concurrent_streams(16),
                 );
 
                 let identify = identify::Behaviour::new(identify::Config::new(
@@ -94,6 +114,14 @@ impl HyphenNetwork {
                 let ping = ping::Behaviour::new(ping::Config::new());
 
                 HyphenBehaviour {
+                    limits: connection_limits::Behaviour::new(
+                        connection_limits::ConnectionLimits::default()
+                            .with_max_pending_incoming(Some(32))
+                            .with_max_pending_outgoing(Some(16))
+                            .with_max_established_incoming(Some(48))
+                            .with_max_established(Some(64))
+                            .with_max_established_per_peer(Some(2)),
+                    ),
                     gossipsub,
                     kademlia,
                     request_response: rr,
@@ -123,18 +151,22 @@ impl HyphenNetwork {
                 .add_address(peer_id, addr.clone());
         }
 
-        if !boot_nodes.is_empty() {
-            if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
-                tracing::warn!("Kademlia bootstrap failed: {e:?}");
-            }
+        if !boot_nodes.is_empty()
+            && let Err(e) = swarm.behaviour_mut().kademlia.bootstrap()
+        {
+            tracing::warn!("Kademlia bootstrap failed: {e:?}");
         }
 
-        Ok(Self {
+        let mut network = Self {
             swarm,
             block_topic,
             tx_topic,
             receipt_topic,
-        })
+            sync_range: None,
+            identify_protocol,
+        };
+        network.dial_seeds(&boot_nodes);
+        Ok(network)
     }
 
     pub fn broadcast_transaction(
@@ -206,19 +238,67 @@ impl HyphenNetwork {
         self.swarm.next().await
     }
 
+    pub fn same_network(&self, protocol: &str) -> bool {
+        self.identify_protocol == protocol
+    }
+
+    pub fn dial_seeds(&mut self, seeds: &[(PeerId, Multiaddr)]) {
+        let mut addresses = std::collections::HashMap::<PeerId, Vec<Multiaddr>>::new();
+        for (peer, address) in seeds {
+            if peer != self.swarm.local_peer_id()
+                && !self.swarm.is_connected(peer)
+                && !self.is_blocked(peer)
+            {
+                addresses.entry(*peer).or_default().push(address.clone());
+            }
+        }
+        for (peer, addresses) in addresses {
+            let options = libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
+                .addresses(addresses)
+                .build();
+            if let Err(error) = self.swarm.dial(options) {
+                tracing::debug!(%peer, %error, "Seed dial deferred");
+            }
+        }
+    }
+
+    pub fn request_range(&mut self, peer: PeerId, local: u64, target: u64) {
+        if local < target && self.sync_range.is_none() {
+            let request = SyncRequest::GetBlocks {
+                start_height: local + 1,
+                count: (target - local).min(u64::from(crate::SYNC_BATCH_SIZE)) as u32,
+            };
+            let id = self.send_sync_request(&peer, request);
+            self.sync_range = Some((peer, id, local + 1..=target));
+        }
+    }
+
+    pub fn has_pending_range(&self) -> bool {
+        self.sync_range.is_some()
+    }
+
+    pub fn finish_range(
+        &mut self,
+        peer: PeerId,
+        id: request_response::OutboundRequestId,
+    ) -> Option<std::ops::RangeInclusive<u64>> {
+        self.sync_range
+            .take_if(|range| range.0 == peer && range.1 == id)
+            .map(|range| range.2)
+    }
+
     /// Attempts a Kademlia bootstrap.  Safe to call periodically —
     /// harmless when no peers are configured yet.
     pub fn try_bootstrap(&mut self) {
         let _ = self.swarm.behaviour_mut().kademlia.bootstrap();
     }
 
-    /// Dynamically add a peer address to Kademlia and attempt bootstrap.
+    /// Register a verified address for discovery and outbound requests.
     pub fn add_peer(&mut self, peer_id: PeerId, addr: Multiaddr) {
         self.swarm
             .behaviour_mut()
             .kademlia
             .add_address(&peer_id, addr);
-        let _ = self.swarm.behaviour_mut().kademlia.bootstrap();
     }
 
     /// Number of peers currently connected via the swarm.

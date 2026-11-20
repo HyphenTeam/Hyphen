@@ -348,9 +348,11 @@ mod tests {
             .unwrap();
         let mut candidate = [0i64; 16];
         descriptor.candidate(0, &mut candidate).unwrap();
-        assert!(!descriptor
-            .verify(&weights, &candidate, &mut hidden, &mut output)
-            .unwrap());
+        assert!(
+            !descriptor
+                .verify(&weights, &candidate, &mut hidden, &mut output)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -395,9 +397,11 @@ mod tests {
         .unwrap();
         assert!(outcome.found, "an easy threshold must be found quickly");
         assert!(outcome.attempts <= 256);
-        assert!(descriptor
-            .verify(&weights, &solution, &mut hidden, &mut output)
-            .unwrap());
+        assert!(
+            descriptor
+                .verify(&weights, &solution, &mut hidden, &mut output)
+                .unwrap()
+        );
     }
 
     #[test]

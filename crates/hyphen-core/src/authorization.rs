@@ -10,6 +10,10 @@ pub const FROZEN_BLOCK_VERSION: u32 = 5;
 pub const BLOCK_AUTHORIZATION_VERSION: u16 = 1;
 const AUTHORIZATION_DOMAIN: &[u8] = b"Hyphen/NCAP/block-authorization/v1";
 
+pub fn reward_commitment(view: &[u8; 32], spend: &[u8; 32]) -> [u8; 32] {
+    *hyphen_crypto::blake3_hash_many(&[b"Hyphen/reward-recipient/v1", view, spend]).as_bytes()
+}
+
 /// Miner-controlled authorization for a solved block.
 ///
 /// The pool may relay this object, but cannot change the final header or the

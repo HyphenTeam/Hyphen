@@ -4,14 +4,12 @@
 //! ancestry and work data to build a reorg plan after branch-specific state
 //! validation has completed.
 
-use std::collections::HashSet;
-
 use hyphen_crypto::Hash256;
 use serde::{Deserialize, Serialize};
 use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
 use thiserror::Error;
 
-use crate::compress::{compress, CompressedTree};
+use crate::compress::{CompressedTree, compress};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub enum BranchValidation {
@@ -264,44 +262,36 @@ impl BranchStore {
             return Err(BranchStoreError::CandidateNotHeavier);
         }
 
-        let mut current_ancestors = HashSet::new();
-        let mut cursor = Some(current.clone());
-        while let Some(metadata) = cursor {
-            current_ancestors.insert(metadata.hash);
-            cursor = metadata
-                .parent
-                .map(|parent| self.get(&parent))
-                .transpose()?;
-        }
-
-        let mut attach_reverse = Vec::new();
-        let mut candidate_cursor = candidate.clone();
-        while !current_ancestors.contains(&candidate_cursor.hash) {
-            attach_reverse.push(candidate_cursor.hash);
-            let parent = candidate_cursor
-                .parent
-                .ok_or(BranchStoreError::NoCommonAncestor)?;
-            candidate_cursor = self.get(&parent)?;
-        }
-        let common_ancestor = candidate_cursor.hash;
-
+        let (old_work, new_work) = (current.cumulative_work, candidate.cumulative_work);
+        let (mut current, mut candidate) = (current, candidate);
         let mut detach = Vec::new();
-        let mut current_cursor = current.clone();
-        while current_cursor.hash != common_ancestor {
-            detach.push(current_cursor.hash);
-            let parent = current_cursor
-                .parent
-                .ok_or(BranchStoreError::NoCommonAncestor)?;
-            current_cursor = self.get(&parent)?;
+        let mut attach_reverse = Vec::new();
+        // A parent reduces height by exactly one. Walking the higher cursor
+        // stops at the fork and never materializes its shared ancestry.
+        while current.hash != candidate.hash {
+            let (tip, path) = if current.height >= candidate.height {
+                (&mut current, &mut detach)
+            } else {
+                (&mut candidate, &mut attach_reverse)
+            };
+            path.push(tip.hash);
+            let parent = self.get(&tip.parent.ok_or(BranchStoreError::NoCommonAncestor)?)?;
+            if parent.height.checked_add(1) != Some(tip.height) {
+                return Err(BranchStoreError::HeightMismatch {
+                    parent: parent.height,
+                    child: tip.height,
+                });
+            }
+            *tip = parent;
         }
         attach_reverse.reverse();
 
         Ok(ReorgPlan {
-            common_ancestor,
+            common_ancestor: current.hash,
             detach,
             attach: attach_reverse,
-            old_work: current.cumulative_work,
-            new_work: candidate.cumulative_work,
+            old_work,
+            new_work,
         })
     }
 
@@ -414,6 +404,10 @@ mod tests {
         assert_eq!(plan.attach, vec![hash(4)]);
         assert_eq!(plan.old_work, 21);
         assert_eq!(plan.new_work, 26);
+
+        let extension = branches.reorg_plan(&hash(1), &hash(3)).unwrap();
+        assert!(extension.detach.is_empty());
+        assert_eq!(extension.attach, vec![hash(2), hash(3)]);
 
         drop(branches);
         let reopened = BranchStore::open(&db).unwrap();

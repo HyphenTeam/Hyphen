@@ -4,21 +4,21 @@ use std::collections::BTreeSet;
 
 use hyphen_compute::ComputeState;
 use hyphen_core::block::Block;
-use hyphen_crypto::{blake3_hash, Hash256};
+use hyphen_crypto::{Hash256, blake3_hash};
 use hyphen_vm::VmLedger;
 use serde::{Deserialize, Serialize};
 use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
 use thiserror::Error;
 
+use crate::ReferenceExpiringState;
 use crate::chain_state::{ChainState, ChainTip, EPOCH_SEED_PREFIX, TIP_KEY};
 use crate::commitment_tree::{PersistentCommitmentTree, TREE_STATE_KEY};
 use crate::compress::{compress, decompress};
-use crate::compute_state::{ComputeStateStore, COMPUTE_STATE_KEY};
+use crate::compute_state::{COMPUTE_STATE_KEY, ComputeStateStore};
 use crate::nullifier_set::NullifierSet;
 use crate::store::BlockStore;
-use crate::vm_state::{VmStateStore, VM_STATE_KEY};
-use crate::wes_state::{WesStateStore, WES_STATE_KEY};
-use crate::ReferenceExpiringState;
+use crate::vm_state::{VM_STATE_KEY, VmStateStore};
+use crate::wes_state::{WES_STATE_KEY, WesStateStore};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedOutput {
@@ -47,6 +47,8 @@ pub struct AtomicStateStores<'a> {
     pub blocks: &'a BlockStore,
     pub chain_state: &'a ChainState,
     pub nullifiers: &'a NullifierSet,
+    pub witnesses: &'a crate::witness_set::WitnessSet,
+    pub index_pow_witnesses: bool,
     pub commitment_tree: &'a mut PersistentCommitmentTree,
     pub compute_state: &'a mut ComputeStateStore,
     pub vm_state: &'a mut VmStateStore,
@@ -109,6 +111,7 @@ enum AbortReason {
     OutputConflict,
     DuplicateNullifier,
     CoinbaseConflict,
+    ClaimedWitness(u64),
     NotCanonicalTip,
     UndoMismatch,
     ConcurrentStateChange,
@@ -145,6 +148,8 @@ pub fn commit_block_update(
         blocks,
         chain_state,
         nullifiers,
+        witnesses,
+        index_pow_witnesses,
         commitment_tree,
         compute_state,
         vm_state,
@@ -360,6 +365,7 @@ pub fn commit_block_update(
         compute_state.tree.inner(),
         vm_state.tree.inner(),
         wes_state.tree.inner(),
+        &witnesses.tree,
     );
     let transaction_result: Result<(), TransactionError<AbortReason>> = trees.transaction(
         |(
@@ -375,6 +381,7 @@ pub fn commit_block_update(
             compute_tree,
             vm_tree,
             wes_tree,
+            witness_tree,
         )| {
             if state_tree.get(TIP_KEY)?.as_deref() != expected_tip_state.as_deref()
                 || commitment_tree_data.get(TREE_STATE_KEY)?.as_deref()
@@ -390,12 +397,11 @@ pub fn commit_block_update(
             }
             if let (Some(key), Some(expected)) =
                 (epoch_seed_key.as_ref(), expected_epoch_seed_state.as_ref())
+                && state_tree.get(key)?.as_deref() != expected.as_deref()
             {
-                if state_tree.get(key)?.as_deref() != expected.as_deref() {
-                    return Err(ConflictableTransactionError::Abort(
-                        AbortReason::ConcurrentStateChange,
-                    ));
-                }
+                return Err(ConflictableTransactionError::Abort(
+                    AbortReason::ConcurrentStateChange,
+                ));
             }
             if let Some(existing) = height_tree.get(update.block.header.height.to_be_bytes())? {
                 if existing.as_ref() != block_hash.as_bytes() {
@@ -444,6 +450,21 @@ pub fn commit_block_update(
                 value[32..64].copy_from_slice(&output.commitment);
                 value[64..].copy_from_slice(&output.block_height.to_le_bytes());
                 output_tree.insert(key.as_slice(), value.as_slice())?;
+            }
+            if index_pow_witnesses {
+                for witness in &update.block.pow_witnesses {
+                    if witness_tree
+                        .insert(
+                            witness.to_be_bytes().as_slice(),
+                            &update.tip.height.to_le_bytes(),
+                        )?
+                        .is_some()
+                    {
+                        return Err(ConflictableTransactionError::Abort(
+                            AbortReason::ClaimedWitness(*witness),
+                        ));
+                    }
+                }
             }
             for nullifier in &update.nullifiers {
                 if nullifier_tree.get(nullifier.as_slice())?.is_some() {
@@ -494,6 +515,7 @@ pub fn commit_block_update(
             } else {
                 undo_tree.insert(block_hash.as_bytes().as_slice(), compressed_undo.as_slice())?;
             }
+            state_tree.flush();
             Ok(())
         },
     );
@@ -512,6 +534,9 @@ pub fn commit_block_update(
             AbortReason::DuplicateTransaction => AtomicStateError::DuplicateTransaction,
             AbortReason::OutputConflict => AtomicStateError::OutputConflict,
             AbortReason::DuplicateNullifier => AtomicStateError::DuplicateNullifier,
+            AbortReason::ClaimedWitness(id) => {
+                AtomicStateError::InvalidTransition(format!("witness {id} was already claimed"))
+            }
             AbortReason::CoinbaseConflict => AtomicStateError::CoinbaseConflict,
             AbortReason::NotCanonicalTip => AtomicStateError::NotCanonicalTip,
             AbortReason::UndoMismatch => {
@@ -532,7 +557,10 @@ fn validate_update(
     if update.block.header.state_root
         != consensus_state_root(
             update.compute_state.root(),
-            update.vm_state.root(),
+            update
+                .vm_state
+                .root()
+                .map_err(|e| AtomicStateError::Serialize(e.to_string()))?,
             wes_consensus_root(&update.wes_state),
         )
     {
@@ -627,6 +655,8 @@ pub fn revert_block_update(
         blocks,
         chain_state,
         nullifiers,
+        witnesses,
+        index_pow_witnesses,
         commitment_tree,
         compute_state,
         vm_state,
@@ -653,6 +683,14 @@ pub fn revert_block_update(
     if current_tip.hash != *block_hash || current_tip.height != undo.height {
         return Err(AtomicStateError::NotCanonicalTip);
     }
+    let claims = if index_pow_witnesses {
+        blocks
+            .get_block_by_hash(block_hash)
+            .map_err(|err| AtomicStateError::Storage(err.to_string()))?
+            .pow_witnesses
+    } else {
+        Vec::new()
+    };
     let current_tip_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
         .serialize(&current_tip)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
@@ -721,6 +759,7 @@ pub fn revert_block_update(
         compute_state.tree.inner(),
         vm_state.tree.inner(),
         wes_state.tree.inner(),
+        &witnesses.tree,
     );
     let transaction_result: Result<(), TransactionError<AbortReason>> = trees.transaction(
         |(
@@ -734,6 +773,7 @@ pub fn revert_block_update(
             compute_tree,
             vm_tree,
             wes_tree,
+            witness_tree,
         )| {
             let height_key = undo.height.to_be_bytes();
             match height_tree.get(height_key.as_slice())? {
@@ -777,6 +817,17 @@ pub fn revert_block_update(
                 }
             }
 
+            for witness in &claims {
+                if witness_tree
+                    .remove(witness.to_be_bytes().as_slice())?
+                    .as_deref()
+                    != Some(&undo.height.to_le_bytes()[..])
+                {
+                    return Err(ConflictableTransactionError::Abort(
+                        AbortReason::UndoMismatch,
+                    ));
+                }
+            }
             for tx_hash in &undo.transaction_hashes {
                 match tx_tree.get(tx_hash.as_bytes().as_slice())? {
                     Some(location)
@@ -853,6 +904,7 @@ pub fn revert_block_update(
             compute_tree.insert(COMPUTE_STATE_KEY, compressed_previous_compute.as_slice())?;
             vm_tree.insert(VM_STATE_KEY, compressed_previous_vm.as_slice())?;
             wes_tree.insert(WES_STATE_KEY, compressed_previous_wes.as_slice())?;
+            state_tree.flush();
             Ok(())
         },
     );
@@ -924,6 +976,7 @@ mod tests {
     #[test]
     fn aborted_cross_tree_update_leaves_no_partial_state() {
         let db = sled::Config::new().temporary(true).open().unwrap();
+        let witnesses = crate::WitnessSet::open(&db, hash(1)).unwrap();
         let blocks = BlockStore::open(&db).unwrap();
         let chain_state = ChainState::open(&db).unwrap();
         let nullifiers = NullifierSet::open(&db).unwrap();
@@ -938,6 +991,8 @@ mod tests {
         commit_block_update(
             AtomicStateStores {
                 blocks: &blocks,
+                witnesses: &witnesses,
+                index_pow_witnesses: true,
                 chain_state: &chain_state,
                 nullifiers: &nullifiers,
                 commitment_tree: &mut commitments,
@@ -972,12 +1027,15 @@ mod tests {
         .unwrap();
 
         let committed_root = commitments.root();
-        let second = block(1, first.hash(), 11);
+        let mut second = block(1, first.hash(), 11);
+        second.pow_witnesses.push(89);
         let mut second_tree = commitments.snapshot();
         second_tree.append(hash(21));
         let result = commit_block_update(
             AtomicStateStores {
                 blocks: &blocks,
+                witnesses: &witnesses,
+                index_pow_witnesses: true,
                 chain_state: &chain_state,
                 nullifiers: &nullifiers,
                 commitment_tree: &mut commitments,
@@ -1011,6 +1069,7 @@ mod tests {
         );
 
         assert_eq!(result, Err(AtomicStateError::DuplicateNullifier));
+        assert!(!witnesses.contains(89).unwrap());
         assert!(!blocks.has_block(&second.hash()).unwrap());
         assert!(blocks.get_block_by_height(1).is_err());
         assert!(blocks.get_output(1).is_err());
@@ -1031,6 +1090,7 @@ mod tests {
     #[test]
     fn canonical_tip_can_be_reverted_and_reapplied_atomically() {
         let db = sled::Config::new().temporary(true).open().unwrap();
+        let witnesses = crate::WitnessSet::open(&db, hash(1)).unwrap();
         let blocks = BlockStore::open(&db).unwrap();
         let chain_state = ChainState::open(&db).unwrap();
         let nullifiers = NullifierSet::open(&db).unwrap();
@@ -1051,6 +1111,8 @@ mod tests {
         commit_block_update(
             AtomicStateStores {
                 blocks: &blocks,
+                witnesses: &witnesses,
+                index_pow_witnesses: true,
                 chain_state: &chain_state,
                 nullifiers: &nullifiers,
                 commitment_tree: &mut commitments,
@@ -1081,6 +1143,7 @@ mod tests {
         let first_root = commitments.root();
 
         let mut second = block(1, first.hash(), 55);
+        second.pow_witnesses.push(179);
         second.transactions.push(vec![56, 57, 58]);
         let transaction_hash = blake3_hash(&second.transactions[0]);
         let second_hash = second.hash();
@@ -1103,6 +1166,8 @@ mod tests {
         commit_block_update(
             AtomicStateStores {
                 blocks: &blocks,
+                witnesses: &witnesses,
+                index_pow_witnesses: true,
                 chain_state: &chain_state,
                 nullifiers: &nullifiers,
                 commitment_tree: &mut commitments,
@@ -1133,10 +1198,13 @@ mod tests {
             second_hash
         );
         assert_eq!(commitments.root(), second_root);
+        assert!(witnesses.contains(179).unwrap());
 
         revert_block_update(
             AtomicStateStores {
                 blocks: &blocks,
+                witnesses: &witnesses,
+                index_pow_witnesses: true,
                 chain_state: &chain_state,
                 nullifiers: &nullifiers,
                 commitment_tree: &mut commitments,
@@ -1149,6 +1217,7 @@ mod tests {
         .unwrap();
 
         assert!(blocks.has_block(&second_hash).unwrap());
+        assert!(!witnesses.contains(179).unwrap());
         assert_eq!(
             blocks.get_block_by_hash(&second_hash).unwrap().hash(),
             second_hash
@@ -1162,10 +1231,12 @@ mod tests {
         assert_eq!(chain_state.get_epoch_seed(7).unwrap(), Some(hash(54)));
         assert_eq!(commitments.count(), 1);
         assert_eq!(commitments.root(), first_root);
-        assert!(blocks
-            .undo_index
-            .contains_key(second_hash.as_bytes())
-            .unwrap());
+        assert!(
+            blocks
+                .undo_index
+                .contains_key(second_hash.as_bytes())
+                .unwrap()
+        );
 
         let reopened = PersistentCommitmentTree::open(&db).unwrap();
         assert_eq!(reopened.count(), 1);
@@ -1177,6 +1248,8 @@ mod tests {
         commit_block_update(
             AtomicStateStores {
                 blocks: &blocks,
+                witnesses: &witnesses,
+                index_pow_witnesses: true,
                 chain_state: &chain_state,
                 nullifiers: &nullifiers,
                 commitment_tree: &mut commitments,
@@ -1201,6 +1274,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(chain_state.get_tip().unwrap(), Some(second_tip));
+        assert!(witnesses.contains(179).unwrap());
         assert_eq!(chain_state.get_epoch_seed(7).unwrap(), Some(hash(65)));
         assert_eq!(blocks.get_block_by_height(1).unwrap().hash(), second_hash);
         assert_eq!(

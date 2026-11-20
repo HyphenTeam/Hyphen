@@ -15,6 +15,14 @@ pub const GAS_LOG: u64 = 375;
 pub const GAS_HASH: u64 = 30;
 pub const GAS_DEPLOY_PER_BYTE: u64 = 200;
 
+pub const MAX_TRANSACTION_GAS: u64 = 128_000_000;
+pub const MAX_BLOCK_GAS: u64 = 256_000_000;
+pub const MIN_TRANSACTION_GAS: u64 = 100_000;
+
+pub fn valid_transaction_gas(limit: u64) -> bool {
+    (MIN_TRANSACTION_GAS..=MAX_TRANSACTION_GAS).contains(&limit)
+}
+
 pub struct GasMeter {
     limit: u64,
     used: u64,

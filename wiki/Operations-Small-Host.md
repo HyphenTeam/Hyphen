@@ -1,8 +1,6 @@
 # Running Hyphen on a small host
 
-Target: **4 vCPU, 2 GiB RAM, 40 GB disk**. That is enough for a node, a pool and
-a Cloudflare tunnel, and — after the storage fix described below — for a chain
-that keeps growing. The numbers here are measured on that stack, not estimated.
+The Linux reference deployment has 4 vCPUs, 2 GiB of RAM and a 40 GB disk. Its measurements below cover a devnet node, a pool and a Cloudflare tunnel. Chain history, ledger size and the number of peers affect capacity planning.
 
 ## Measured footprint
 
@@ -11,13 +9,25 @@ Devnet run: node, pool and miner, difficulty at the 4096-witness ceiling.
 | Process | Resident memory | Notes |
 | --- | --- | --- |
 | `hyphen-node` | **62–75 MiB** | includes a 64 MiB storage cache |
-| `hyphen-pool-server` | 9–13 MiB | ledger is bounded (see below) |
+| `hyphen-pool-server` | 9–13 MiB | observed pool process size during this run |
 | `cloudflared` | 40–80 MiB | one tunnel, one connection pair |
 | `hyphen-miner`, 2 threads | 8 MiB | plus whatever the accelerator holds |
 
-Every process together stays under 200 MiB, so 2 GiB is comfortable. What used
-to consume the machine was neither the runtime nor the block size — it was the
-witness index.
+### Windows working-set comparisons
+
+Each row compares the previous and current algorithm in separate Windows debug processes under the same workload. Values are peak process working sets in MiB. The measurements predate the final P2P changes. The Merkle roots, reorganization paths, wallet spend decisions and witness membership checks agreed.
+
+| Workload | Previous | Current |
+| --- | ---: | ---: |
+| Merkle root of 1,000,001 streamed leaves | 80.3 | 3.5 |
+| Reorganization plan at height 65,536 with a one-block fork | 54.1 | 32.3 |
+| Wallet scan with 1,000,000 public key images | 103.8 | 4.5 |
+| Miner tracking 1,000,000 claimed witnesses | 30.9 | 8.5 |
+| Pool rotating 128 templates with 256 KiB of transaction data and 64 readers | 25.0 | 8.4 |
+
+The wallet buffers 8,192 key images before using a temporary file. The miner spills larger claim sets to a temporary database after 65,536 witnesses. The pool shares each immutable job among its readers. The Linux resident memory and Windows working sets above were measured on different workloads.
+
+上表记录 Windows 调试构建的进程峰值工作集，各行均以同一输入对比前后实现。钱包和矿工用临时磁盘空间保存精确记录，矿池让读取者共享不可变模板。这些基准早于最后的 P2P 调整。实际节点的跨仓验证步骤见[构建与验收](Operations-Verification.md)。
 
 ## What a block costs
 
@@ -44,8 +54,7 @@ It used to be a 256-level sparse Merkle tree keyed by the witness hash: about
 node memory past 500 MiB.
 
 It is now one entry per witness — an eight-byte big-endian key, an eight-byte
-claiming height — so membership is a point lookup and a block's claims are one
-transaction per 128 witnesses.
+claiming height. Membership is a point lookup. Canonical block application or rollback updates the witness index in the same durable transaction as the chain tip. On first startup with a pre-upgrade database, the node rebuilds the index from canonical blocks. Startup time depends on the amount of existing history.
 
 ## Storage cache
 
@@ -64,17 +73,15 @@ core free, but on four cores that is still 75% of the machine.
 
 Mine elsewhere and connect over TCP.
 
-## Bounded-derived data
-
-Nothing a public route can reach grows without a ceiling:
+## Retention and storage budgets
 
 | Structure | Bound |
 | --- | --- |
 | Mempool entries | 10 000 entries, byte budget derived from that |
 | Explorer miner history | 512 blocks per reward key, 4096 keys |
 | Explorer index batches | 256 blocks per batch, 8 batches per request |
-| Pool share window | trimmed to 4× block difficulty × PPLNS factor |
-| Pool payout history | 512 records; reserved and submitted records are never dropped |
+| Pool settlement history | PROP retains this round's shares. PPLNS keeps the shortest recent suffix reaching 4 × block difficulty × window factor when available. SOLO and the PPS family omit these share lists. |
+| Pool payout history | Target of 512 records. Reserved and submitted payouts stay until reconciled. |
 | Pool reward events / recent blocks | 512 / 128 |
 | Claimed witness index | one entry per witness, 16 bytes of key and value |
 

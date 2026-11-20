@@ -40,8 +40,8 @@ impl VmStateStore {
         self.committed.clone()
     }
 
-    pub fn root(&self) -> hyphen_crypto::Hash256 {
-        self.committed.root()
+    pub fn ledger(&self) -> &VmLedger {
+        &self.committed
     }
 
     pub(crate) fn replace_committed(&mut self, state: VmLedger) {

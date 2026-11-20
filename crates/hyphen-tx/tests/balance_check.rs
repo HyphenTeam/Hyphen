@@ -1,5 +1,5 @@
 use curve25519_dalek::scalar::Scalar;
-use hyphen_crypto::pedersen::{Commitment, PedersenGens, G_VALUE};
+use hyphen_crypto::pedersen::{Commitment, G_VALUE, PedersenGens};
 
 #[test]
 fn balance_check_manual() {

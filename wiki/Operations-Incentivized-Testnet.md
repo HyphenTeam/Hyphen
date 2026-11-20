@@ -6,18 +6,17 @@ branch metadata, bounded immutable branch-body storage, heavier-work planning,
 and atomic rollback now feed a real `Blockchain` reorg backend. Backend tests
 cover a successful heavier branch, candidate-validation failure with exact old
 state restoration, forged-work rejection without mutation, and database-reopen
-recovery. Live P2P branch ingestion, automatic fork-choice triggering,
-dependent-subsystem reconciliation, and multi-node fault evidence are still
-missing.
+recovery. Local P2P peers switched branches twice. The wallet, mempool,
+transaction lookup and three-miner PPLNS ledger followed the canonical history.
+Public multi-host partition and recovery evidence is still required. [Acceptance records](Operations-Verification.md)
 
 ## Entry blockers
 
 Do not attach monetary value or public rewards until the following are
 implemented and tested:
 
-- bounded live P2P competing-branch ingestion and automatic cumulative-work
-  fork-choice triggering, using the existing fork-state validation and
-  crash-recoverable multi-block backend;
+- independent verification of bounded P2P branch intake and cumulative-work
+  selection across a multi-host partition and restart;
 - deterministic reorg reconciliation for the mempool, wallet, explorer, and
   pool settlement, plus process-kill/reopen and multi-node partition evidence;
 - authenticated and rate-limited public RPC/pool edges;
@@ -89,13 +88,13 @@ rollback plan.
 
 # 激励测试网就绪条件与监控
 
-状态：拟议的运维门槛。当前节点适用于本地 devnet 实验，但尚不适用于有激励的公开测试网。持久化分支元数据、有界不可变分支区块体存储、较重工作量规划和原子回滚已接入真实 `Blockchain` reorg 后端。后端测试覆盖较重分支成功切换、候选验证失败时精确恢复旧状态、伪造工作量被拒绝且不改变状态，以及数据库重开恢复。实时 P2P 分支接入、自动 fork-choice 触发、依赖子系统对账和多节点故障证据仍缺失。
+当前验收限于无价值开发网。持久化分支元数据、有界分支区块体存储、工作量重算和原子回滚已接入 `Blockchain` reorg 后端。测试覆盖采用较重分支、验证失败后恢复、拒绝虚报工作量及数据库重开。本地 P2P 连续两次换链后，交易池、规范链交易查询、钱包和三矿工 PPLNS 账本均跟随规范分支。公网多机分区恢复仍需独立验收。[实测记录](Operations-Verification.md)
 
 ## 准入阻断项
 
 在实现并测试以下事项前，不得附加货币价值或公开奖励：
 
-- 有界实时 P2P 竞争分支接入与自动累计工作量 fork-choice 触发，并使用现有分叉状态验证和可从崩溃恢复的多区块后端；
+- 独立验证多机分区及重启后的有界 P2P 分支接入与累计工作量选链；
 - mempool、wallet、explorer 和 pool 结算的确定性 reorg 对账，以及杀进程/重开和多节点分区证据；
 - 经过认证和限流的公开 RPC/pool 边界；
 - 自动矿池付款生命周期，或者明确声明余额不具货币价值的仅测试网方案；

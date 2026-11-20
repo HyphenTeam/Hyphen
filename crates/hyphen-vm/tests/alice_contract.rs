@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use hyphen_neural::{
-    encode_open, encode_submit, solve, ChallengeDescriptor, MlpSpec, SolveConfig, DESCRIPTOR_BYTES,
+    ChallengeDescriptor, DESCRIPTOR_BYTES, MlpSpec, SolveConfig, encode_open, encode_submit, solve,
 };
 use hyphen_vm::types::{ContractCall, ContractResult, DeployParams};
 use hyphen_vm::{Contract, VmEngine};

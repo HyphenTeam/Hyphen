@@ -29,6 +29,8 @@ No successful build or test in an independent project proves base-chain
 correctness. No successful base-chain test proves an independent project is
 compatible.
 
+The three clients currently pin the shared Rust libraries at public revision `951ea013f0b61115632f463cea22850cd972df83` (chain identity v6). Each has its own lockfile. Base-chain changes in a local working tree reach a client when its dependency revision is updated.
+
 ## Contract workspace
 
 `contracts/alice-neural` is its own Cargo workspace because it is a
@@ -102,7 +104,7 @@ clean checkout of the Hyphen base-chain repository.
 
 独立项目构建或测试成功不能证明基础链正确；基础链测试成功也不能证明独立项目兼容。
 
-三个独立项目通过公开 Git revision 使用共享协议 crate，不允许依赖本机主链路径。当前钱包钉定 `576bc67d972d1156fbabb1ddf579104d5ff2ff88`（链身份 v6）；本地签出中的 Miner 与 Pool 使用路径依赖，发布时必须改为钉定同一公开 revision。升级必须固定新的公开 revision，并重新执行跨项目向量和兼容性测试。
+三个独立项目通过公开 Git revision 使用共享协议 crate。钱包、矿工和矿池均固定到 `951ea013f0b61115632f463cea22850cd972df83`（链身份 v6），各自维护锁文件。升级时固定新的公开 revision，并重新执行跨项目向量和兼容性测试。
 
 ## 协议变更顺序
 

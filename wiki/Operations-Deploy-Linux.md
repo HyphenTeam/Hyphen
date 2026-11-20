@@ -321,7 +321,7 @@ that size move the stopped data directory instead.
 ```bash
 journalctl -u hyphen-node --since '1 hour ago' --no-pager
 journalctl -u hyphen-node -p warning --no-pager      # warnings and worse
-journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
+journalctl -u hyphen-node -g 'Connected to|Disconnected from|Processed sync batch|ban expired' --no-pager
 ```
 
 `RUST_LOG=info` is the production level. Raise a single target while
@@ -333,7 +333,7 @@ What actually matters in the journal:
 | Line | Meaning |
 | --- | --- |
 | `Chain tip: height=…, hash=…, cum_diff=…` | per-block progress; `cum_diff` is the fork-choice weight |
-| `No peers connected, retrying Kademlia bootstrap...` | isolation; check firewall, boot node multiaddrs and that the boot node is up |
+| `Disconnected from` | isolation; check firewall, boot node multiaddrs and that the boot node is up |
 | `Peer … banned for …` | three proven-fault strikes in ten minutes; see [../security/peer-policy.md](Security-Peer-Policy) |
 | `Peer … ban expired` | the hour elapsed, reconnects are allowed |
 | `Remote … at height …, local at … – in sync` | sync responses applied |
@@ -357,8 +357,8 @@ What actually matters in the journal:
 - No public authenticated RPC, no public pool edge, no rate limiting.
 - No metrics endpoint; `/healthz` reports liveness and `/api/info` is the only
   chain-state signal.
-- No live P2P branch intake: the reorg backend is implemented and tested, but
-  automatic fork-choice on live competing branches is not wired up.
+- Recovery after a public multi-host partition still needs verification. Local
+  P2P peers have adopted and replayed strictly heavier branches. [Fork results](Operations-Verification.md)
 - No monetary value. Running this node is a research and testing activity.
 
 ---
@@ -639,7 +639,7 @@ sudo /opt/hyphen/bin/hyphen-node --network devnet \
 ```bash
 journalctl -u hyphen-node --since '1 hour ago' --no-pager
 journalctl -u hyphen-node -p warning --no-pager      # 警告及以上
-journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
+journalctl -u hyphen-node -g 'Connected to|Disconnected from|Processed sync batch|ban expired' --no-pager
 ```
 
 生产环境用 `RUST_LOG=info`。排障时只调高单个目标（`RUST_LOG=info,hyphen_network=debug`），不要把全局拉到 `debug`。
@@ -649,7 +649,7 @@ journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
 | 日志 | 含义 |
 | --- | --- |
 | `Chain tip: height=…, hash=…, cum_diff=…` | 逐块进展；`cum_diff` 是分叉选择权重 |
-| `No peers connected, retrying Kademlia bootstrap...` | 网络孤立；检查防火墙、boot node 的 multiaddr，以及对方是否在线 |
+| `Disconnected from` | 网络孤立；检查防火墙、boot node 的 multiaddr，以及对方是否在线 |
 | `Peer … banned for …` | 十分钟内三次可证过错；见 [../security/peer-policy.md](Security-Peer-Policy) |
 | `Peer … ban expired` | 封禁一小时到期，允许重连 |
 | `Remote … at height …, local at … – in sync` | 同步响应已应用 |
@@ -672,5 +672,5 @@ journalctl -u hyphen-node -g 'No peers connected|ban expired|in sync' --no-pager
 
 - 没有公开的认证 RPC、没有公开矿池入口、没有限流。
 - 没有指标端点；`/healthz` 报告存活，`/api/info` 是唯一的链状态信号。
-- 没有实时 P2P 分支接入：reorg 后端已实现并有测试，但针对实时竞争分支的自动 fork-choice 尚未接线。
+- 本地 P2P 节点已验证接入累计工作量严格更高的竞争分支，公网多机分区恢复仍待验收。[分叉实测](Operations-Verification.md)
 - 没有货币价值。运行这个节点属于研究与测试活动。

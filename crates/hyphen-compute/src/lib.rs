@@ -12,13 +12,13 @@ use std::collections::BTreeMap;
 mod neural;
 
 pub use neural::{
-    neural_circuit_id, neural_work_circuit_id, neural_work_program_hash, NeuralChallengeVerifier,
-    NeuralWorkVerifier, NEURAL_PROOF_SYSTEM, NEURAL_WORK_PROOF_SYSTEM,
+    NEURAL_PROOF_SYSTEM, NEURAL_WORK_PROOF_SYSTEM, NeuralChallengeVerifier, NeuralWorkVerifier,
+    neural_circuit_id, neural_work_circuit_id, neural_work_program_hash,
 };
 
 use hyphen_wire::CanonicalSet;
 
-use hyphen_crypto::{blake3_hash_many, Hash256, PublicKey, SecretKey, Signature};
+use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature, blake3_hash_many};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

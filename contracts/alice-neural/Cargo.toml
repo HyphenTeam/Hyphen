@@ -1,7 +1,7 @@
 [package]
 name = "alice-neural-contract"
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
 authors = ["blueokanna <blueokanna@gmail.com>", "HyphenTeam"]
 license-file = "LICENSE"
 description = "On-chain Alice challenge contract for the Hyphen neural proof-of-work profile"
@@ -19,5 +19,5 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = "debuginfo"
+strip = "symbols"
 overflow-checks = true

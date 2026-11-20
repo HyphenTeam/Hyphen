@@ -1,7 +1,7 @@
 //! Content-addressed, chunk-authenticated storage for proof and state blobs.
 
-use hyphen_crypto::merkle::{MerkleProof, MerkleTree};
 use hyphen_crypto::Hash256;
+use hyphen_crypto::merkle::{MerkleProof, MerkleTree};
 use serde::{Deserialize, Serialize};
 use sled::transaction::{ConflictableTransactionError, TransactionError};
 use thiserror::Error;
@@ -105,22 +105,22 @@ impl AuthenticatedBlobStore {
         let metadata_key = metadata_key(object_hash);
         let metadata_bytes = metadata.canonical_bytes();
         let result: Result<(), TransactionError<BlobAbort>> = self.tree.transaction(|tx| {
-            if let Some(existing) = tx.get(&metadata_key)? {
-                if existing.as_ref() != metadata_bytes {
-                    return Err(ConflictableTransactionError::Abort(
-                        BlobAbort::ContentConflict,
-                    ));
-                }
+            if let Some(existing) = tx.get(&metadata_key)?
+                && existing.as_ref() != metadata_bytes
+            {
+                return Err(ConflictableTransactionError::Abort(
+                    BlobAbort::ContentConflict,
+                ));
             }
             tx.insert(metadata_key.as_slice(), metadata_bytes.as_slice())?;
             for (index, chunk) in chunks.iter().enumerate() {
                 let key = chunk_key(object_hash, index as u32);
-                if let Some(existing) = tx.get(&key)? {
-                    if existing.as_ref() != *chunk {
-                        return Err(ConflictableTransactionError::Abort(
-                            BlobAbort::ContentConflict,
-                        ));
-                    }
+                if let Some(existing) = tx.get(&key)?
+                    && existing.as_ref() != *chunk
+                {
+                    return Err(ConflictableTransactionError::Abort(
+                        BlobAbort::ContentConflict,
+                    ));
                 }
                 tx.insert(key.as_slice(), *chunk)?;
             }

@@ -33,6 +33,7 @@ pub const FEATURE_USEFUL_WORK: u32 = 1 << 5;
 pub const FEATURE_WASM: u32 = 1 << 6;
 pub const FEATURE_H_WES: u32 = 1 << 7;
 pub const FEATURE_NEURAL_WORK: u32 = 1 << 8;
+pub const FEATURE_ASSET_RULES_V1: u32 = 1 << 9;
 pub const RESEARCH_CONSENSUS_FEATURES: u32 = FEATURE_UNCLES
     | FEATURE_TERA
     | FEATURE_VRE
@@ -255,6 +256,15 @@ impl ChainConfig {
             p2p_port: MAINNET_P2P_PORT,
             rpc_port: MAINNET_RPC_PORT,
             discovery_port: MAINNET_DISCOVERY_PORT,
+        }
+    }
+
+    pub fn contract_devnet() -> Self {
+        Self {
+            network_name: "hyphen-contract-devnet-v1".into(),
+            network_magic: *b"HYCD",
+            consensus_features: FEATURE_WASM | FEATURE_ASSET_RULES_V1,
+            ..Self::devnet()
         }
     }
 

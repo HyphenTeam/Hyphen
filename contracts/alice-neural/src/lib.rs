@@ -42,8 +42,8 @@ use core::panic::PanicInfo;
 
 use hyphen_neural::mlp::{MAX_HIDDEN_DIM, MAX_INPUT_DIM, MAX_OUTPUT_DIM, MAX_WEIGHTS};
 use hyphen_neural::{
-    decode_descriptor, decode_open, decode_status, decode_submit, decode_values_into,
-    encode_descriptor, ChallengeDescriptor, NeuralError, DESCRIPTOR_BYTES, SUBMISSION_HEADER_BYTES,
+    ChallengeDescriptor, DESCRIPTOR_BYTES, NeuralError, SUBMISSION_HEADER_BYTES, decode_descriptor,
+    decode_open, decode_status, decode_submit, decode_values_into, encode_descriptor,
 };
 
 /// Largest request the contract accepts. Descriptor and solution bodies are far
@@ -66,7 +66,8 @@ const SOLUTION_PREFIX: &[u8] = b"hyphen:sol:v1:";
 const KEY_BYTES: usize = 23;
 
 #[link(wasm_import_module = "env")]
-extern "C" {
+#[allow(unsafe_code)]
+unsafe extern "C" {
     fn h_input_len() -> u32;
     fn h_input_copy(ptr: u32) -> i32;
     fn h_set_return(ptr: u32, len: u32) -> i32;
@@ -90,7 +91,7 @@ fn panic(_info: &PanicInfo) -> ! {
 /// `no_mangle` is an unsafe attribute by definition: two definitions of the same
 /// symbol would be undefined at link time. There is exactly one here.
 #[allow(unsafe_code)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hyphen_execute() {
     let mut request = [0u8; MAX_REQUEST_BYTES];
     let length = match read_request(&mut request) {
@@ -113,7 +114,7 @@ pub extern "C" fn hyphen_execute() {
 /// The VM rejects a query that writes, and this entry point performs no
 /// `h_storage_write`, so a `hyphen_query` call cannot mutate consensus state.
 #[allow(unsafe_code)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hyphen_query() {
     let mut request = [0u8; MAX_REQUEST_BYTES];
     let length = match read_request(&mut request) {

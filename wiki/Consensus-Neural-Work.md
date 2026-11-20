@@ -17,35 +17,35 @@ seed        = BLAKE3("Hyphen/neural-work-seed/v1" ‖ p ‖ h ‖ m)
 weights     = ChaCha20(seed, epoch = h ^ 2^63)      // hyphen-neural::work
 x           = the block's witness list, input_dim Q32.32 values
 y           = A_weights(x)                           // one fixed-point forward pass
-score       = mix64-fold(y)                          // 64-bit, uniform
+score       = mix64-fold(y)                          // deterministic 64-bit score
 accept      <=> score < threshold
 ```
 
 `x` must lie in `[-1, 1]` per component (`ONE = 2^32`). `threshold` is the
-header's `difficulty` field, and the expected number of trials for a block is
-`2^64 / threshold`.
+header's `difficulty` field. Under an independent uniform-score model, a trial
+succeeds with probability `threshold / 2^64` and the mean trial count is
+`2^64 / threshold`. Consensus checks only the score of the submitted input.
 
 Three properties are load-bearing and each has a regression test:
 
-1. **The seed fixes the network, never the answer.** No function derives an
-   accepted `x` from public data; the only way to obtain one is to run forward
-   passes. This is what the inverse Alice challenge lacks, which is why that
-   circuit cannot settle work.
+1. **The seed determines the weights.** The reference miner generates candidate
+   inputs and evaluates each with a forward pass. A lower bound on the cost of
+   alternative solvers remains open.
 2. **The seed includes the miner key.** Without it, a solution found by one
    miner is valid for every other miner's block at the same height and could be
-   copied out of the mempool. The seed binding makes a solution worthless to
-   anyone else.
+   copied directly. Changing the miner key requires evaluating the input under
+   different weights and signing the resulting block.
 3. **The header commits to the solution.** `pow_commitment` is
    `BLAKE3("Hyphen/neural-work-commitment/v1" ‖ p ‖ h ‖ threshold ‖ m ‖ x)`, so
    neither the threshold nor the solution can change after the search.
 
-There is no single-use set. The seed changes with every parent, so a solution
-cannot be replayed into another block.
+Each parent defines a new challenge. Reusing an input requires that it also
+satisfy the new threshold test.
 
 ## 2. Difficulty
 
-`threshold` is retargeted every `WORK_RETARGET_WINDOW = 16` intervals from the
-last 17 headers:
+Once 17 parent headers are available, each new block takes its threshold from
+the latest 16 intervals. Consecutive windows overlap by 15 intervals.
 
 ```text
 expected = 16 × WORK_TARGET_MS          // 480 000 ms
@@ -82,11 +82,10 @@ and is applied by the node before consensus validation.
 
 ## 3. Fork choice
 
-The header field is a threshold, so **lower is harder**. Fork-choice weight is
-the expected attempt count:
+The header field is a threshold, so **lower is harder**. The v1 fork-choice rule uses integer division.
 
 ```text
-weight(block) = 2^64 / threshold        (u128, floored; 0 for genesis)
+weight(block) = floor((2^64 - 1) / threshold)   // post-genesis; genesis contributes 0
 cumulative    = Σ weight
 ```
 
@@ -140,12 +139,11 @@ change is a different chain and must be discarded, not migrated.
 
 ## 5. Publishing the client changes
 
-`HyphenMiner` and `HyphenPool` consume `hyphen-core`, `hyphen-crypto`,
-`hyphen-pow`, `hyphen-neural` and `hyphen-transport` from a pinned public
-revision. While the profile is in development they are wired to the local
-checkout with path dependencies. Publishing a release requires bumping that
-revision to the commit that contains this module, regenerating both lockfiles,
-and re-running their CI.
+`HyphenMiner` and `HyphenPool` pin their shared crates to Git revision
+`951ea013f0b61115632f463cea22850cd972df83`. `HyphenWallet/rust` uses the same revision. Each repository
+builds with its own lockfile. From the base-chain checkout, run
+`./scripts/devnet-smoke.ps1 -Network neural-devnet` to compare the first pool
+settlement with the node's block hash and the independent wallet's decoded amount.
 
 ## 6. What the work is not
 

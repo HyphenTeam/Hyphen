@@ -59,10 +59,7 @@ system openly reports; only the neural challenge circuit has an active
 settlement verifier. Silent fallback is treated as a bug: an encoding path
 that "tries something else" on parse failure is exactly how consensus splits.
 
-**Write down what is missing, next to what works.** The repository's own README
-carries a table of mechanisms that are *not* active, and §11 of this document
-repeats it. A chain that overstates its maturity is not a research chain, it is
-a liability with a logo.
+Section 11 records the implementation status and open validation requirements for each research mechanism.
 
 **Keep the useful output.** A proof of work should leave something behind. The
 witness set is a deduplicated, independently checkable dataset of prime chains
@@ -393,7 +390,7 @@ Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞
 
 **Fail closed，并且让失败可见。** 拒绝型验证器、拒绝打开的数据库、不可信时钟和关闭的研究功能都是系统明确报告的状态。静默回退被视为缺陷：解析失败后"再试别的方式"的编码路径正是共识分裂的成因。
 
-**把缺失写在能工作的东西旁边。** 仓库 README 自带一张"未激活机制"表，本文 §11 重复了它。夸大自身成熟度的链不是研究链，而是带着 logo 的负债。
+第 11 节列出各项研究机制的实现状态和仍需完成的验证。
 
 **留下有用的产出。** 工作量证明应当留下东西。见证集是一份去重、可独立核验的素数链数据集，任何观察者都能导出并验证；它是链的科学产出，而不是内部计数器。
 

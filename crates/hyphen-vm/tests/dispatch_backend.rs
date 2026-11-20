@@ -6,8 +6,8 @@
 //! contract aborts the process instead of trapping. These tests execute more
 //! instructions than a default stack can hold and must simply succeed.
 
-use hyphen_vm::types::{ContractCall, DeployParams};
 use hyphen_vm::VmEngine;
+use hyphen_vm::types::{ContractCall, DeployParams};
 
 const GAS: u64 = 200_000_000;
 

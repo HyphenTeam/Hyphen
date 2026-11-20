@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hyphen_crypto::{Hash256, SecretKey, Signature};
-use hyphen_state::{describe_blob, BlobMetadata};
+use hyphen_state::{BlobMetadata, describe_blob};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

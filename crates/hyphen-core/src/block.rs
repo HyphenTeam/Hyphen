@@ -42,7 +42,7 @@ impl BlockHeader {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Block {
     pub header: BlockHeader,
     /// Single-use mathematical witnesses claimed by this block. The header's
@@ -61,18 +61,15 @@ impl Block {
     }
 
     pub fn compute_tx_root(&self) -> Hash256 {
-        merkle_root(
-            &self
-                .transactions
+        merkle_root_iter(
+            self.transactions
                 .iter()
-                .map(|tx| hyphen_crypto::blake3_hash(tx))
-                .collect::<Vec<_>>(),
+                .map(|tx| hyphen_crypto::blake3_hash(tx)),
         )
     }
 
     pub fn compute_uncle_root(&self) -> Hash256 {
-        let uncle_hashes: Vec<Hash256> = self.uncle_headers.iter().map(|h| h.hash()).collect();
-        merkle_root(&uncle_hashes)
+        merkle_root_iter(self.uncle_headers.iter().map(BlockHeader::hash))
     }
 
     pub fn decode_authorization(&self) -> Result<BlockAuthorization, String> {
@@ -90,25 +87,27 @@ impl Block {
 }
 
 pub fn merkle_root(hashes: &[Hash256]) -> Hash256 {
-    if hashes.is_empty() {
-        return Hash256::ZERO;
-    }
-    let mut current: Vec<Hash256> = hashes.to_vec();
-    while current.len() > 1 {
-        let mut next = Vec::with_capacity(current.len().div_ceil(2));
-        for chunk in current.chunks(2) {
-            if chunk.len() == 2 {
-                next.push(hyphen_crypto::blake3_hash_many(&[
-                    chunk[0].as_bytes(),
-                    chunk[1].as_bytes(),
-                ]));
-            } else {
-                next.push(chunk[0]);
-            }
+    merkle_root_iter(hashes.iter().copied())
+}
+
+/// Completed subtrees in descending order of height. An unmatched right
+/// subtree advances unchanged until it can be joined to its left sibling.
+pub fn merkle_root_iter(hashes: impl IntoIterator<Item = Hash256>) -> Hash256 {
+    let join = |left: Hash256, right: Hash256| {
+        hyphen_crypto::blake3_hash_many(&[left.as_bytes(), right.as_bytes()])
+    };
+    let mut subtrees = Vec::new();
+    for (index, mut root) in hashes.into_iter().enumerate() {
+        for _ in 0..index.trailing_ones() {
+            root = join(subtrees.pop().expect("one subtree per set bit"), root);
         }
-        current = next;
+        subtrees.push(root);
     }
-    current[0]
+    subtrees
+        .into_iter()
+        .rev()
+        .reduce(|right, left| join(left, right))
+        .unwrap_or(Hash256::ZERO)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
@@ -138,6 +137,35 @@ pub struct ReceiptLog {
 }
 
 pub fn compute_receipt_root(receipts: &[TransactionReceipt]) -> Hash256 {
-    let hashes: Vec<Hash256> = receipts.iter().map(|r| r.hash()).collect();
-    merkle_root(&hashes)
+    merkle_root_iter(receipts.iter().map(TransactionReceipt::hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streaming_root_preserves_odd_leaf_promotion() {
+        let leaves: Vec<_> = (0u16..257)
+            .map(|n| hyphen_crypto::blake3_hash(&n.to_le_bytes()))
+            .collect();
+        for count in 0..=leaves.len() {
+            let mut level = leaves[..count].to_vec();
+            while level.len() > 1 {
+                level = level
+                    .chunks(2)
+                    .map(|pair| match pair {
+                        [left, right] => {
+                            hyphen_crypto::blake3_hash_many(&[left.as_bytes(), right.as_bytes()])
+                        }
+                        _ => pair[0],
+                    })
+                    .collect();
+            }
+            assert_eq!(
+                merkle_root(&leaves[..count]),
+                level.first().copied().unwrap_or_default()
+            );
+        }
+    }
 }

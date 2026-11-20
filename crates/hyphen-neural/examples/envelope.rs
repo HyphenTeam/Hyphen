@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use hyphen_neural::{solve, ChallengeDescriptor, MlpSpec, SolveConfig};
+use hyphen_neural::{ChallengeDescriptor, MlpSpec, SolveConfig, solve};
 
 fn main() {
     let seed = [0x5au8; 32];

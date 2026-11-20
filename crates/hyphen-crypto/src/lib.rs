@@ -9,14 +9,14 @@ pub mod pq;
 pub mod rng;
 pub mod stealth;
 
-pub use clsag::{clsag_sign, clsag_verify, ClsagSignature};
-pub use hash::{blake3_hash, blake3_hash_many, blake3_keyed, Hash256};
-pub use hex_codec::{decode as hex_decode, encode as hex_encode, HexError};
+pub use clsag::{ClsagSignature, clsag_sign, clsag_verify};
+pub use hash::{Hash256, blake3_hash, blake3_hash_many, blake3_keyed};
+pub use hex_codec::{HexError, decode as hex_decode, encode as hex_encode};
 pub use keys::{KeyPair, PublicKey, SecretKey, Signature};
-pub use merkle::{MerkleProof, MerkleTree, MERKLE_DEPTH};
+pub use merkle::{MERKLE_DEPTH, MerkleProof, MerkleTree};
 pub use pedersen::{Commitment, PedersenGens};
 pub use pq::{
     HybridPublicKey, HybridSecretKey, HybridSignature, WotsPublicKey, WotsSecretKey, WotsSignature,
 };
-pub use rng::{fill_system_random, system_rng, SystemRng};
+pub use rng::{SystemRng, fill_system_random, system_rng};
 pub use stealth::{EphemeralKey, SpendKey, StealthAddress, ViewKey};

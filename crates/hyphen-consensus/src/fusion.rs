@@ -298,14 +298,14 @@ fn validate_lane_frontiers(
     blocks: &BTreeMap<Hash256, &FusionBlock>,
     included: &BTreeSet<Hash256>,
 ) -> Result<(), FusionError> {
-    for lane in 0..input.lane_count {
-        let mut lane_chain = BTreeSet::new();
-        let mut cursor = match input.selected_frontier[lane as usize] {
+    let mut on_lane_chains = BTreeSet::new();
+    for &tip in &input.selected_frontier {
+        let mut cursor = match tip {
             FrontierTip::Anchor(_) => None,
             FrontierTip::Block(id) => Some(id),
         };
         while let Some(id) = cursor {
-            if !lane_chain.insert(id) {
+            if !on_lane_chains.insert(id) {
                 return Err(FusionError::Cycle);
             }
             cursor = match blocks[&id].lane_parent {
@@ -313,12 +313,10 @@ fn validate_lane_frontiers(
                 FrontierTip::Block(parent) => Some(parent),
             };
         }
-        if included
-            .iter()
-            .any(|id| blocks[id].lane == lane && !lane_chain.contains(id))
-        {
-            return Err(FusionError::InconsistentFrontier);
-        }
+    }
+    // Parent validation guarantees each lane chain stays in its own lane.
+    if &on_lane_chains != included {
+        return Err(FusionError::InconsistentFrontier);
     }
     Ok(())
 }

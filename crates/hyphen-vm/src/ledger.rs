@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use hyphen_crypto::{blake3_hash_many, Hash256, PublicKey, SecretKey, Signature};
+use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -13,6 +13,10 @@ pub const MAX_VM_TRANSACTION_BYTES: usize = 1024 * 1024;
 const D_DEPLOY: &[u8] = b"HYPHEN_VM_DEPLOY_V1";
 const D_CALL: &[u8] = b"HYPHEN_VM_CALL_V1";
 const D_ROOT: &[u8] = b"HYPHEN_VM_STATE_ROOT_V1";
+pub const MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
+const CONTRACT_ROW_BYTES: usize = 192;
+const STORAGE_ROW_BYTES: usize = 96;
+const NONCE_ROW_BYTES: usize = 64;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, rustbinary::CompactBinary)]
 pub struct SignedDeploy {
@@ -74,8 +78,14 @@ pub enum VmTransaction {
 }
 
 impl VmTransaction {
+    pub fn gas_limit(&self) -> u64 {
+        match self {
+            Self::Deploy(tx) => tx.params.gas_limit,
+            Self::Call(tx) => tx.call.gas_limit,
+        }
+    }
     pub fn encode(&self) -> Result<Vec<u8>, VmLedgerError> {
-        let payload = crate::wire_config(MAX_VM_TRANSACTION_BYTES)
+        let payload = crate::wire_config(MAX_VM_TRANSACTION_BYTES - VM_ENVELOPE_MAGIC.len())
             .serialize(self)
             .map_err(|error| VmLedgerError::Encoding(error.to_string()))?;
         let mut bytes = Vec::with_capacity(VM_ENVELOPE_MAGIC.len() + payload.len());
@@ -105,7 +115,63 @@ pub struct VmLedger {
     next_nonce: BTreeMap<PublicKey, u64>,
 }
 
+#[derive(rustbinary::CompactBinary)]
+pub struct ContractSnapshot {
+    pub contract: Contract,
+    storage: BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+impl ContractSnapshot {
+    pub fn query(
+        self,
+        function: String,
+        args: Vec<u8>,
+        gas_limit: u64,
+    ) -> Result<Vec<u8>, VmLedgerError> {
+        if !crate::gas::valid_transaction_gas(gas_limit) {
+            return Err(VmLedgerError::GasBudget);
+        }
+        let address = self.contract.address;
+        let storage = HashMap::from([(address, self.storage.into_iter().collect())]);
+        let call = ContractCall {
+            caller: [0; 32],
+            contract: address,
+            function,
+            args,
+            gas_limit,
+            value: 0,
+        };
+        let result = VmEngine::with_storage(storage)
+            .call(&self.contract, &call)
+            .map_err(|e| VmLedgerError::Execution(e.to_string()))?;
+        if !result.success {
+            return Err(VmLedgerError::Execution(
+                String::from_utf8_lossy(&result.return_data).into_owned(),
+            ));
+        }
+        if !result.state_changes.is_empty() {
+            return Err(VmLedgerError::Execution(
+                "query export changed contract storage".into(),
+            ));
+        }
+        Ok(result.return_data)
+    }
+}
+
 impl VmLedger {
+    pub fn accounted_bytes(&self) -> usize {
+        self.next_nonce.len() * NONCE_ROW_BYTES
+            + self
+                .contracts
+                .values()
+                .map(|c| CONTRACT_ROW_BYTES + c.code.len())
+                .sum::<usize>()
+            + self
+                .storage
+                .iter()
+                .map(|((_, k), v)| STORAGE_ROW_BYTES + k.len() + v.len())
+                .sum::<usize>()
+    }
     pub fn contract(&self, address: ContractAddress) -> Option<&Contract> {
         self.contracts.get(&address)
     }
@@ -124,14 +190,31 @@ impl VmLedger {
             .map(Vec::as_slice)
     }
 
-    pub fn root(&self) -> Hash256 {
+    fn storage_entries(
+        &self,
+        address: ContractAddress,
+    ) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+        self.storage
+            .range((address, Vec::new())..)
+            .take_while(move |((owner, _), _)| *owner == address)
+            .map(|((_, key), value)| (key.clone(), value.clone()))
+    }
+
+    pub fn contract_snapshot(&self, address: ContractAddress) -> Option<ContractSnapshot> {
+        Some(ContractSnapshot {
+            contract: self.contract(address)?.clone(),
+            storage: self.storage_entries(address).collect(),
+        })
+    }
+
+    pub fn root(&self) -> Result<Hash256, VmLedgerError> {
         if self.contracts.is_empty() && self.storage.is_empty() && self.next_nonce.is_empty() {
-            return Hash256::ZERO;
+            return Ok(Hash256::ZERO);
         }
         let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .serialize(self)
-            .expect("VM ledger serialization is infallible");
-        hash(D_ROOT, &encoded)
+            .map_err(|e| VmLedgerError::Encoding(e.to_string()))?;
+        Ok(hash(D_ROOT, &encoded))
     }
 
     pub fn apply(
@@ -140,13 +223,32 @@ impl VmLedger {
         height: u64,
         transaction: &VmTransaction,
     ) -> Result<u64, VmLedgerError> {
-        let mut pending = self.clone();
-        let gas_used = match transaction {
-            VmTransaction::Deploy(signed) => pending.deploy(chain_id, height, signed),
-            VmTransaction::Call(signed) => pending.call(chain_id, signed),
-        }?;
-        *self = pending;
-        Ok(gas_used)
+        let mut budget = VmBlockBudget::new(self, true);
+        self.apply_in_block(chain_id, height, transaction, &mut budget)
+    }
+
+    pub fn apply_in_block(
+        &mut self,
+        chain_id: Hash256,
+        height: u64,
+        transaction: &VmTransaction,
+        budget: &mut VmBlockBudget,
+    ) -> Result<u64, VmLedgerError> {
+        let gas = transaction.gas_limit();
+        if budget.asset_rules
+            && (!crate::gas::valid_transaction_gas(gas) || gas > budget.remaining_gas)
+        {
+            return Err(VmLedgerError::GasBudget);
+        }
+        match transaction {
+            VmTransaction::Deploy(signed) => self.deploy(chain_id, height, signed, budget),
+            VmTransaction::Call(signed) => self.call(chain_id, signed, budget),
+        }
+        .inspect(|_| {
+            if budget.asset_rules {
+                budget.remaining_gas -= gas;
+            }
+        })
     }
 
     fn deploy(
@@ -154,6 +256,7 @@ impl VmLedger {
         chain_id: Hash256,
         height: u64,
         signed: &SignedDeploy,
+        budget: &mut VmBlockBudget,
     ) -> Result<u64, VmLedgerError> {
         if signed.chain_id != chain_id {
             return Err(VmLedgerError::WrongChain);
@@ -165,25 +268,37 @@ impl VmLedger {
                 &signed.signature,
             )
             .map_err(|_| VmLedgerError::InvalidSignature)?;
-        self.consume_nonce(owner, signed.params.nonce)?;
+        let next_nonce = self.checked_next_nonce(owner, signed.params.nonce)?;
         let expected_address =
             ContractAddress::from_deployer_and_nonce(&signed.params.deployer, signed.params.nonce);
         if self.contracts.contains_key(&expected_address) {
             return Err(VmLedgerError::ContractExists);
         }
         let mut engine = VmEngine::new();
+        engine.asset_rules = budget.asset_rules;
         let (contract, result) = engine
             .deploy(&signed.params, height)
             .map_err(|error| VmLedgerError::Execution(error.to_string()))?;
         if !result.success || contract.address != expected_address {
             return Err(VmLedgerError::Execution("deployment failed".into()));
         }
+        budget.commit_size(
+            &result.state_changes,
+            CONTRACT_ROW_BYTES + contract.code.len(),
+            next_nonce == 1,
+        )?;
         self.apply_changes(result.state_changes);
         self.contracts.insert(contract.address, contract);
+        self.next_nonce.insert(owner, next_nonce);
         Ok(result.gas_used)
     }
 
-    fn call(&mut self, chain_id: Hash256, signed: &SignedCall) -> Result<u64, VmLedgerError> {
+    fn call(
+        &mut self,
+        chain_id: Hash256,
+        signed: &SignedCall,
+        budget: &mut VmBlockBudget,
+    ) -> Result<u64, VmLedgerError> {
         if signed.chain_id != chain_id || signed.call.value != 0 {
             return Err(VmLedgerError::WrongChain);
         }
@@ -194,34 +309,31 @@ impl VmLedger {
                 &signed.signature,
             )
             .map_err(|_| VmLedgerError::InvalidSignature)?;
-        self.consume_nonce(caller, signed.nonce)?;
+        let next_nonce = self.checked_next_nonce(caller, signed.nonce)?;
         let contract = self
             .contracts
             .get(&signed.call.contract)
-            .cloned()
             .ok_or(VmLedgerError::UnknownContract)?;
-        let contract_storage = self
-            .storage
-            .iter()
-            .filter(|((address, _), _)| *address == contract.address)
-            .map(|((_, key), value)| (key.clone(), value.clone()))
-            .collect::<HashMap<_, _>>();
+        let contract_storage = self.storage_entries(contract.address).collect();
         let mut all_storage = HashMap::new();
         all_storage.insert(contract.address, contract_storage);
         let mut engine = VmEngine::with_storage(all_storage);
+        engine.asset_rules = budget.asset_rules;
         let result = engine
-            .call(&contract, &signed.call)
+            .call(contract, &signed.call)
             .map_err(|error| VmLedgerError::Execution(error.to_string()))?;
         if !result.success {
             return Err(VmLedgerError::Execution(
                 String::from_utf8_lossy(&result.return_data).into_owned(),
             ));
         }
+        budget.commit_size(&result.state_changes, 0, next_nonce == 1)?;
         self.apply_changes(result.state_changes);
+        self.next_nonce.insert(caller, next_nonce);
         Ok(result.gas_used)
     }
 
-    fn consume_nonce(&mut self, owner: PublicKey, nonce: u64) -> Result<(), VmLedgerError> {
+    fn checked_next_nonce(&self, owner: PublicKey, nonce: u64) -> Result<u64, VmLedgerError> {
         let expected = self.next_nonce.get(&owner).copied().unwrap_or(0);
         if nonce != expected {
             return Err(VmLedgerError::InvalidNonce {
@@ -229,13 +341,7 @@ impl VmLedger {
                 got: nonce,
             });
         }
-        self.next_nonce.insert(
-            owner,
-            expected
-                .checked_add(1)
-                .ok_or(VmLedgerError::NonceExhausted)?,
-        );
-        Ok(())
+        expected.checked_add(1).ok_or(VmLedgerError::NonceExhausted)
     }
 
     fn apply_changes(&mut self, changes: Vec<crate::types::StateChange>) {
@@ -253,8 +359,61 @@ impl VmLedger {
     }
 }
 
+pub struct VmBlockBudget {
+    asset_rules: bool,
+    remaining_gas: u64,
+    state_bytes: usize,
+}
+
+impl VmBlockBudget {
+    pub fn new(ledger: &VmLedger, asset_rules: bool) -> Self {
+        Self {
+            asset_rules,
+            remaining_gas: crate::gas::MAX_BLOCK_GAS,
+            state_bytes: if asset_rules {
+                ledger.accounted_bytes()
+            } else {
+                0
+            },
+        }
+    }
+
+    fn commit_size(
+        &mut self,
+        changes: &[crate::types::StateChange],
+        contract_bytes: usize,
+        new_caller: bool,
+    ) -> Result<(), VmLedgerError> {
+        if !self.asset_rules {
+            return Ok(());
+        }
+        let mut bytes =
+            self.state_bytes + contract_bytes + usize::from(new_caller) * NONCE_ROW_BYTES;
+        for change in changes {
+            let row = STORAGE_ROW_BYTES + change.key.len();
+            if let Some(old) = &change.old_value {
+                bytes = bytes
+                    .checked_sub(row + old.len())
+                    .ok_or(VmLedgerError::StateBudget)?;
+            }
+            if let Some(new) = &change.new_value {
+                bytes += row + new.len();
+            }
+        }
+        if bytes > MAX_LEDGER_BYTES {
+            return Err(VmLedgerError::StateBudget);
+        }
+        self.state_bytes = bytes;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VmLedgerError {
+    #[error("VM fuel reservation exceeds transaction or block budget")]
+    GasBudget,
+    #[error("VM ledger exceeds the persistent state budget")]
+    StateBudget,
     #[error("VM transaction exceeds the protocol limit")]
     TransactionTooLarge,
     #[error("VM encoding error: {0}")]
@@ -296,14 +455,14 @@ fn hash(domain: &[u8], bytes: &[u8]) -> Hash256 {
 }
 
 fn hash_many(domain: &[u8], parts: &[&[u8]]) -> Hash256 {
-    let mut framed = Vec::new();
-    framed.extend_from_slice(&(domain.len() as u64).to_be_bytes());
-    framed.extend_from_slice(domain);
+    let mut framed = blake3::Hasher::new();
+    framed.update(&(domain.len() as u64).to_be_bytes());
+    framed.update(domain);
     for part in parts {
-        framed.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        framed.extend_from_slice(part);
+        framed.update(&(part.len() as u64).to_be_bytes());
+        framed.update(part);
     }
-    blake3_hash_many(&[&framed])
+    Hash256::from_bytes(*framed.finalize().as_bytes())
 }
 
 #[cfg(test)]
@@ -312,6 +471,57 @@ mod tests {
 
     fn wasm(source: &str) -> Vec<u8> {
         wat::parse_bytes(source.as_bytes()).unwrap().into_owned()
+    }
+
+    #[test]
+    fn block_reservations_and_global_storage_fail_atomically() {
+        let id = Hash256::from_bytes([9; 32]);
+        let key = SecretKey([7; 32]);
+        let code = wasm("(module (memory (export \"memory\") 1 1))");
+        let tx = |nonce, gas_limit| {
+            VmTransaction::Deploy(
+                SignedDeploy::sign(
+                    id,
+                    DeployParams {
+                        deployer: *key.public_key().as_bytes(),
+                        code: code.clone(),
+                        constructor_args: vec![],
+                        gas_limit,
+                        nonce,
+                    },
+                    &key,
+                )
+                .unwrap(),
+            )
+        };
+        let mut ledger = VmLedger::default();
+        let mut budget = VmBlockBudget::new(&ledger, true);
+        for nonce in 0..2 {
+            ledger
+                .apply_in_block(
+                    id,
+                    1,
+                    &tx(nonce, crate::gas::MAX_TRANSACTION_GAS),
+                    &mut budget,
+                )
+                .unwrap();
+        }
+        let prior = ledger.root().unwrap();
+        let third = tx(2, 100_000);
+        assert_eq!(
+            ledger.apply_in_block(id, 1, &third, &mut budget),
+            Err(VmLedgerError::GasBudget)
+        );
+        let mut budget = VmBlockBudget::new(&ledger, true);
+        budget.state_bytes = MAX_LEDGER_BYTES;
+        assert_eq!(
+            ledger.apply_in_block(id, 2, &third, &mut budget),
+            Err(VmLedgerError::StateBudget)
+        );
+        assert_eq!(ledger.root().unwrap(), prior);
+        assert_eq!(budget.remaining_gas, crate::gas::MAX_BLOCK_GAS);
+        ledger.apply(id, 2, &third).unwrap();
+        assert_ne!(ledger.root().unwrap(), prior);
     }
 
     #[test]
@@ -449,6 +659,10 @@ mod tests {
             gas_limit: 100_000,
             value: 0,
         };
+        let execute = ContractCall {
+            function: crate::application::APP_EXECUTE_EXPORT.into(),
+            ..query.clone()
+        };
         let query = VmTransaction::Call(SignedCall::sign(chain_id, 1, query, &owner).unwrap());
         assert_eq!(
             ledger.apply(chain_id, 2, &query),
@@ -456,5 +670,7 @@ mod tests {
         );
         assert_eq!(ledger.root(), root_before);
         assert_eq!(ledger.storage(address, b"key"), None);
+        let retry = VmTransaction::Call(SignedCall::sign(chain_id, 1, execute, &owner).unwrap());
+        assert!(ledger.apply(chain_id, 2, &retry).is_ok());
     }
 }

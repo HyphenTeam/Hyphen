@@ -11,8 +11,8 @@
 //! consensus crate for that transaction is not worth the supply-chain surface.
 
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
@@ -133,8 +133,6 @@ fn parse_offset_ms(
     if leap_indicator == 3 || mode != NTP_MODE_SERVER || stratum == 0 || stratum > 15 {
         return None;
     }
-    // The originate field must echo the transmit timestamp we sent: that binds
-    // the reply to this request and rejects replayed or unsolicited packets.
     if response[24..32] != request[40..48] {
         return None;
     }
@@ -302,10 +300,12 @@ pub fn needs_resync() -> bool {
 
 pub fn start_ntp_sync_task() {
     sync_ntp();
-    std::thread::spawn(|| loop {
-        let poll = ntp_poll_interval();
-        std::thread::sleep(poll);
-        sync_ntp();
+    std::thread::spawn(|| {
+        loop {
+            let poll = ntp_poll_interval();
+            std::thread::sleep(poll);
+            sync_ntp();
+        }
     });
 }
 

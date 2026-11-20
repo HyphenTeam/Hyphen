@@ -6,13 +6,14 @@ use wasmi::{Config, Engine, Instance, Module, Store, TrapCode};
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef, Validator, WasmFeatures};
 
 use crate::contract::Contract;
-use crate::gas::{GasError, GAS_DEPLOY_PER_BYTE};
+use crate::gas::{GAS_DEPLOY_PER_BYTE, GasError};
 use crate::host::{self, HostEnv, MAX_IO_SIZE};
 use crate::types::{ContractAddress, ContractCall, ContractResult, DeployParams, StateChange};
 
 pub const VM_ABI_VERSION: u32 = 1;
 pub const MAX_CONTRACT_CODE_SIZE: usize = 512 * 1024;
 pub const MAX_MEMORY_PAGES: u64 = 64;
+pub const MAX_TABLE_ELEMENTS: u64 = 4096;
 
 /// Maximum nested wasm calls inside one invocation.
 ///
@@ -63,18 +64,23 @@ pub enum VmError {
 /// identical fuel consumption and identical results on every host, and no
 /// native code generator sits in the consensus path.
 pub struct VmEngine {
+    pub(crate) asset_rules: bool,
     storage: HashMap<ContractAddress, HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl VmEngine {
     pub fn new() -> Self {
         Self {
+            asset_rules: true,
             storage: HashMap::new(),
         }
     }
 
     pub fn with_storage(storage: HashMap<ContractAddress, HashMap<Vec<u8>, Vec<u8>>>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            asset_rules: true,
+        }
     }
 
     pub fn deploy(
@@ -82,7 +88,6 @@ impl VmEngine {
         params: &DeployParams,
         height: u64,
     ) -> Result<(Contract, ContractResult), VmError> {
-        validate_contract(&params.code)?;
         if params.constructor_args.len() > MAX_IO_SIZE {
             return Err(VmError::Validation(
                 "constructor input exceeds 64 KiB".into(),
@@ -98,13 +103,11 @@ impl VmEngine {
             .into());
         }
 
+        validate_contract(&params.code, self.asset_rules)?;
         let contract = Contract::new(params.deployer, params.code.clone(), params.nonce, height);
         let execution_limit = params.gas_limit - deploy_cost;
-        let base_storage = self
-            .storage
-            .get(&contract.address)
-            .cloned()
-            .unwrap_or_default();
+        let empty = HashMap::new();
+        let base_storage = self.storage.get(&contract.address).unwrap_or(&empty);
         let (mut store, instance, host_env) = create_instance(
             &contract.code,
             contract.address,
@@ -112,6 +115,7 @@ impl VmEngine {
             execution_limit,
             params.constructor_args.clone(),
             base_storage.clone(),
+            self.asset_rules,
         )?;
 
         let execution = match instance.get_func(&store, "init") {
@@ -122,8 +126,7 @@ impl VmEngine {
             None => Ok(()),
         };
         let instruction_used = instruction_gas_used(&store, execution_limit);
-        let host_used = host_env.gas.lock().unwrap().used();
-        let execution_used = instruction_used.saturating_add(host_used);
+        let execution_used = instruction_used.saturating_add(legacy_host_gas(&host_env));
 
         if out_of_fuel(&execution) || execution_used > execution_limit {
             return Err(GasError::OutOfGas {
@@ -134,8 +137,8 @@ impl VmEngine {
         }
         execution.map_err(|error| VmError::Execution(error.to_string()))?;
 
-        let updated_storage = host_env.storage.lock().unwrap().clone();
-        let state_changes = state_changes(contract.address, &base_storage, &updated_storage);
+        let updated_storage = std::mem::take(&mut host_env.storage.lock().unwrap().entries);
+        let state_changes = state_changes(contract.address, base_storage, &updated_storage);
         self.storage.insert(contract.address, updated_storage);
         let return_data = host_env.return_data.lock().unwrap().clone();
         let logs = host_env.logs.lock().unwrap().clone();
@@ -169,13 +172,10 @@ impl VmEngine {
         if call.args.len() > MAX_IO_SIZE {
             return Err(VmError::Validation("call input exceeds 64 KiB".into()));
         }
-        validate_contract(&contract.code)?;
+        validate_contract(&contract.code, self.asset_rules)?;
 
-        let base_storage = self
-            .storage
-            .get(&contract.address)
-            .cloned()
-            .unwrap_or_default();
+        let empty = HashMap::new();
+        let base_storage = self.storage.get(&contract.address).unwrap_or(&empty);
         let (mut store, instance, host_env) = create_instance(
             &contract.code,
             contract.address,
@@ -183,6 +183,7 @@ impl VmEngine {
             call.gas_limit,
             call.args.clone(),
             base_storage.clone(),
+            self.asset_rules,
         )?;
         let function = instance
             .get_func(&store, &call.function)
@@ -193,15 +194,14 @@ impl VmEngine {
         };
         let exhausted = out_of_fuel(&execution);
         let instruction_used = instruction_gas_used(&store, call.gas_limit);
-        let host_used = host_env.gas.lock().unwrap().used();
-        let combined_used = instruction_used.saturating_add(host_used);
+        let combined_used = instruction_used.saturating_add(legacy_host_gas(&host_env));
         let out_of_gas = exhausted || combined_used > call.gas_limit;
         let mut success = execution.is_ok() && !out_of_gas;
         let mut read_only_violation = false;
 
         let (state_changes, logs) = if success {
-            let updated_storage = host_env.storage.lock().unwrap().clone();
-            let changes = state_changes(contract.address, &base_storage, &updated_storage);
+            let updated_storage = std::mem::take(&mut host_env.storage.lock().unwrap().entries);
+            let changes = state_changes(contract.address, base_storage, &updated_storage);
             if call.function == crate::application::APP_QUERY_EXPORT && !changes.is_empty() {
                 success = false;
                 read_only_violation = true;
@@ -227,7 +227,11 @@ impl VmEngine {
         Ok(ContractResult {
             success,
             return_data,
-            gas_used: combined_used.min(call.gas_limit),
+            gas_used: if exhausted && self.asset_rules {
+                call.gas_limit
+            } else {
+                combined_used.min(call.gas_limit)
+            },
             logs,
             state_changes,
         })
@@ -243,6 +247,12 @@ impl Default for VmEngine {
 /// Live instance handles for one contract invocation.
 type VmInstance = (Store<Arc<HostEnv>>, Instance, Arc<HostEnv>);
 
+fn legacy_host_gas(env: &HostEnv) -> u64 {
+    env.legacy_gas
+        .as_ref()
+        .map_or(0, |meter| meter.lock().unwrap().used())
+}
+
 fn create_instance(
     code: &[u8],
     contract: ContractAddress,
@@ -250,10 +260,20 @@ fn create_instance(
     gas_limit: u64,
     input: Vec<u8>,
     storage: HashMap<Vec<u8>, Vec<u8>>,
+    asset_rules: bool,
 ) -> Result<VmInstance, VmError> {
     let engine = engine();
     let module = Module::new(engine, code).map_err(|e| VmError::Compilation(e.to_string()))?;
-    let host_env = Arc::new(HostEnv::new(contract, caller, gas_limit, input, storage));
+    let host_env = Arc::new(
+        HostEnv::new(
+            contract,
+            caller,
+            input,
+            storage,
+            (!asset_rules).then_some(gas_limit),
+        )
+        .map_err(VmError::Validation)?,
+    );
     let mut store = Store::new(engine, host_env.clone());
     store
         .set_fuel(gas_limit)
@@ -300,16 +320,16 @@ fn state_changes(
     before: &HashMap<Vec<u8>, Vec<u8>>,
     after: &HashMap<Vec<u8>, Vec<u8>>,
 ) -> Vec<StateChange> {
-    let keys: BTreeSet<Vec<u8>> = before.keys().chain(after.keys()).cloned().collect();
+    let keys: BTreeSet<_> = before.keys().chain(after.keys()).collect();
     keys.into_iter()
         .filter_map(|key| {
-            let old_value = before.get(&key).cloned();
-            let new_value = after.get(&key).cloned();
-            (old_value != new_value).then_some(StateChange {
+            let old_value = before.get(key);
+            let new_value = after.get(key);
+            (old_value != new_value).then(|| StateChange {
                 contract,
-                key,
-                old_value,
-                new_value,
+                key: key.clone(),
+                old_value: old_value.cloned(),
+                new_value: new_value.cloned(),
             })
         })
         .collect()
@@ -322,7 +342,7 @@ fn valid_export_name(name: &str) -> bool {
         && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
-fn validate_contract(code: &[u8]) -> Result<(), VmError> {
+fn validate_contract(code: &[u8], asset_rules: bool) -> Result<(), VmError> {
     if code.len() > MAX_CONTRACT_CODE_SIZE {
         return Err(VmError::Validation(format!(
             "contract code exceeds {} bytes",
@@ -367,12 +387,32 @@ fn validate_contract(code: &[u8]) -> Result<(), VmError> {
                     }
                 }
             }
+            Payload::TableSection(tables) if asset_rules => {
+                if tables.count() > 1 {
+                    return Err(VmError::Validation(
+                        "at most one function table is allowed".into(),
+                    ));
+                }
+                for table in tables {
+                    let ty = table.map_err(|e| VmError::Validation(e.to_string()))?.ty;
+                    if ty.table64
+                        || ty.shared
+                        || ty.element_type != wasmparser::RefType::FUNCREF
+                        || !ty.maximum.is_some_and(|max| max <= MAX_TABLE_ELEMENTS)
+                    {
+                        return Err(VmError::Validation(
+                            "table must be wasm32 funcref with maximum at most 4096".into(),
+                        ));
+                    }
+                }
+            }
             Payload::MemorySection(memories) => {
                 for memory in memories {
                     let memory = memory.map_err(|e| VmError::Validation(e.to_string()))?;
                     memory_count += 1;
                     if memory.memory64
                         || memory.shared
+                        || (asset_rules && memory.page_size_log2.is_some())
                         || memory.initial > MAX_MEMORY_PAGES
                         || memory.maximum.is_none()
                         || memory.maximum > Some(MAX_MEMORY_PAGES)
@@ -446,17 +486,51 @@ mod tests {
 
     #[test]
     fn rejects_floating_point_and_unbounded_memory() {
-        let float = wasm("(module (memory (export \"memory\") 1 1) (func (export \"run\") (drop (f32.const 1))))");
+        let float = wasm(
+            "(module (memory (export \"memory\") 1 1) (func (export \"run\") (drop (f32.const 1))))",
+        );
         assert!(matches!(
-            validate_contract(&float),
+            validate_contract(&float, true),
             Err(VmError::Validation(_))
         ));
 
         let unbounded = wasm("(module (memory (export \"memory\") 1) (func (export \"run\")))");
         assert!(matches!(
-            validate_contract(&unbounded),
+            validate_contract(&unbounded, true),
             Err(VmError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn table_bounds_and_host_fuel_follow_the_active_rules() {
+        let unbounded = wasm("(module (memory (export \"memory\") 1 1) (table 0 funcref))");
+        assert!(validate_contract(&unbounded, true).is_err());
+        assert!(validate_contract(&unbounded, false).is_ok());
+        let code = wasm(
+            r#"(module (import "env" "h_storage_write" (func $w (param i32 i32 i32 i32) (result i32))) (memory (export "memory") 1 1) (func (export "run") i32.const 0 i32.const 1 i32.const 0 i32.const 1 call $w drop))"#,
+        );
+        for asset_rules in [true, false] {
+            let mut engine = VmEngine {
+                asset_rules,
+                ..VmEngine::new()
+            };
+            let contract = deploy(&mut engine, code.clone());
+            let call = ContractCall {
+                caller: [0; 32],
+                contract: contract.address,
+                function: "run".into(),
+                args: vec![],
+                gas_limit: 100,
+                value: 0,
+            };
+            let result = engine.call(&contract, &call).unwrap();
+            assert_eq!(result.success, !asset_rules);
+            assert!(result.state_changes.is_empty());
+            if asset_rules {
+                assert_eq!(result.return_data, b"out of gas");
+                assert_eq!(result.gas_used, 100);
+            }
+        }
     }
 
     #[test]

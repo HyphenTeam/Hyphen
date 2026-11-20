@@ -121,9 +121,12 @@ pub fn verify(
     p: &RistrettoPoint,
     _c: &Scalar,
 ) -> bool {
-    let rounds = proof.l_vec.len();
-    let n = 1usize << rounds;
-    if g_vec.len() < n || h_vec.len() < n {
+    let n = g_vec.len();
+    if !n.is_power_of_two() || h_vec.len() != n {
+        return false;
+    }
+    let rounds = n.ilog2() as usize;
+    if proof.l_vec.len() != rounds || proof.r_vec.len() != rounds {
         return false;
     }
 
@@ -146,8 +149,12 @@ pub fn verify(
     }
 
     // Compute scalar factors for each generator (s_i)
-    let a_final = Scalar::from_bytes_mod_order(proof.a);
-    let b_final = Scalar::from_bytes_mod_order(proof.b);
+    let Some(a_final) = Scalar::from_canonical_bytes(proof.a).into_option() else {
+        return false;
+    };
+    let Some(b_final) = Scalar::from_canonical_bytes(proof.b).into_option() else {
+        return false;
+    };
 
     // Build s[i] and s_inv[i]
     let mut s = vec![Scalar::ONE; n];

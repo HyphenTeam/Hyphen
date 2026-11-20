@@ -181,6 +181,9 @@ pub fn clsag_verify(
     }
 
     let key_image = decompress(&sig.key_image)?;
+    if key_image == RistrettoPoint::default() {
+        return Err(ClsagError::VerificationFailed);
+    }
     let commit_image = decompress(&sig.commitment_key_image)?;
 
     let adjusted: Vec<RistrettoPoint> = ring_commits.iter().map(|c| c - pseudo_out).collect();
@@ -197,11 +200,15 @@ pub fn clsag_verify(
     let w_image = mu_p * key_image + mu_c * commit_image;
     let prefix = round_prefix(msg, &w_image);
 
-    let c0 = Scalar::from_bytes_mod_order(sig.c0);
+    let c0 = Scalar::from_canonical_bytes(sig.c0)
+        .into_option()
+        .ok_or(ClsagError::VerificationFailed)?;
     let mut c_cur = c0;
 
     for i in 0..n {
-        let s_i = Scalar::from_bytes_mod_order(sig.s[i]);
+        let s_i = Scalar::from_canonical_bytes(sig.s[i])
+            .into_option()
+            .ok_or(ClsagError::VerificationFailed)?;
         let hp_i = hash_point_to_point(&ring_keys[i]);
         let w_i = mu_p * ring_keys[i] + mu_c * adjusted[i];
 

@@ -26,7 +26,7 @@
 //! relaxed after publication.
 
 use hyphen_crypto::Hash256;
-use hyphen_neural::{decode_descriptor, decode_values_into, WorkDescriptor, DESCRIPTOR_BYTES};
+use hyphen_neural::{DESCRIPTOR_BYTES, WorkDescriptor, decode_descriptor, decode_values_into};
 
 use crate::{
     DataCommitment, ExecutionClaim, FraudClaim, ProofVerifier, RetentionAttestation, TaskSpec,
@@ -217,7 +217,7 @@ impl ProofVerifier for NeuralChallengeVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyphen_neural::{encode_descriptor, ChallengeDescriptor, MlpSpec, DEFAULT_TOLERANCE_ULP};
+    use hyphen_neural::{ChallengeDescriptor, DEFAULT_TOLERANCE_ULP, MlpSpec, encode_descriptor};
 
     use crate::{ArithmeticProfile, ScientificDomain, TaskSpec};
 
@@ -303,12 +303,14 @@ mod tests {
         let descriptor = descriptor();
         let solution = derived_solution(&descriptor);
         let verifier = NeuralChallengeVerifier;
-        assert!(verifier
-            .verify_execution(
-                &task(),
-                &claim(proof(&descriptor, &solution), NEURAL_PROOF_SYSTEM)
-            )
-            .is_ok());
+        assert!(
+            verifier
+                .verify_execution(
+                    &task(),
+                    &claim(proof(&descriptor, &solution), NEURAL_PROOF_SYSTEM)
+                )
+                .is_ok()
+        );
     }
 
     #[test]
@@ -319,12 +321,14 @@ mod tests {
             *value = value.saturating_add(hyphen_neural::MAX_TOLERANCE_ULP as i64 * 4);
         }
         let verifier = NeuralChallengeVerifier;
-        assert!(verifier
-            .verify_execution(
-                &task(),
-                &claim(proof(&descriptor, &solution), NEURAL_PROOF_SYSTEM)
-            )
-            .is_err());
+        assert!(
+            verifier
+                .verify_execution(
+                    &task(),
+                    &claim(proof(&descriptor, &solution), NEURAL_PROOF_SYSTEM)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -338,12 +342,14 @@ mod tests {
     #[test]
     fn a_truncated_proof_is_rejected() {
         let verifier = NeuralChallengeVerifier;
-        assert!(verifier
-            .verify_execution(
-                &task(),
-                &claim(vec![0_u8; DESCRIPTOR_BYTES - 1], NEURAL_PROOF_SYSTEM)
-            )
-            .is_err());
+        assert!(
+            verifier
+                .verify_execution(
+                    &task(),
+                    &claim(vec![0_u8; DESCRIPTOR_BYTES - 1], NEURAL_PROOF_SYSTEM)
+                )
+                .is_err()
+        );
     }
 
     fn work_descriptor(threshold: u64) -> WorkDescriptor {
@@ -402,12 +408,14 @@ mod tests {
     fn a_searched_work_solution_is_accepted() {
         let descriptor = work_descriptor(u64::MAX / 8);
         let verifier = NeuralWorkVerifier;
-        assert!(verifier
-            .verify_execution(
-                &work_task(&descriptor),
-                &claim(work_proof(&descriptor), NEURAL_WORK_PROOF_SYSTEM)
-            )
-            .is_ok());
+        assert!(
+            verifier
+                .verify_execution(
+                    &work_task(&descriptor),
+                    &claim(work_proof(&descriptor), NEURAL_WORK_PROOF_SYSTEM)
+                )
+                .is_ok()
+        );
     }
 
     /// The task commits to the descriptor, so a prover cannot swap in a softer
@@ -417,12 +425,14 @@ mod tests {
         let committed = work_descriptor(u64::MAX / 8);
         let relaxed = work_descriptor(u64::MAX);
         let verifier = NeuralWorkVerifier;
-        assert!(verifier
-            .verify_execution(
-                &work_task(&committed),
-                &claim(work_proof(&relaxed), NEURAL_WORK_PROOF_SYSTEM)
-            )
-            .is_err());
+        assert!(
+            verifier
+                .verify_execution(
+                    &work_task(&committed),
+                    &claim(work_proof(&relaxed), NEURAL_WORK_PROOF_SYSTEM)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -431,12 +441,14 @@ mod tests {
         let mut other = committed;
         other.chain_seed[0] ^= 0xFF;
         let verifier = NeuralWorkVerifier;
-        assert!(verifier
-            .verify_execution(
-                &work_task(&committed),
-                &claim(work_proof(&other), NEURAL_WORK_PROOF_SYSTEM)
-            )
-            .is_err());
+        assert!(
+            verifier
+                .verify_execution(
+                    &work_task(&committed),
+                    &claim(work_proof(&other), NEURAL_WORK_PROOF_SYSTEM)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -445,14 +457,16 @@ mod tests {
         assert!(verifier.supports(neural_work_circuit_id(), NEURAL_WORK_PROOF_SYSTEM));
         assert!(!verifier.supports(neural_circuit_id(), NEURAL_WORK_PROOF_SYSTEM));
         assert!(!verifier.supports(neural_work_circuit_id(), NEURAL_PROOF_SYSTEM));
-        assert!(verifier
-            .verify_execution(
-                &task(),
-                &claim(
-                    work_proof(&work_descriptor(u64::MAX / 8)),
-                    NEURAL_WORK_PROOF_SYSTEM
+        assert!(
+            verifier
+                .verify_execution(
+                    &task(),
+                    &claim(
+                        work_proof(&work_descriptor(u64::MAX / 8)),
+                        NEURAL_WORK_PROOF_SYSTEM
+                    )
                 )
-            )
-            .is_err());
+                .is_err()
+        );
     }
 }

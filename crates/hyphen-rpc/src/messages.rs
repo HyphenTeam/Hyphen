@@ -22,6 +22,8 @@ pub struct BlockResponse {
     pub height: u64,
     #[prost(uint64, tag = "5")]
     pub timestamp: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub block_authorization: Vec<u8>,
 }
 
 #[derive(Clone, prost::Message)]
@@ -158,6 +160,7 @@ pub const METHOD_GET_VM_STORAGE: u32 = 11;
 pub const METHOD_GET_H_WES_ROOTS: u32 = 12;
 pub const METHOD_LIST_COMPUTE_TASKS: u32 = 13;
 pub const METHOD_ESTIMATE_FEE: u32 = 14;
+pub const METHOD_GET_VM_QUERY_SNAPSHOT: u32 = 15;
 
 #[derive(Clone, prost::Message)]
 pub struct GetComputeTaskRequest {
@@ -219,6 +222,14 @@ pub struct ListComputeTasksResponse {
 pub struct GetVmContractRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub address: Vec<u8>,
+}
+
+#[derive(Clone, prost::Message)]
+pub struct VmQuerySnapshotResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub block_hash: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub snapshot: Vec<u8>,
 }
 
 #[derive(Clone, prost::Message)]

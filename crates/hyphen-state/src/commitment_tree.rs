@@ -1,5 +1,5 @@
-use hyphen_crypto::merkle::MerkleTree;
 use hyphen_crypto::Hash256;
+use hyphen_crypto::merkle::MerkleTree;
 use thiserror::Error;
 
 use crate::compress::CompressedTree;

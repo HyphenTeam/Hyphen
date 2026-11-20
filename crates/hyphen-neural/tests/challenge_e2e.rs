@@ -7,8 +7,8 @@
 use std::time::{Duration, Instant};
 
 use hyphen_neural::{
-    difficulty::next_hidden_dim, encode_descriptor, solve, verify, ChallengeDescriptor, MlpSpec,
-    SolveConfig, DESCRIPTOR_BYTES,
+    ChallengeDescriptor, DESCRIPTOR_BYTES, MlpSpec, SolveConfig, difficulty::next_hidden_dim,
+    encode_descriptor, solve, verify,
 };
 
 fn descriptor(hidden: u16, epoch: u64) -> ChallengeDescriptor {

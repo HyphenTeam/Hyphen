@@ -1,25 +1,4 @@
-//! Peer misbehavior policy.
-//!
-//! A ban is a DoS defence, not a punishment: getting it wrong in the permissive
-//! direction costs bandwidth, getting it wrong in the strict direction
-//! disconnects honest peers and partitions the node. The policy therefore only
-//! counts faults the node can verify locally, without depending on chain state
-//! or on what other peers claim:
-//!
-//! - a gossip envelope that does not decode;
-//! - a block or transaction payload that does not decode within the size limits;
-//! - a sync response that violates its own structural budget;
-//! - a sync block that does not decode.
-//!
-//! A block that decodes but fails contextual validation is **not** counted. The
-//! node validates against its current tip, so a well-formed block for a height
-//! the node has not reached yet fails for reasons that belong to the node, not to
-//! the relay. Banning on that would turn ordinary sync into a ban storm.
-//!
-//! Strikes decay with a fixed window and a ban expires, so a transient bug or a
-//! single corrupted frame does not isolate a peer permanently. The block list is
-//! in-memory: restarting the node clears it, which is the honest trade-off until
-//! bans are persisted with an auditable policy.
+//! Strikes count locally verifiable protocol faults. Context-dependent consensus rejections do not count.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -90,14 +69,19 @@ impl PeerPolicy {
     /// now be blocked. A peer already blocked keeps its ban and reports `false`,
     /// so the caller does not block it twice.
     pub fn record_offense(&mut self, peer: PeerId, now: Instant) -> bool {
-        self.make_room(now);
+        if !self.peers.contains_key(&peer) && self.peers.len() >= self.max_tracked {
+            let victim = self
+                .peers
+                .iter()
+                .filter(|(_, r)| r.banned_until.is_none())
+                .min_by_key(|(_, r)| r.strikes.last().copied())
+                .map(|(peer, _)| *peer);
+            let Some(victim) = victim else { return false };
+            self.peers.remove(&victim);
+        }
         let record = self.peers.entry(peer).or_default();
-        if let Some(until) = record.banned_until {
-            if now < until {
-                return false;
-            }
-            record.banned_until = None;
-            record.strikes.clear();
+        if record.banned_until.is_some() {
+            return false;
         }
         record
             .strikes
@@ -126,11 +110,11 @@ impl PeerPolicy {
     pub fn take_expired(&mut self, now: Instant) -> Vec<PeerId> {
         let mut expired = Vec::new();
         self.peers.retain(|peer, record| {
-            if let Some(until) = record.banned_until {
-                if now >= until {
-                    record.banned_until = None;
-                    expired.push(*peer);
-                }
+            if let Some(until) = record.banned_until
+                && now >= until
+            {
+                record.banned_until = None;
+                expired.push(*peer);
             }
             record
                 .strikes
@@ -144,28 +128,6 @@ impl PeerPolicy {
     #[cfg(test)]
     pub fn tracked(&self) -> usize {
         self.peers.len()
-    }
-
-    /// Drops the oldest-decayed entries when the table is full.
-    fn make_room(&mut self, now: Instant) {
-        if self.peers.len() < self.max_tracked {
-            return;
-        }
-        self.take_expired(now);
-        while self.peers.len() >= self.max_tracked {
-            let victim = self
-                .peers
-                .iter()
-                .filter(|(_, record)| record.banned_until.is_none())
-                .min_by_key(|(_, record)| record.strikes.last().copied())
-                .map(|(peer, _)| *peer);
-            match victim {
-                Some(peer) => {
-                    self.peers.remove(&peer);
-                }
-                None => break,
-            }
-        }
     }
 }
 
@@ -214,13 +176,16 @@ mod tests {
         }
         assert!(policy.is_banned(&peer, now));
         let after_ban = banned_at + BAN_DURATION + Duration::from_secs(1);
+        assert!(!policy.record_offense(peer, after_ban));
         assert!(policy.take_expired(now + Duration::from_secs(1)).is_empty());
         let expired = policy.take_expired(after_ban);
         assert_eq!(expired, vec![peer]);
         assert!(!policy.is_banned(&peer, after_ban + Duration::from_secs(1)));
-        assert!(policy
-            .take_expired(after_ban + Duration::from_secs(2))
-            .is_empty());
+        assert!(
+            policy
+                .take_expired(after_ban + Duration::from_secs(2))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -242,5 +207,16 @@ mod tests {
             policy.record_offense(peer, now + Duration::from_secs(offset));
         }
         assert_eq!(policy.tracked(), 1);
+    }
+
+    #[test]
+    fn updating_a_full_table_preserves_bans_until_maintenance() {
+        let now = Instant::now();
+        let mut policy = PeerPolicy::new(STRIKE_WINDOW, 2, BAN_DURATION, 1);
+        assert!(!policy.record_offense(peer(1), now));
+        assert!(policy.record_offense(peer(1), now));
+        assert!(!policy.record_offense(peer(2), now));
+        assert_eq!(policy.tracked(), 1);
+        assert_eq!(policy.take_expired(now + BAN_DURATION), vec![peer(1)]);
     }
 }

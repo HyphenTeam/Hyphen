@@ -1,6 +1,6 @@
+use hyphen_crypto::Hash256;
 use hyphen_crypto::clsag::ClsagSignature;
 use hyphen_crypto::pedersen::Commitment;
-use hyphen_crypto::Hash256;
 use hyphen_proof::range_proof::AggregatedRangeProof;
 use serde::{Deserialize, Serialize};
 

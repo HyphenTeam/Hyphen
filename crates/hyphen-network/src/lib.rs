@@ -5,8 +5,8 @@ pub(crate) use hyphen_wire::wire_config;
 pub mod behaviour;
 pub mod bootstrap;
 pub mod protocol;
-pub mod sync;
 
 pub use behaviour::HyphenNetwork;
-pub use bootstrap::{is_dns_seed, SeedError, SeedResolver};
+pub use bootstrap::{SeedError, SeedResolver, is_dns_seed};
 pub use protocol::{NetworkMessage, SyncRequest, SyncResponse};
+pub const SYNC_BATCH_SIZE: u32 = 16;

@@ -4,7 +4,6 @@ use thiserror::Error;
 
 use hyphen_consensus::Blockchain;
 use hyphen_mempool::Mempool;
-use hyphen_tx::transaction::Transaction;
 
 use crate::messages::*;
 
@@ -38,6 +37,17 @@ impl RpcHandler {
     }
 
     pub fn handle_request(&self, request: &RpcRequest) -> RpcResponse {
+        let _view = match self.chain.canonical_view() {
+            Ok(guard) => guard,
+            Err(error) => {
+                return RpcResponse {
+                    id: request.id,
+                    success: false,
+                    payload: vec![],
+                    error: error.to_string(),
+                };
+            }
+        };
         let result = match request.method {
             METHOD_GET_BLOCK => self.handle_get_block(&request.payload),
             METHOD_GET_BLOCK_BY_HEIGHT => self.handle_get_block_by_height(&request.payload),
@@ -50,6 +60,7 @@ impl RpcHandler {
             METHOD_GET_COMPUTE_TASK => self.handle_get_compute_task(&request.payload),
             METHOD_GET_VM_CONTRACT => self.handle_get_vm_contract(&request.payload),
             METHOD_GET_VM_STORAGE => self.handle_get_vm_storage(&request.payload),
+            METHOD_GET_VM_QUERY_SNAPSHOT => self.handle_vm_snapshot(&request.payload),
             METHOD_GET_H_WES_ROOTS => self.handle_get_h_wes_roots(&request.payload),
             METHOD_LIST_COMPUTE_TASKS => self.handle_list_compute_tasks(&request.payload),
             METHOD_ESTIMATE_FEE => self.handle_estimate_fee(&request.payload),
@@ -83,21 +94,36 @@ impl RpcHandler {
         let mut hash_arr = [0u8; 32];
         hash_arr.copy_from_slice(&req.hash);
         let hash = hyphen_crypto::Hash256::from_bytes(hash_arr);
+        self.block_response(&hash)
+    }
 
-        let block = self
+    fn handle_get_block_by_height(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        let req = GetBlockByHeightRequest::decode(payload)?;
+        let hash = self
             .chain
             .store()
-            .get_block_by_hash(&hash)
+            .get_block_hash_at_height(req.height)
             .map_err(|e| HandlerError::NotFound(e.to_string()))?;
+        self.block_response(&hash)
+    }
+
+    fn block_response(&self, hash: &hyphen_crypto::Hash256) -> Result<Vec<u8>, HandlerError> {
+        let (block, coinbase) =
+            self.chain
+                .block_with_coinbase(hash)
+                .map_err(|error| match error {
+                    hyphen_state::store::StoreError::NotFound(_) => {
+                        HandlerError::NotFound(error.to_string())
+                    }
+                    _ => HandlerError::Internal(error.to_string()),
+                })?;
 
         let header_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
             .serialize(&block.header)
             .map_err(|e| HandlerError::Internal(e.to_string()))?;
 
         let mut transactions = block.transactions;
-        if let Ok(coinbase_blob) = self.chain.store().get_coinbase(block.header.height) {
-            transactions.push(coinbase_blob);
-        }
+        transactions.extend(coinbase);
 
         let resp = BlockResponse {
             header_data,
@@ -105,34 +131,7 @@ impl RpcHandler {
             hash: hash.to_vec(),
             height: block.header.height,
             timestamp: block.header.timestamp,
-        };
-        Ok(resp.encode_to_vec())
-    }
-
-    fn handle_get_block_by_height(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
-        let req = GetBlockByHeightRequest::decode(payload)?;
-        let block = self
-            .chain
-            .store()
-            .get_block_by_height(req.height)
-            .map_err(|e| HandlerError::NotFound(e.to_string()))?;
-
-        let header_data = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-            .serialize(&block.header)
-            .map_err(|e| HandlerError::Internal(e.to_string()))?;
-
-        let mut transactions = block.transactions;
-        // Append coinbase transaction if one was generated for this block
-        if let Ok(coinbase_blob) = self.chain.store().get_coinbase(req.height) {
-            transactions.push(coinbase_blob);
-        }
-
-        let resp = BlockResponse {
-            header_data,
-            transactions,
-            hash: block.header.hash().to_vec(),
-            height: block.header.height,
-            timestamp: block.header.timestamp,
+            block_authorization: block.block_authorization,
         };
         Ok(resp.encode_to_vec())
     }
@@ -197,7 +196,7 @@ impl RpcHandler {
                 };
                 Ok(resp.encode_to_vec())
             }
-            Err(_) => {
+            Err(hyphen_state::store::StoreError::NotFound(_)) => {
                 let resp = TxLocationResponse {
                     block_hash: vec![],
                     tx_index: 0,
@@ -206,6 +205,7 @@ impl RpcHandler {
                 };
                 Ok(resp.encode_to_vec())
             }
+            Err(error) => Err(HandlerError::Internal(error.to_string())),
         }
     }
 
@@ -296,6 +296,24 @@ impl RpcHandler {
         Ok(response.encode_to_vec())
     }
 
+    fn handle_vm_snapshot(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
+        let req = GetVmContractRequest::decode(payload)?;
+        let address = hyphen_vm::ContractAddress(*decode_hash("address", &req.address)?.as_bytes());
+        let (hash, snapshot) = self
+            .chain
+            .vm_query_snapshot(address)
+            .map_err(|e| HandlerError::InvalidRequest(e.to_string()))?;
+        let snapshot = snapshot.ok_or_else(|| HandlerError::NotFound("contract".into()))?;
+        let encoded = hyphen_wire::wire_config(hyphen_vm::ledger::MAX_VM_TRANSACTION_BYTES)
+            .serialize(&snapshot)
+            .map_err(|e| HandlerError::Internal(e.to_string()))?;
+        Ok(VmQuerySnapshotResponse {
+            block_hash: hash.to_vec(),
+            snapshot: encoded,
+        }
+        .encode_to_vec())
+    }
+
     fn handle_get_vm_storage(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = GetVmStorageRequest::decode(payload)?;
         if req.key.len() > hyphen_vm::host::MAX_STORAGE_KEY_SIZE {
@@ -328,229 +346,25 @@ impl RpcHandler {
 
     fn handle_submit_tx(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
         let req = SubmitTransactionRequest::decode(payload)?;
-        match hyphen_compute::ComputeTransaction::decode(&req.tx_data) {
-            Ok(Some(_)) => {
-                let next_height = self
-                    .chain
-                    .tip()
-                    .map_err(|error| HandlerError::Internal(error.to_string()))?
-                    .height
-                    .checked_add(1)
-                    .ok_or_else(|| HandlerError::Internal("chain height exhausted".into()))?;
-                if let Err(error) = self.chain.validate_transaction_blobs_for_height(
-                    std::slice::from_ref(&req.tx_data),
-                    next_height,
-                ) {
-                    return Ok(SubmitTransactionResponse {
-                        accepted: false,
-                        tx_hash: Vec::new(),
-                        error: format!("validation failed: {error}"),
-                    }
-                    .encode_to_vec());
-                }
-                let result = self.mempool.write().insert_protocol_at(
-                    req.tx_data,
-                    hyphen_mempool::ValidatedProtocol::new(),
-                    unix_time_ms(),
-                );
-                return Ok(match result {
-                    Ok(hash) => SubmitTransactionResponse {
-                        accepted: true,
-                        tx_hash: hash.to_vec(),
-                        error: String::new(),
-                    },
-                    Err(error) => SubmitTransactionResponse {
-                        accepted: false,
-                        tx_hash: Vec::new(),
-                        error: error.to_string(),
-                    },
-                }
-                .encode_to_vec());
-            }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(HandlerError::InvalidRequest(format!(
-                    "bad AetherCompute transaction: {error}"
-                )));
-            }
-        }
-        match hyphen_vm::VmTransaction::decode(&req.tx_data) {
-            Ok(Some(_)) => {
-                let next_height = self
-                    .chain
-                    .tip()
-                    .map_err(|error| HandlerError::Internal(error.to_string()))?
-                    .height
-                    .checked_add(1)
-                    .ok_or_else(|| HandlerError::Internal("chain height exhausted".into()))?;
-                if let Err(error) = self.chain.validate_transaction_blobs_for_height(
-                    std::slice::from_ref(&req.tx_data),
-                    next_height,
-                ) {
-                    return Ok(SubmitTransactionResponse {
-                        accepted: false,
-                        tx_hash: Vec::new(),
-                        error: format!("validation failed: {error}"),
-                    }
-                    .encode_to_vec());
-                }
-                let result = self.mempool.write().insert_protocol_at(
-                    req.tx_data,
-                    hyphen_mempool::ValidatedProtocol::new(),
-                    unix_time_ms(),
-                );
-                return Ok(match result {
-                    Ok(hash) => SubmitTransactionResponse {
-                        accepted: true,
-                        tx_hash: hash.to_vec(),
-                        error: String::new(),
-                    },
-                    Err(error) => SubmitTransactionResponse {
-                        accepted: false,
-                        tx_hash: Vec::new(),
-                        error: error.to_string(),
-                    },
-                }
-                .encode_to_vec());
-            }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(HandlerError::InvalidRequest(format!(
-                    "bad WASM transaction: {error}"
-                )));
-            }
-        }
-        match hyphen_state::WesTransaction::decode(&req.tx_data) {
-            Ok(Some(_)) => {
-                let next_height = self
-                    .chain
-                    .tip()
-                    .map_err(|error| HandlerError::Internal(error.to_string()))?
-                    .height
-                    .checked_add(1)
-                    .ok_or_else(|| HandlerError::Internal("chain height exhausted".into()))?;
-                if let Err(error) = self.chain.validate_transaction_blobs_for_height(
-                    std::slice::from_ref(&req.tx_data),
-                    next_height,
-                ) {
-                    return Ok(SubmitTransactionResponse {
-                        accepted: false,
-                        tx_hash: Vec::new(),
-                        error: format!("validation failed: {error}"),
-                    }
-                    .encode_to_vec());
-                }
-                let result = self.mempool.write().insert_protocol_at(
-                    req.tx_data,
-                    hyphen_mempool::ValidatedProtocol::new(),
-                    unix_time_ms(),
-                );
-                return Ok(match result {
-                    Ok(hash) => SubmitTransactionResponse {
-                        accepted: true,
-                        tx_hash: hash.to_vec(),
-                        error: String::new(),
-                    },
-                    Err(error) => SubmitTransactionResponse {
-                        accepted: false,
-                        tx_hash: Vec::new(),
-                        error: error.to_string(),
-                    },
-                }
-                .encode_to_vec());
-            }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(HandlerError::InvalidRequest(format!(
-                    "bad H-WES transaction: {error}"
-                )));
-            }
-        }
-        let tx = Transaction::deserialise_limited(&req.tx_data)
-            .map_err(|e| HandlerError::InvalidRequest(format!("bad tx data: {e}")))?;
-
-        // ── Pre-validation: check key images against blockchain nullifiers ──
-        for inp in &tx.inputs {
-            if self
-                .chain
-                .nullifiers
-                .contains(&inp.key_image)
-                .unwrap_or(false)
-            {
-                let resp = SubmitTransactionResponse {
-                    accepted: false,
-                    tx_hash: vec![],
-                    error: "double-spend: key image already spent on chain".into(),
-                };
-                return Ok(resp.encode_to_vec());
-            }
-        }
-
-        let tip = self
-            .chain
-            .tip()
-            .map_err(|e| HandlerError::Internal(e.to_string()))?;
-        let next_height = tip.height + 1;
-
-        let valid_epoch_contexts = self
-            .chain
-            .build_valid_epoch_contexts(next_height)
-            .map_err(|e| HandlerError::Internal(e.to_string()))?;
-
-        let total_outputs = {
-            let ct = self.chain.commitment_tree.read();
-            ct.count()
-        };
-
-        let validator = hyphen_consensus::BlockValidator::new(&self.chain.cfg);
-        let store = self.chain.store();
-        let vre_quality = match validator.validate_transaction(
-            &tx,
-            |global_index| {
-                store.resolve_ring_member(global_index).map_err(|e| {
-                    hyphen_consensus::validator::ValidationError::Core(
-                        hyphen_core::error::CoreError::Storage(e.to_string()),
-                    )
-                })
-            },
-            &valid_epoch_contexts,
-            total_outputs,
-            next_height,
-        ) {
-            Ok(q) => q,
-            Err(e) => {
-                let resp = SubmitTransactionResponse {
-                    accepted: false,
-                    tx_hash: vec![],
-                    error: format!("validation failed: {e}"),
-                };
-                return Ok(resp.encode_to_vec());
-            }
-        };
-
-        let mut pool = self.mempool.write();
-        match pool.insert_at(
-            tx,
-            hyphen_mempool::Validated::new(vre_quality),
-            unix_time_ms(),
-        ) {
-            Ok(tx_hash) => {
-                let resp = SubmitTransactionResponse {
+        use crate::admission::{AdmissionError, admit_transaction};
+        let response =
+            match admit_transaction(&self.chain, &self.mempool, req.tx_data, unix_time_ms()) {
+                Ok(hash) => SubmitTransactionResponse {
                     accepted: true,
-                    tx_hash: tx_hash.to_vec(),
+                    tx_hash: hash.to_vec(),
                     error: String::new(),
-                };
-                Ok(resp.encode_to_vec())
-            }
-            Err(e) => {
-                let resp = SubmitTransactionResponse {
+                },
+                Err(AdmissionError::Rejected(error)) => SubmitTransactionResponse {
                     accepted: false,
-                    tx_hash: vec![],
-                    error: e.to_string(),
-                };
-                Ok(resp.encode_to_vec())
-            }
-        }
+                    tx_hash: Vec::new(),
+                    error,
+                },
+                Err(AdmissionError::Malformed(error)) => {
+                    return Err(HandlerError::InvalidRequest(error));
+                }
+                Err(AdmissionError::State(error)) => return Err(HandlerError::Internal(error)),
+            };
+        Ok(response.encode_to_vec())
     }
 
     fn handle_estimate_fee(&self, payload: &[u8]) -> Result<Vec<u8>, HandlerError> {
@@ -625,20 +439,16 @@ impl RpcHandler {
         let store = self.chain.store();
         let mut outputs = Vec::with_capacity(req.global_indices.len());
         for &gi in &req.global_indices {
-            match store.get_output(gi) {
-                Ok((pk, cm)) => {
-                    let val = store
-                        .resolve_ring_member(gi)
-                        .map(|(_, _, h)| h)
-                        .unwrap_or(0);
+            match store.output_record(gi) {
+                Ok((pk, cm, _, height)) => {
                     outputs.push(OutputInfo {
                         one_time_pubkey: pk.to_vec(),
                         commitment: cm.to_vec(),
                         global_index: gi,
-                        block_height: val,
+                        block_height: height,
                     });
                 }
-                Err(_) => {
+                Err(hyphen_state::store::StoreError::NotFound(_)) => {
                     outputs.push(OutputInfo {
                         one_time_pubkey: vec![],
                         commitment: vec![],
@@ -646,6 +456,7 @@ impl RpcHandler {
                         block_height: 0,
                     });
                 }
+                Err(error) => return Err(HandlerError::Internal(error.to_string())),
             }
         }
         let resp = GetOutputInfoResponse { outputs };
@@ -680,7 +491,7 @@ mod tests {
     use hyphen_core::{ChainConfig, FEATURE_H_WES};
     use hyphen_crypto::{Hash256, SecretKey};
     use hyphen_state::{
-        wes_owner_policy, SignedStateCreate, StateClass, StateRecord, StateStatus, WesTransaction,
+        SignedStateCreate, StateClass, StateRecord, StateStatus, WesTransaction, wes_owner_policy,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};

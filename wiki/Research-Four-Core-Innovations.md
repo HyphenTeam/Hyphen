@@ -19,9 +19,12 @@ revalidates every attach block against fork state through the authoritative
 acceptance path. It restores the old branch after failure and resumes a durable
 journal after reopen.
 
-Live P2P competing-branch intake, automatic fork choice, reconciliation of
-mempool/wallet/explorer/pool, mesh fusion, BFT finality and complete selective
-audit proofs remain absent. The research profile atomically commits the signed
+Local P2P peers have switched to strictly heavier branches. Tests cover
+detached transactions, canonical transaction lookup, wallet receipts and pool
+settlement. Mesh fusion, BFT finality and complete selective audit proofs
+remain open. [Fork results](Operations-Verification.md)
+
+The research profile atomically commits the signed
 WASM ledger and H-WES public creation/bounded expiry into the unified state root
 and reorg path; shielded recovery and consume remain disabled.
 
@@ -236,9 +239,9 @@ nullifier set 的 PoW 链。状态库已经有原子跨树区块提交、持久�
 撤销日志、不可变且带哈希校验的竞争分支区块体存储，以及严格较重工作量
 reorg 计划。真实 `Blockchain` 后端会重算计划工作量，持有独占状态转换锁，
 先撤回到共同祖先，再通过权威区块接收路径按分叉状态完整重验每个候选块；
-候选失败时恢复原分支，数据库重开时自动续跑持久日志。它仍没有 P2P 竞争
-分支接入、自动 fork choice 触发、mempool/钱包/浏览器/矿池对账、区块网状融合、
-BFT 最终性或完整选择性审计证明。研究链 profile 已将签名 WASM 账本与 H-WES
+候选失败时恢复原分支，数据库重开时自动续跑持久日志。本地 P2P 节点已切换到严格更重的分支，验证了脱链交易、规范链交易查询、钱包收款与矿池结算。区块网状融合、BFT 最终性和完整选择性审计证明仍待实现。[分叉实测](Operations-Verification.md)
+
+研究链 profile 已将签名 WASM 账本与 H-WES
 公共创建/限量过期接入统一状态根和原子 reorg；shielded 恢复/消费仍保持关闭。
 
 因此实现顺序必须是：

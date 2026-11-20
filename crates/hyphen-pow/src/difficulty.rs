@@ -52,8 +52,6 @@ pub fn next_difficulty_lwma(timestamps: &[u64], difficulties: &[u64], cfg: &Chai
     bounded(lwma_base(timestamps, difficulties, cfg), prev, cfg)
 }
 
-// --- Work estimate ---------------------------------------------------------
-
 /// Integer linear weighted moving average of the observed work rate.
 fn lwma_base(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
     let n = timestamps.len();
@@ -94,8 +92,6 @@ fn solve_times(timestamps: &[u64], target_ms: u64) -> Vec<i128> {
         .map(|pair| (pair[1] as i128 - pair[0] as i128).clamp(target / 10, 6 * target))
         .collect()
 }
-
-// --- Controller ------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Gate {
@@ -245,8 +241,6 @@ fn manipulation_strength_bps(times: &[i128]) -> i128 {
     (magnitude - threshold).clamp(0, BPS)
 }
 
-// --- Guards ----------------------------------------------------------------
-
 /// Applies the configured per-block clamps. Both bounds are inclusive and the
 /// floor never exceeds the ceiling even for degenerate configurations.
 fn bounded(proposed: u64, prev: u64, cfg: &ChainConfig) -> u64 {
@@ -296,7 +290,6 @@ fn isqrt(value: u64) -> u64 {
     }
 }
 
-// --- Offline research harness ----------------------------------------------
 //
 // Ablation experiments compare the gate, the momentum term and the dampener
 // against pure LWMA on synthetic work-rate profiles. Floating point is used

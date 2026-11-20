@@ -242,10 +242,10 @@ pub fn verify_witnesses(
         if !chain_is_valid(*witness, length) {
             return Err(VmsError::InvalidWitness(*witness));
         }
-        if let Some(previous) = previous {
-            if *witness <= previous {
-                return Err(VmsError::WitnessesNotAscending);
-            }
+        if let Some(previous) = previous
+            && *witness <= previous
+        {
+            return Err(VmsError::WitnessesNotAscending);
         }
         previous = Some(*witness);
     }

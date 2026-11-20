@@ -21,7 +21,7 @@ use core::cmp::Ordering;
 use core::fmt;
 
 use hyphen_crypto::Hash256;
-use hyphen_tx::transaction::{Transaction, MAX_TRANSACTION_SIZE};
+use hyphen_tx::transaction::{MAX_TRANSACTION_SIZE, Transaction};
 
 /// Default number of entries (payments plus protocol transactions).
 pub const DEFAULT_MAX_ENTRIES: usize = 10_000;
@@ -432,10 +432,10 @@ impl Mempool {
 
         let mut conflicts = BTreeSet::new();
         for key_image in &key_images {
-            if let Some(conflicting) = self.key_images.get(key_image) {
-                if self.entries.contains_key(conflicting) {
-                    conflicts.insert(*conflicting);
-                }
+            if let Some(conflicting) = self.key_images.get(key_image)
+                && self.entries.contains_key(conflicting)
+            {
+                conflicts.insert(*conflicting);
             }
         }
         self.check_replacement(fee, priority, &conflicts)?;
@@ -637,10 +637,10 @@ impl Mempool {
     pub fn purge_confirmed(&mut self, key_images: &[[u8; 32]]) {
         let mut removed = BTreeSet::new();
         for key_image in key_images {
-            if let Some(hash) = self.key_images.get(key_image).copied() {
-                if removed.insert(hash) {
-                    self.remove_internal(&hash);
-                }
+            if let Some(hash) = self.key_images.get(key_image).copied()
+                && removed.insert(hash)
+            {
+                self.remove_internal(&hash);
             }
         }
     }
@@ -959,7 +959,7 @@ mod tests {
     use hyphen_proof::inner_product::InnerProductProof;
     use hyphen_proof::range_proof::{AggregatedRangeProof, RangeProof};
     use hyphen_state::{
-        wes_owner_policy, SignedStateCreate, StateClass, StateRecord, StateStatus, WesTransaction,
+        SignedStateCreate, StateClass, StateRecord, StateStatus, WesTransaction, wes_owner_policy,
     };
     use hyphen_tx::transaction::{TxInput, TxOutput, TxPrunable};
 

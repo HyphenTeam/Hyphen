@@ -1,5 +1,5 @@
 use crate::system_rng;
-use ed25519_dalek::{Signature as Ed25519Sig, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature as Ed25519Sig, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -40,7 +40,8 @@ impl PublicKey {
     pub fn verify(&self, msg: &[u8], sig: &Signature) -> Result<(), KeyError> {
         let vk = self.to_verifying_key()?;
         let s = Ed25519Sig::from_bytes(&sig.0);
-        vk.verify(msg, &s).map_err(|_| KeyError::VerificationFailed)
+        vk.verify_strict(msg, &s)
+            .map_err(|_| KeyError::VerificationFailed)
     }
 }
 

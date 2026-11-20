@@ -18,13 +18,13 @@ pub mod wallet;
 
 pub use address::HyphenAddress;
 pub use audit::{
-    generate_disclosure, verify_disclosure, AuditError, AuditVerificationContext, DisclosedField,
-    OwnershipProof, SelectiveDisclosure, DISCLOSED_FIELDS_V0, SELECTIVE_DISCLOSURE_VERSION,
+    AuditError, AuditVerificationContext, DISCLOSED_FIELDS_V0, DisclosedField, OwnershipProof,
+    SELECTIVE_DISCLOSURE_VERSION, SelectiveDisclosure, generate_disclosure, verify_disclosure,
 };
 pub use derivation::{DerivedKeys, MasterKey};
-pub use keystore::{KeystoreError, DEFAULT_ITERATIONS};
+pub use keystore::{DEFAULT_ITERATIONS, KeystoreError};
 pub use signer::{
-    verify_signing_response, DeviceFamily, ExternalSigner, KeyLocator, NetworkBinding,
-    SignerCapabilities, SignerError, SignerTransport, SigningRequest, SigningResponse,
+    DeviceFamily, ExternalSigner, KeyLocator, NetworkBinding, SignerCapabilities, SignerError,
+    SignerTransport, SigningRequest, SigningResponse, verify_signing_response,
 };
 pub use wallet::Wallet;

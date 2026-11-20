@@ -6,6 +6,18 @@
     "genesis_hash": "5f7c144f0ef27880259b2429e46ef175685da679916fcc6b80c45f457465e32d"
   },
   {
+    "profile": "neural-devnet-v1",
+    "network_magic": "48594e4e",
+    "consensus_params_hash": "451ca637dafb07604b8dcabebc86c54d72efe590ac5912bb2a2f35ea6d41b6a9",
+    "genesis_hash": "6d3c028ecd7380ba143a62c8b82fa706155da56fb42ec8cf8b30ec4dc989d058"
+  },
+  {
+    "profile": "contract-devnet-v1",
+    "network_magic": "48594344",
+    "consensus_params_hash": "3ad32be8f0c772331740a74ebcd56266ad97da58bdda076e9e139d31499910b2",
+    "genesis_hash": "422475c11a829f198cc502ca4f5cd4489336569997c3cdf048dddaf1d71f1b33"
+  },
+  {
     "profile": "testnet-research",
     "network_magic": "48595453",
     "consensus_params_hash": "dacfd24354a308d149ee8676444d92bc9e48a54b5c6f191272b40b16653dffa9",

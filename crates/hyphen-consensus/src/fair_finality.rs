@@ -291,17 +291,17 @@ impl HonestFinalityVoter {
         {
             return Err(FairFinalityError::StaleView);
         }
-        if let Some((locked_view, locked_value)) = state.locked {
-            if locked_value != value_hash {
-                let high = proposal
-                    .timeout
-                    .as_ref()
-                    .map(highest_prepare)
-                    .transpose()?
-                    .flatten();
-                if high.is_none_or(|qc| qc.statement.view <= locked_view) {
-                    return Err(FairFinalityError::LockedValue);
-                }
+        if let Some((locked_view, locked_value)) = state.locked
+            && locked_value != value_hash
+        {
+            let high = proposal
+                .timeout
+                .as_ref()
+                .map(highest_prepare)
+                .transpose()?
+                .flatten();
+            if high.is_none_or(|qc| qc.statement.view <= locked_view) {
+                return Err(FairFinalityError::LockedValue);
             }
         }
         let statement = record_phase(
@@ -858,10 +858,10 @@ impl HonestHandoffVoter {
         verify_seat(committee, seat, &self.secret)?;
         let digest = statement.digest(role);
         let key = (statement.from_epoch, role);
-        if let Some(previous) = self.decisions.get(&key) {
-            if *previous != digest {
-                return Err(FairFinalityError::HandoffEquivocation);
-            }
+        if let Some(previous) = self.decisions.get(&key)
+            && *previous != digest
+        {
+            return Err(FairFinalityError::HandoffEquivocation);
         }
         if let Some(storage) = &self.storage {
             let storage_key = handoff_voter_key(

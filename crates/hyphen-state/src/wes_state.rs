@@ -1,10 +1,10 @@
-use hyphen_crypto::{blake3_hash_many, Hash256, PublicKey, SecretKey, Signature};
+use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature, blake3_hash_many};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::compress::CompressedTree;
 use crate::ReferenceExpiringState;
 use crate::StateRecord;
+use crate::compress::CompressedTree;
 
 pub const WES_STATE_KEY: &[u8] = b"h_wes_snapshot_v1";
 pub const WES_ENVELOPE_MAGIC: &[u8; 8] = b"HYPHWES1";
@@ -41,7 +41,7 @@ pub enum WesTransaction {
 
 impl WesTransaction {
     pub fn encode(&self) -> Result<Vec<u8>, WesTransactionError> {
-        let payload = crate::wire_config(MAX_WES_TRANSACTION_BYTES)
+        let payload = crate::wire_config(MAX_WES_TRANSACTION_BYTES - WES_ENVELOPE_MAGIC.len())
             .serialize(self)
             .map_err(|error| WesTransactionError::Encoding(error.to_string()))?;
         let mut bytes = Vec::with_capacity(WES_ENVELOPE_MAGIC.len() + payload.len());
@@ -115,6 +115,8 @@ pub enum WesTransactionError {
 
 #[derive(Debug, Error)]
 pub enum WesStateStoreError {
+    #[error("H-WES snapshot belongs to another chain")]
+    WrongChain,
     #[error("storage: {0}")]
     Storage(String),
     #[error("encoding: {0}")]
@@ -141,6 +143,9 @@ impl WesStateStore {
                 .map_err(|error| WesStateStoreError::Encoding(error.to_string()))?,
             None => ReferenceExpiringState::new(chain_id, Hash256::ZERO),
         };
+        if committed.chain_id() != chain_id {
+            return Err(WesStateStoreError::WrongChain);
+        }
         Ok(Self { tree, committed })
     }
 
@@ -162,5 +167,26 @@ impl WesStateStore {
 
     pub(crate) fn replace_committed(&mut self, state: ReferenceExpiringState) {
         self.committed = state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_state_requires_its_original_chain_identity() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let first = Hash256::from_bytes([1; 32]);
+        let store = WesStateStore::open(&db, first).unwrap();
+        let snapshot = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&store.snapshot())
+            .unwrap();
+        store.tree.insert(WES_STATE_KEY, &snapshot).unwrap();
+        assert!(WesStateStore::open(&db, first).is_ok());
+        assert!(matches!(
+            WesStateStore::open(&db, Hash256::ZERO),
+            Err(WesStateStoreError::WrongChain)
+        ));
     }
 }

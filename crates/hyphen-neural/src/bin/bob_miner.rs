@@ -11,8 +11,8 @@ use std::time::Instant;
 use clap::{Parser, Subcommand};
 use hyphen_neural::challenge::Verification;
 use hyphen_neural::{
-    decode_descriptor, encode_descriptor, solve, verify, ChallengeDescriptor, MlpSpec, SolveConfig,
-    DEFAULT_INPUT_DIM, DEFAULT_OUTPUT_DIM, DEFAULT_TOLERANCE_ULP, DESCRIPTOR_BYTES,
+    ChallengeDescriptor, DEFAULT_INPUT_DIM, DEFAULT_OUTPUT_DIM, DEFAULT_TOLERANCE_ULP,
+    DESCRIPTOR_BYTES, MlpSpec, SolveConfig, decode_descriptor, encode_descriptor, solve, verify,
 };
 
 #[derive(Parser, Debug)]
@@ -205,7 +205,12 @@ fn run(cli: Cli) -> Result<(), String> {
                     verification.max_error,
                     descriptor.tolerance_ulp,
                     elapsed.as_secs_f64(),
-                    outcome.input.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")
+                    outcome
+                        .input
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
             } else {
                 println!("accepted=true");

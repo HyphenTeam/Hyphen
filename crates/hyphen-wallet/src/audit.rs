@@ -276,8 +276,9 @@ pub fn verify_disclosure(
 }
 
 fn verify_opening(value: u64, blinding: [u8; 32], commitment: [u8; 32]) -> Result<(), AuditError> {
-    let expected =
-        hyphen_crypto::pedersen::Commitment::create(value, Scalar::from_bytes_mod_order(blinding));
+    let blinding = Option::<Scalar>::from(Scalar::from_canonical_bytes(blinding))
+        .ok_or(AuditError::InvalidOpening)?;
+    let expected = hyphen_crypto::pedersen::Commitment::create(value, blinding);
     if expected.as_bytes() != &commitment {
         return Err(AuditError::InvalidOpening);
     }
@@ -337,8 +338,8 @@ fn hash_parts(domain: &[u8], parts: &[&[u8]]) -> Hash256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hyphen_crypto::pedersen::Commitment;
     use hyphen_crypto::SecretKey;
+    use hyphen_crypto::pedersen::Commitment;
     use hyphen_proof::range_proof::AggregatedRangeProof;
     use hyphen_tx::note::Note;
     use hyphen_tx::transaction::{Transaction, TxOutput, TxPrunable};
@@ -405,13 +406,29 @@ mod tests {
             generate_disclosure(&owned, &transaction, 0, hash(1), auditor, hash(2), 100, 200)
                 .unwrap();
         assert_eq!(disclosure.canonical_context().len(), 293);
-        assert!(disclosure
-            .disclosed_fields()
-            .contains(&DisclosedField::Amount));
-        assert!(disclosure
-            .disclosed_fields()
-            .contains(&DisclosedField::CommitmentBlinding));
+        assert!(
+            disclosure
+                .disclosed_fields()
+                .contains(&DisclosedField::Amount)
+        );
+        assert!(
+            disclosure
+                .disclosed_fields()
+                .contains(&DisclosedField::CommitmentBlinding)
+        );
         verify_disclosure(&disclosure, &transaction, context(auditor)).unwrap();
+    }
+
+    #[test]
+    fn opening_requires_a_canonical_scalar() {
+        let bytes = [0xff; 32];
+        let reduced = Scalar::from_bytes_mod_order(bytes);
+        let commitment = hyphen_crypto::pedersen::Commitment::create(42, reduced);
+        assert_eq!(
+            verify_opening(42, bytes, *commitment.as_bytes()),
+            Err(AuditError::InvalidOpening)
+        );
+        verify_opening(42, reduced.to_bytes(), *commitment.as_bytes()).unwrap();
     }
 
     #[test]

@@ -3,7 +3,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 
 use hyphen_crypto::stealth::{
-    self, derive_commitment_blinding, EphemeralKey, SpendKey, StealthAddress, ViewKey,
+    self, EphemeralKey, SpendKey, StealthAddress, ViewKey, derive_commitment_blinding,
 };
 use hyphen_tx::note::OwnedNote;
 

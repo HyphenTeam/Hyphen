@@ -59,21 +59,22 @@ mod linalg;
 pub mod solve;
 
 pub use challenge::{
-    layer_scale, ChallengeDescriptor, Verification, DEFAULT_INPUT_DIM, DEFAULT_OUTPUT_DIM,
-    DEFAULT_TOLERANCE_ULP, DESCRIPTOR_VERSION, MAX_HIDDEN_DIM, MAX_TOLERANCE_ULP, MIN_HIDDEN_DIM,
+    ChallengeDescriptor, DEFAULT_INPUT_DIM, DEFAULT_OUTPUT_DIM, DEFAULT_TOLERANCE_ULP,
+    DESCRIPTOR_VERSION, MAX_HIDDEN_DIM, MAX_TOLERANCE_ULP, MIN_HIDDEN_DIM, Verification,
+    layer_scale,
 };
-pub use difficulty::{epoch_of, epoch_start, next_hidden_dim, TARGET_EPOCH_SECONDS};
+pub use difficulty::{TARGET_EPOCH_SECONDS, epoch_of, epoch_start, next_hidden_dim};
 pub use error::NeuralError;
-pub use mlp::{forward, max_abs_difference, mean_squared_error, MlpSpec};
+pub use mlp::{MlpSpec, forward, max_abs_difference, mean_squared_error};
 pub use rng::ChaCha20;
 pub use wire::{
-    decode_descriptor, decode_open, decode_status, decode_submit, decode_values_into,
-    encode_descriptor, encode_open, encode_submit, Operation, DESCRIPTOR_BYTES,
-    SUBMISSION_HEADER_BYTES,
+    DESCRIPTOR_BYTES, Operation, SUBMISSION_HEADER_BYTES, decode_descriptor, decode_open,
+    decode_status, decode_submit, decode_values_into, encode_descriptor, encode_open,
+    encode_submit,
 };
 pub use work::{
-    search as search_work, WorkDescriptor, WorkSearch, PROFILE_SPEC, WORK_DESCRIPTOR_VERSION,
+    PROFILE_SPEC, WORK_DESCRIPTOR_VERSION, WorkDescriptor, WorkSearch, search as search_work,
 };
 
 #[cfg(feature = "std")]
-pub use solve::{solve, verify, SolveConfig, SolveOutcome};
+pub use solve::{SolveConfig, SolveOutcome, solve, verify};

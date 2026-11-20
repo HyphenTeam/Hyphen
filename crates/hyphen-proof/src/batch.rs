@@ -1,5 +1,6 @@
-use crate::generators::{BP_GENS, MAX_AGGREGATION, MAX_RANGE_BITS};
+use crate::generators::{BP_GENS, MAX_RANGE_BITS};
 use crate::inner_product;
+use crate::range_proof::validate_aggregation;
 use crate::range_proof::{AggregatedRangeProof, ProofError, RangeProof};
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
@@ -76,9 +77,7 @@ pub fn prove_multiple_with_rng<R: CryptoRng>(
     rng: &mut R,
 ) -> Result<(AggregatedRangeProof, Vec<RistrettoPoint>), ProofError> {
     let m = values.len();
-    if m == 0 || m > MAX_AGGREGATION {
-        return Err(ProofError::TooManyValues);
-    }
+    validate_aggregation(m, blindings.len())?;
     let n_bits = MAX_RANGE_BITS;
     let nm = n_bits * m;
     let g_blind = g_gen();

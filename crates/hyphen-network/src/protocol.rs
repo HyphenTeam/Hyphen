@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use hyphen_consensus::{InclusionReceiptVoteGossip, QuorumInclusionReceiptGossip};
 use hyphen_state::{
-    verify_blob_chunk_proof, verify_blob_metadata, BlobChunkProof, BlobMetadata, SparseMerkleProof,
+    BlobChunkProof, BlobMetadata, SparseMerkleProof, verify_blob_chunk_proof, verify_blob_metadata,
 };
 
 pub const MAX_GOSSIP_TRANSACTION_SIZE: usize = 2 * 1024 * 1024;
@@ -243,10 +243,10 @@ pub enum SyncResponse {
 
 impl SyncRequest {
     pub fn validate(&self) -> Result<(), NetworkDecodeError> {
-        if let Self::GetBlocks { count, .. } = self {
-            if *count == 0 || *count > MAX_SYNC_BLOCK_COUNT {
-                return Err(NetworkDecodeError::InvalidSyncRequest);
-            }
+        if let Self::GetBlocks { count, .. } = self
+            && (*count == 0 || *count > MAX_SYNC_BLOCK_COUNT)
+        {
+            return Err(NetworkDecodeError::InvalidSyncRequest);
         }
         Ok(())
     }
@@ -439,24 +439,30 @@ mod tests {
 
     #[test]
     fn sync_request_limits_reject_zero_excessive_and_overflow_prone_ranges() {
-        assert!(SyncRequest::GetBlocks {
-            start_height: 0,
-            count: 0
-        }
-        .validate()
-        .is_err());
-        assert!(SyncRequest::GetBlocks {
-            start_height: u64::MAX,
-            count: MAX_SYNC_BLOCK_COUNT + 1
-        }
-        .validate()
-        .is_err());
-        assert!(SyncRequest::GetBlocks {
-            start_height: 1,
-            count: MAX_SYNC_BLOCK_COUNT
-        }
-        .validate()
-        .is_ok());
+        assert!(
+            SyncRequest::GetBlocks {
+                start_height: 0,
+                count: 0
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SyncRequest::GetBlocks {
+                start_height: u64::MAX,
+                count: MAX_SYNC_BLOCK_COUNT + 1
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            SyncRequest::GetBlocks {
+                start_height: 1,
+                count: MAX_SYNC_BLOCK_COUNT
+            }
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]

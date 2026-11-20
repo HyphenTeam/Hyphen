@@ -1,6 +1,6 @@
 // The wire profile and its container adapters live in `hyphen-wire` so the
 // node, pool, miner and wallet cannot drift apart by re-implementing them.
-pub use hyphen_wire::{wire_config, CanonicalSet, DEFAULT_WIRE_BYTES, MAX_WIRE_COLLECTION_ITEMS};
+pub use hyphen_wire::{CanonicalSet, DEFAULT_WIRE_BYTES, MAX_WIRE_COLLECTION_ITEMS, wire_config};
 
 pub mod authorization;
 pub mod block;
@@ -11,23 +11,23 @@ pub mod timestamp;
 pub mod work;
 
 pub use authorization::{
-    authorization_digest, AuthorizationError, BlockAuthorization, FROZEN_BLOCK_VERSION,
+    AuthorizationError, BlockAuthorization, FROZEN_BLOCK_VERSION, authorization_digest,
 };
 pub use block::{
-    compute_receipt_root, merkle_root, Block, BlockHeader, ReceiptLog, TransactionReceipt,
+    Block, BlockHeader, ReceiptLog, TransactionReceipt, compute_receipt_root, merkle_root,
 };
 pub use config::{
-    ChainConfig, DifficultyAlgorithm, DEFAULT_EXPLORER_PORT, DEFAULT_POOL_PORT,
-    DEFAULT_SEED_DOMAIN, DEFAULT_STRATUM_PORT, DEFAULT_TEMPLATE_PORT, DEVNET_DISCOVERY_PORT,
-    DEVNET_P2P_PORT, DEVNET_RPC_PORT, FEATURE_CANONICAL_TX_ORDER, FEATURE_H_WES, FEATURE_MSE,
+    ChainConfig, DEFAULT_EXPLORER_PORT, DEFAULT_POOL_PORT, DEFAULT_SEED_DOMAIN,
+    DEFAULT_STRATUM_PORT, DEFAULT_TEMPLATE_PORT, DEVNET_DISCOVERY_PORT, DEVNET_P2P_PORT,
+    DEVNET_RPC_PORT, DifficultyAlgorithm, FEATURE_CANONICAL_TX_ORDER, FEATURE_H_WES, FEATURE_MSE,
     FEATURE_NEURAL_WORK, FEATURE_TERA, FEATURE_UNCLES, FEATURE_USEFUL_WORK, FEATURE_VRE,
     FEATURE_WASM, MAINNET_DISCOVERY_PORT, MAINNET_P2P_PORT, MAINNET_RPC_PORT,
     RESEARCH_CONSENSUS_FEATURES, TESTNET_DISCOVERY_PORT, TESTNET_P2P_PORT, TESTNET_RPC_PORT,
 };
-pub use genesis::{build_genesis_block, genesis_epoch_seed, ChainIdentity};
+pub use genesis::{ChainIdentity, build_genesis_block, genesis_epoch_seed};
 pub use work::{
-    neural_work_commitment, neural_work_seed, NEURAL_WORK_COMMITMENT_DOMAIN,
-    NEURAL_WORK_SEED_DOMAIN,
+    NEURAL_WORK_COMMITMENT_DOMAIN, NEURAL_WORK_SEED_DOMAIN, neural_work_commitment,
+    neural_work_seed,
 };
 
 #[cfg(test)]
@@ -74,9 +74,11 @@ mod wire_tests {
 
         let mut trailing = expected;
         trailing.push(0);
-        assert!(crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-            .deserialize::<WireFixture>(&trailing)
-            .is_err());
+        assert!(
+            crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                .deserialize::<WireFixture>(&trailing)
+                .is_err()
+        );
     }
 
     /// Both budgets bind: a caller's byte budget and the element budget derived
@@ -87,8 +89,10 @@ mod wire_tests {
         assert!(crate::wire_config(7).serialize(&u64::MAX).is_err());
         assert!(crate::wire_config(64).serialize(&vec![0u8; 65]).is_err());
         assert!(crate::wire_config(64).serialize(&vec![0u8; 32]).is_ok());
-        assert!(crate::wire_config(64)
-            .serialize(&vec![Some(1u16); 65])
-            .is_err());
+        assert!(
+            crate::wire_config(64)
+                .serialize(&vec![Some(1u16); 65])
+                .is_err()
+        );
     }
 }

@@ -6,10 +6,10 @@ use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::generators::{BP_GENS, MAX_RANGE_BITS};
+use crate::generators::{BP_GENS, MAX_AGGREGATION, MAX_RANGE_BITS};
 use crate::inner_product;
 use crate::inner_product::InnerProductProof;
-use hyphen_crypto::pedersen::{PedersenGens, G_BLIND, G_VALUE};
+use hyphen_crypto::pedersen::{G_BLIND, G_VALUE, PedersenGens};
 
 // V = v·H + gamma·G
 fn h_gen() -> RistrettoPoint {
@@ -87,6 +87,15 @@ fn delta(y: &Scalar, z: &Scalar, n: usize) -> Scalar {
 }
 
 impl RangeProof {
+    fn responses(&self) -> Result<[Scalar; 3], ProofError> {
+        let decode = |bytes| {
+            Scalar::from_canonical_bytes(bytes)
+                .into_option()
+                .ok_or(ProofError::VerificationFailed)
+        };
+        Ok([decode(self.tau_x)?, decode(self.mu)?, decode(self.t_hat)?])
+    }
+
     #[allow(clippy::needless_range_loop)]
     pub fn prove(v: u64, gamma: &Scalar) -> Result<(Self, RistrettoPoint), ProofError> {
         let n = MAX_RANGE_BITS; // 64
@@ -237,9 +246,7 @@ impl RangeProof {
 
         let x = transcript_challenge(&mut transcript, b"x");
 
-        let tau_x = Scalar::from_bytes_mod_order(self.tau_x);
-        let mu = Scalar::from_bytes_mod_order(self.mu);
-        let t_hat = Scalar::from_bytes_mod_order(self.t_hat);
+        let [tau_x, mu, t_hat] = self.responses()?;
 
         transcript_scalar(&mut transcript, b"tau_x", &tau_x);
         transcript_scalar(&mut transcript, b"mu", &mu);
@@ -339,9 +346,7 @@ impl AggregatedRangeProof {
         blindings: &[Scalar],
     ) -> Result<(Self, Vec<RistrettoPoint>), ProofError> {
         let m = values.len();
-        if m == 0 || m > crate::generators::MAX_AGGREGATION {
-            return Err(ProofError::TooManyValues);
-        }
+        validate_aggregation(m, blindings.len())?;
         let n_bits = MAX_RANGE_BITS;
         let nm = n_bits * m;
         let g_blind = g_gen();
@@ -484,10 +489,11 @@ impl AggregatedRangeProof {
 
     #[allow(clippy::needless_range_loop)]
     pub fn verify(&self, commitments: &[RistrettoPoint]) -> Result<(), ProofError> {
-        let m = self.m as usize;
-        if commitments.len() != m {
+        let m = commitments.len();
+        if self.m != m as u64 {
             return Err(ProofError::InvalidProofLength);
         }
+        validate_aggregation(m, m)?;
         let n_bits = MAX_RANGE_BITS;
         let nm = n_bits * m;
         let g_blind = g_gen();
@@ -510,9 +516,7 @@ impl AggregatedRangeProof {
         transcript_point(&mut transcript, b"T2", &t2_point);
         let x = transcript_challenge(&mut transcript, b"x");
 
-        let tau_x = Scalar::from_bytes_mod_order(self.proof.tau_x);
-        let mu = Scalar::from_bytes_mod_order(self.proof.mu);
-        let t_hat = Scalar::from_bytes_mod_order(self.proof.t_hat);
+        let [tau_x, mu, t_hat] = self.proof.responses()?;
 
         transcript_scalar(&mut transcript, b"tau_x", &tau_x);
         transcript_scalar(&mut transcript, b"mu", &mu);
@@ -595,6 +599,16 @@ impl AggregatedRangeProof {
     }
 }
 
+pub(crate) fn validate_aggregation(count: usize, other_count: usize) -> Result<(), ProofError> {
+    if count > MAX_AGGREGATION {
+        return Err(ProofError::TooManyValues);
+    }
+    if !count.is_power_of_two() || count != other_count {
+        return Err(ProofError::InvalidProofLength);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,5 +627,18 @@ mod tests {
         let blindings: Vec<Scalar> = (0..2).map(|_| Scalar::random(&mut system_rng())).collect();
         let (proof, commitments) = AggregatedRangeProof::prove(&values, &blindings).unwrap();
         proof.verify(&commitments).unwrap();
+    }
+
+    #[test]
+    fn aggregation_requires_matching_power_of_two_dimensions() {
+        for (values, blindings) in [(0, 0), (1, 0), (3, 3), (17, 17), (2, 3)] {
+            assert!(
+                AggregatedRangeProof::prove(&vec![0; values], &vec![Scalar::ONE; blindings])
+                    .is_err()
+            );
+        }
+        let (mut proof, commitments) = AggregatedRangeProof::prove(&[7], &[Scalar::ONE]).unwrap();
+        proof.proof.ipp.r_vec.pop();
+        assert!(proof.verify(&commitments).is_err());
     }
 }

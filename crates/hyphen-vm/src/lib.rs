@@ -18,9 +18,9 @@ pub mod ledger;
 pub mod state;
 pub mod types;
 
-pub use application::{application_manifest, AppCategory, AppManifest, AppManifestError};
+pub use application::{AppCategory, AppManifest, AppManifestError, application_manifest};
 pub use contract::Contract;
 pub use engine::VmEngine;
 pub use gas::GasMeter;
-pub use ledger::{VmLedger, VmLedgerError, VmTransaction, VM_ENVELOPE_MAGIC};
+pub use ledger::{VM_ENVELOPE_MAGIC, VmLedger, VmLedgerError, VmTransaction};
 pub use types::{ContractAddress, ContractResult};

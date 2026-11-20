@@ -6,7 +6,7 @@
 //! committing a different header than the chain expects; the arithmetic itself
 //! lives in `hyphen-neural`, which is dependency-free and compiles for wasm.
 
-use hyphen_crypto::{blake3_hash_many, Hash256};
+use hyphen_crypto::{Hash256, blake3_hash_many};
 
 /// Domain tag of the per-miner seed derivation.
 pub const NEURAL_WORK_SEED_DOMAIN: &[u8] = b"Hyphen/neural-work-seed/v1";

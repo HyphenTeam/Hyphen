@@ -276,13 +276,44 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
     output.push_str("</section><div class=\"section-head\"><div><span class=\"kicker\">CANONICAL LEDGER</span><h1>Recent blocks</h1></div><span class=\"live\">LIVE</span></div>");
     output.push_str("<div class=\"data-table\"><table><thead><tr><th>Height</th><th>Age</th><th>Block</th><th>Transactions</th><th>Bytes</th><th>Work units</th><th>Reward</th><th>Producer</th></tr></thead><tbody>");
     for block in &data.blocks.blocks {
-        let _ = write!(output, "<tr><td><a href=\"#/block/{}\">#{}</a></td><td>{}</td><td><a class=\"hash\" title=\"{}\" href=\"#/block/{}\">{}</a></td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"amount\">{} HPN</span><small>fee {}</small></td><td class=\"hash\" title=\"{}\">{}</td></tr>", block.height, grouped(block.height), age(block.timestamp, now_ms), escape(&block.hash), escape(&block.hash), short(&block.hash), grouped(block.tx_count as u64), grouped(block.block_size as u64), grouped(block.difficulty), escape(&block.reward), escape(&block.total_fee), escape(&block.miner_pubkey), short(&block.miner_pubkey));
+        let _ = write!(
+            output,
+            "<tr><td><a href=\"#/block/{}\">#{}</a></td><td>{}</td><td><a class=\"hash\" title=\"{}\" href=\"#/block/{}\">{}</a></td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"amount\">{} HPN</span><small>fee {}</small></td><td class=\"hash\" title=\"{}\">{}</td></tr>",
+            block.height,
+            grouped(block.height),
+            age(block.timestamp, now_ms),
+            escape(&block.hash),
+            escape(&block.hash),
+            short(&block.hash),
+            grouped(block.tx_count as u64),
+            grouped(block.block_size as u64),
+            grouped(block.difficulty),
+            escape(&block.reward),
+            escape(&block.total_fee),
+            escape(&block.miner_pubkey),
+            short(&block.miner_pubkey)
+        );
     }
     output.push_str("</tbody></table></div>");
     let page_count = (data.blocks.total_height + 1)
         .div_ceil(data.blocks.limit)
         .max(1);
-    let _ = write!(output, "<nav class=\"pager\"><button data-action=\"newer\" {}>NEWER</button><span>{} / {}</span><button data-action=\"older\" {}>OLDER</button></nav>", if data.blocks.page == 0 { "disabled" } else { "" }, data.blocks.page + 1, page_count, if data.blocks.page + 1 >= page_count { "disabled" } else { "" });
+    let _ = write!(
+        output,
+        "<nav class=\"pager\"><button data-action=\"newer\" {}>NEWER</button><span>{} / {}</span><button data-action=\"older\" {}>OLDER</button></nav>",
+        if data.blocks.page == 0 {
+            "disabled"
+        } else {
+            ""
+        },
+        data.blocks.page + 1,
+        page_count,
+        if data.blocks.page + 1 >= page_count {
+            "disabled"
+        } else {
+            ""
+        }
+    );
     Ok(output)
 }
 
@@ -302,12 +333,35 @@ fn render_science(payload: &str) -> Result<String, String> {
     output.push_str("<div class=\"domain-band\"><b>QCD</b><b>MANIFOLD DYNAMICS</b><b>CONNECTOMICS</b><span>fixed-point deterministic kernels</span></div>");
     output.push_str("<div class=\"data-table\"><table><thead><tr><th>Task</th><th>State</th><th>Domain</th><th>Budget</th><th>Reward</th><th>Published</th><th>Retention</th></tr></thead><tbody>");
     for task in &data.tasks {
-        let _ = write!(output, "<tr><td><a class=\"hash\" title=\"{}\" href=\"#/science/task/{}\">{}</a></td><td><span class=\"status {}\">{}</span></td><td>{}<small>{}</small></td><td>{} ops</td><td class=\"amount\">{} HPN</td><td><a href=\"#/block/{}\">#{}</a></td><td>{} peers</td></tr>", escape(&task.task_id), escape(&task.task_id), short(&task.task_id), status_class(&task.status), escape(&task.status), escape(&task.domain), escape(&task.arithmetic), grouped(task.max_operations), escape(&task.reward), task.published_height, grouped(task.published_height), task.retention_providers);
+        let _ = write!(
+            output,
+            "<tr><td><a class=\"hash\" title=\"{}\" href=\"#/science/task/{}\">{}</a></td><td><span class=\"status {}\">{}</span></td><td>{}<small>{}</small></td><td>{} ops</td><td class=\"amount\">{} HPN</td><td><a href=\"#/block/{}\">#{}</a></td><td>{} peers</td></tr>",
+            escape(&task.task_id),
+            escape(&task.task_id),
+            short(&task.task_id),
+            status_class(&task.status),
+            escape(&task.status),
+            escape(&task.domain),
+            escape(&task.arithmetic),
+            grouped(task.max_operations),
+            escape(&task.reward),
+            task.published_height,
+            grouped(task.published_height),
+            task.retention_providers
+        );
     }
     output.push_str("</tbody></table></div>");
     let page = data.offset / data.limit;
     let pages = data.total.div_ceil(data.limit).max(1);
-    let _ = write!(output, "<nav class=\"pager\"><button data-action=\"science-newer\" {}>PREVIOUS</button><span>{} / {} &middot; {} TASKS</span><button data-action=\"science-older\" {}>NEXT</button></nav>", if page == 0 { "disabled" } else { "" }, page + 1, pages, data.total, if page + 1 >= pages { "disabled" } else { "" });
+    let _ = write!(
+        output,
+        "<nav class=\"pager\"><button data-action=\"science-newer\" {}>PREVIOUS</button><span>{} / {} &middot; {} TASKS</span><button data-action=\"science-older\" {}>NEXT</button></nav>",
+        if page == 0 { "disabled" } else { "" },
+        page + 1,
+        pages,
+        data.total,
+        if page + 1 >= pages { "disabled" } else { "" }
+    );
     Ok(output)
 }
 
@@ -332,7 +386,13 @@ fn hash_row(output: &mut String, label: &str, value: &str) {
 fn render_task(payload: &str) -> Result<String, String> {
     let task: ScientificTask = serde_json::from_str(payload).map_err(|error| error.to_string())?;
     let mut output = String::with_capacity(10_000);
-    let _ = write!(output, "<div class=\"section-head\"><div><span class=\"kicker\">AETHERCOMPUTE / TASK</span><h1>{}</h1></div><span class=\"status {}\">{}</span></div>", short(&task.task_id), status_class(&task.status), escape(&task.status));
+    let _ = write!(
+        output,
+        "<div class=\"section-head\"><div><span class=\"kicker\">AETHERCOMPUTE / TASK</span><h1>{}</h1></div><span class=\"status {}\">{}</span></div>",
+        short(&task.task_id),
+        status_class(&task.status),
+        escape(&task.status)
+    );
     output.push_str("<section class=\"detail-grid\"><article><h2>Execution statement</h2><dl>");
     hash_row(&mut output, "Task ID", &task.task_id);
     detail_row(&mut output, "Domain", &task.domain);
@@ -420,7 +480,11 @@ fn render_task(payload: &str) -> Result<String, String> {
         }
         output.push_str("</dl></article>");
     }
-    let _ = write!(output, "<article><h2>Privacy boundary</h2><dl><dt>Published</dt><dd>content hashes, Merkle roots, byte lengths</dd><dt>Withheld</dt><dd>object locators, credentials, private transaction payloads</dd><dt>Retention</dt><dd>{} independent attestations</dd></dl></article></section>", task.retention_providers);
+    let _ = write!(
+        output,
+        "<article><h2>Privacy boundary</h2><dl><dt>Published</dt><dd>content hashes, Merkle roots, byte lengths</dd><dt>Withheld</dt><dd>object locators, credentials, private transaction payloads</dd><dt>Retention</dt><dd>{} independent attestations</dd></dl></article></section>",
+        task.retention_providers
+    );
     Ok(output)
 }
 
@@ -428,7 +492,12 @@ fn render_block(payload: &str, now_ms: u64) -> Result<String, String> {
     let block: BlockDetail = serde_json::from_str(payload).map_err(|error| error.to_string())?;
     let h = &block.header;
     let mut output = String::with_capacity(12_000);
-    let _ = write!(output, "<div class=\"section-head\"><div><span class=\"kicker\">CANONICAL BLOCK</span><h1>Height #{}</h1></div><span class=\"age-badge\">{} AGO</span></div><section class=\"detail-grid\"><article><h2>Header</h2><dl>", grouped(h.height), age(h.timestamp, now_ms));
+    let _ = write!(
+        output,
+        "<div class=\"section-head\"><div><span class=\"kicker\">CANONICAL BLOCK</span><h1>Height #{}</h1></div><span class=\"age-badge\">{} AGO</span></div><section class=\"detail-grid\"><article><h2>Header</h2><dl>",
+        grouped(h.height),
+        age(h.timestamp, now_ms)
+    );
     hash_row(&mut output, "Block hash", &block.hash);
     hash_row(&mut output, "Previous", &h.prev_hash);
     detail_row(&mut output, "Version", &h.version.to_string());
@@ -536,12 +605,33 @@ fn render_applications(payload: &str) -> Result<String, String> {
             ),
             None => ("Unclassified contract", "raw wasm", "-", "-".into()),
         };
-        let _ = write!(output, "<tr><td><a href=\"#/app/{}\">{}</a><small>v{}</small></td><td><span class=\"status open\">{}</span></td><td class=\"hash\" title=\"{}\">{}</td><td>{}</td><td>{} bytes</td><td><a href=\"#/block/{}\">#{}</a></td></tr>", escape(&contract.address), escape(name), escape(version), escape(category), escape(&contract.address), short(&contract.address), escape(&abi), grouped(contract.code_bytes as u64), contract.deployed_height, grouped(contract.deployed_height));
+        let _ = write!(
+            output,
+            "<tr><td><a href=\"#/app/{}\">{}</a><small>v{}</small></td><td><span class=\"status open\">{}</span></td><td class=\"hash\" title=\"{}\">{}</td><td>{}</td><td>{} bytes</td><td><a href=\"#/block/{}\">#{}</a></td></tr>",
+            escape(&contract.address),
+            escape(name),
+            escape(version),
+            escape(category),
+            escape(&contract.address),
+            short(&contract.address),
+            escape(&abi),
+            grouped(contract.code_bytes as u64),
+            contract.deployed_height,
+            grouped(contract.deployed_height)
+        );
     }
     output.push_str("</tbody></table></div>");
     let page = data.offset / data.limit;
     let pages = data.total.div_ceil(data.limit).max(1);
-    let _ = write!(output, "<nav class=\"pager\"><button data-action=\"apps-newer\" {}>PREVIOUS</button><span>{} / {} &middot; {} CONTRACTS</span><button data-action=\"apps-older\" {}>NEXT</button></nav>", if page == 0 { "disabled" } else { "" }, page + 1, pages, data.total, if page + 1 >= pages { "disabled" } else { "" });
+    let _ = write!(
+        output,
+        "<nav class=\"pager\"><button data-action=\"apps-newer\" {}>PREVIOUS</button><span>{} / {} &middot; {} CONTRACTS</span><button data-action=\"apps-older\" {}>NEXT</button></nav>",
+        if page == 0 { "disabled" } else { "" },
+        page + 1,
+        pages,
+        data.total,
+        if page + 1 >= pages { "disabled" } else { "" }
+    );
     Ok(output)
 }
 
@@ -554,7 +644,12 @@ fn render_application(payload: &str) -> Result<String, String> {
         .as_ref()
         .map(|app| (app.name.as_str(), app.category.as_str()))
         .unwrap_or(("Unclassified contract", "raw wasm"));
-    let _ = write!(output, "<div class=\"section-head\"><div><span class=\"kicker\">WASM APPLICATION</span><h1>{}</h1></div><span class=\"status open\">{}</span></div><section class=\"detail-grid single\"><article><h2>Immutable deployment</h2><dl>", escape(name), escape(category));
+    let _ = write!(
+        output,
+        "<div class=\"section-head\"><div><span class=\"kicker\">WASM APPLICATION</span><h1>{}</h1></div><span class=\"status open\">{}</span></div><section class=\"detail-grid single\"><article><h2>Immutable deployment</h2><dl>",
+        escape(name),
+        escape(category)
+    );
     hash_row(&mut output, "Contract", &contract.address);
     hash_row(&mut output, "Code hash", &contract.code_hash);
     hash_row(&mut output, "Deployer", &contract.deployer);
@@ -592,21 +687,21 @@ pub fn render(view: u32, payload: &str, now_ms: u64) -> Result<String, String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn hyphen_alloc(length: u32) -> u32 {
     let allocation = vec![0_u8; length as usize].into_boxed_slice();
     Box::into_raw(allocation) as *mut u8 as u32
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn hyphen_free(pointer: u32, length: u32) {
     let slice = std::ptr::slice_from_raw_parts_mut(pointer as *mut u8, length as usize);
     drop(unsafe { Box::from_raw(slice) });
 }
 
 #[cfg(target_arch = "wasm32")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn hyphen_render(view: u32, pointer: u32, length: u32, now_ms: f64) -> u64 {
     let bytes = unsafe { std::slice::from_raw_parts(pointer as *const u8, length as usize) };
     let payload = std::str::from_utf8(bytes).unwrap_or("");

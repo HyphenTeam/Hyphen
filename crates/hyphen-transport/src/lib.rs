@@ -1,4 +1,5 @@
 use prost::Message;
+pub mod canonical;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -212,8 +213,11 @@ pub async fn read_envelope<R: AsyncReadExt + Unpin>(
     if len > MAX_ENVELOPE_SIZE {
         return Err(TPError::Protocol(format!("envelope too large: {len}")));
     }
-    let mut buf = vec![0u8; len as usize];
-    reader.read_exact(&mut buf).await?;
+    let mut buf = Vec::with_capacity((len as usize).min(8192));
+    reader.take(u64::from(len)).read_to_end(&mut buf).await?;
+    if buf.len() != len as usize {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
     SignedEnvelope::decode(&buf[..]).map_err(TPError::from)
 }
 

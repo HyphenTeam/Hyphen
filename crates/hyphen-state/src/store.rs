@@ -73,13 +73,7 @@ impl BlockStore {
     }
 
     pub fn get_block_by_height(&self, height: u64) -> Result<Block> {
-        let hash_bytes = self
-            .height_index
-            .get(height.to_be_bytes())?
-            .ok_or_else(|| StoreError::NotFound(format!("height {height}")))?;
-        let mut h = [0u8; 32];
-        h.copy_from_slice(&hash_bytes);
-        self.get_block_by_hash(&Hash256::from_bytes(h))
+        self.get_block_by_hash(&self.get_block_hash_at_height(height)?)
     }
 
     pub fn get_block_hash_at_height(&self, height: u64) -> Result<Hash256> {
@@ -87,8 +81,10 @@ impl BlockStore {
             .height_index
             .get(height.to_be_bytes())?
             .ok_or_else(|| StoreError::NotFound(format!("height {height}")))?;
-        let mut h = [0u8; 32];
-        h.copy_from_slice(&hash_bytes);
+        let h = hash_bytes
+            .as_ref()
+            .try_into()
+            .map_err(|_| StoreError::Serde("invalid block height index entry".into()))?;
         Ok(Hash256::from_bytes(h))
     }
 
@@ -101,6 +97,9 @@ impl BlockStore {
             .tx_index
             .get(tx_hash.as_bytes())?
             .ok_or_else(|| StoreError::NotFound(tx_hash.to_string()))?;
+        if val.len() != 36 {
+            return Err(StoreError::Serde("invalid transaction location".into()));
+        }
         let mut block_hash = [0u8; 32];
         block_hash.copy_from_slice(&val[..32]);
         let idx = u32::from_le_bytes(val[32..36].try_into().unwrap());
@@ -162,15 +161,16 @@ impl BlockStore {
 
     /// Get an output (one_time_pubkey, commitment) by global index.
     pub fn get_output(&self, global_index: u64) -> Result<([u8; 32], [u8; 32])> {
+        let (pk, cm, _, _) = self.output_record(global_index)?;
+        Ok((pk, cm))
+    }
+
+    pub fn output_record(&self, global_index: u64) -> Result<OutputRecord> {
         let val = self
             .output_index
             .get(global_index.to_be_bytes())?
             .ok_or_else(|| StoreError::NotFound(format!("output index {global_index}")))?;
-        let mut pk = [0u8; 32];
-        let mut cm = [0u8; 32];
-        pk.copy_from_slice(&val[..32]);
-        cm.copy_from_slice(&val[32..64]);
-        Ok((pk, cm))
+        decode_output_record(&val, global_index)
     }
 
     /// Resolve a ring member by global index.
@@ -183,20 +183,7 @@ impl BlockStore {
         curve25519_dalek::ristretto::RistrettoPoint,
         u64,
     )> {
-        let val = self
-            .output_index
-            .get(global_index.to_be_bytes())?
-            .ok_or_else(|| StoreError::NotFound(format!("output index {global_index}")))?;
-        let mut pk_bytes = [0u8; 32];
-        let mut cm_bytes = [0u8; 32];
-        pk_bytes.copy_from_slice(&val[..32]);
-        cm_bytes.copy_from_slice(&val[32..64]);
-        // Height is stored in bytes 64..72 if available (backward compat: default 0)
-        let height = if val.len() >= 72 {
-            u64::from_le_bytes(val[64..72].try_into().unwrap())
-        } else {
-            0
-        };
+        let (pk_bytes, cm_bytes, _, height) = self.output_record(global_index)?;
         let pk = curve25519_dalek::ristretto::CompressedRistretto::from_slice(&pk_bytes)
             .map_err(|_| StoreError::NotFound("decompression failed".into()))?
             .decompress()
@@ -223,18 +210,27 @@ impl BlockStore {
             attempts += 1;
             let idx: u64 = rng.random_range(0..ceiling);
             if let Some(val) = self.output_index.get(idx.to_be_bytes())? {
-                let mut pk = [0u8; 32];
-                let mut cm = [0u8; 32];
-                pk.copy_from_slice(&val[..32]);
-                cm.copy_from_slice(&val[32..64]);
-                let height = if val.len() >= 72 {
-                    u64::from_le_bytes(val[64..72].try_into().unwrap())
-                } else {
-                    0
-                };
-                result.push((pk, cm, idx, height));
+                result.push(decode_output_record(&val, idx)?);
             }
         }
         Ok(result)
     }
+}
+
+fn decode_output_record(bytes: &[u8], index: u64) -> Result<OutputRecord> {
+    let height = match bytes.len() {
+        64 => 0,
+        72 => u64::from_le_bytes(bytes[64..].try_into().unwrap()),
+        _ => {
+            return Err(StoreError::Serde(format!(
+                "invalid output record at {index}"
+            )));
+        }
+    };
+    Ok((
+        bytes[..32].try_into().unwrap(),
+        bytes[32..64].try_into().unwrap(),
+        index,
+        height,
+    ))
 }

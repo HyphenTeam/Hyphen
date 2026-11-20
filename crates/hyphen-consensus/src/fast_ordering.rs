@@ -78,24 +78,21 @@ impl Committee {
                 .ok_or(FastOrderingError::WorkOverflow)
         })?;
 
-        let weighted = work_by_key.into_iter().collect::<Vec<_>>();
+        let mut cumulative = 0u128;
+        let weighted = work_by_key
+            .into_iter()
+            .map(|(key, work)| {
+                cumulative += work; // total_work already bounds every prefix.
+                (cumulative, PublicKey(key))
+            })
+            .collect::<Vec<_>>();
         let mut seats = Vec::with_capacity(seat_count as usize);
         for index in 0..seat_count {
             let target = sample_below(seed, source_epoch, index, total_work);
-            let mut cumulative = 0u128;
-            let mut selected = None;
-            for (key, work) in &weighted {
-                cumulative = cumulative
-                    .checked_add(*work)
-                    .ok_or(FastOrderingError::WorkOverflow)?;
-                if target < cumulative {
-                    selected = Some(PublicKey(*key));
-                    break;
-                }
-            }
+            let selected = weighted.partition_point(|(end, _)| *end <= target);
             seats.push(CommitteeSeat {
                 index,
-                public_key: selected.expect("sample is below total work"),
+                public_key: weighted[selected].1,
             });
         }
         let id = committee_id(source_epoch, seed, f, &seats);
@@ -229,6 +226,9 @@ impl HonestVoter {
     ) -> Result<OrderingVote, FastOrderingError> {
         if statement.chain_id != self.chain_id {
             return Err(FastOrderingError::WrongChain);
+        }
+        if committee.source_epoch.checked_add(1) != Some(statement.epoch) {
+            return Err(FastOrderingError::WrongCommittee);
         }
         let seat = committee
             .seat(seat_index)
@@ -459,6 +459,20 @@ mod tests {
         committee
             .verify_certificate(hash(0x11), &certificate)
             .unwrap();
+    }
+
+    #[test]
+    fn voter_checks_epoch_before_recording_a_decision() {
+        let (committee, mut voters) = committee_and_voters();
+        let seat = committee.seats[0];
+        let voter = voters.get_mut(seat.public_key.as_bytes()).unwrap();
+        let mut wrong = statement(&committee, 0x33);
+        wrong.epoch += 1;
+        assert_eq!(
+            voter.vote(&committee, seat.index, &wrong),
+            Err(FastOrderingError::WrongCommittee)
+        );
+        assert!(voter.decisions.is_empty());
     }
 
     #[test]

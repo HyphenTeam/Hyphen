@@ -18,9 +18,9 @@ use std::collections::BTreeSet;
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut};
 
+use rustbinary::Error;
 use rustbinary::compact::{CompactCursor, CompactDecode, CompactEncode};
 use rustbinary::writer::EncodeWriter;
-use rustbinary::Error;
 
 /// A set whose wire form is the canonical ascending element sequence.
 ///
@@ -133,12 +133,12 @@ impl<'de, T: Ord + CompactDecode<'de>> CompactDecode<'de> for CanonicalSet<T> {
         let ordered = Vec::<T>::decode_compact(cursor)?;
         let mut previous: Option<&T> = None;
         for element in &ordered {
-            if let Some(previous) = previous {
-                if previous >= element {
-                    return Err(Error::Custom(
-                        "canonical set elements must be strictly ascending".into(),
-                    ));
-                }
+            if let Some(previous) = previous
+                && previous >= element
+            {
+                return Err(Error::Custom(
+                    "canonical set elements must be strictly ascending".into(),
+                ));
             }
             previous = Some(element);
         }
@@ -172,19 +172,25 @@ mod tests {
         let payload = |values: &[u32]| config().serialize(&values.to_vec()).unwrap();
 
         let ascending = payload(&[3, 7, 9]);
-        assert!(config()
-            .deserialize::<CanonicalSet<u32>>(&ascending)
-            .is_ok());
+        assert!(
+            config()
+                .deserialize::<CanonicalSet<u32>>(&ascending)
+                .is_ok()
+        );
 
         let duplicate = payload(&[3, 7, 7]);
-        assert!(config()
-            .deserialize::<CanonicalSet<u32>>(&duplicate)
-            .is_err());
+        assert!(
+            config()
+                .deserialize::<CanonicalSet<u32>>(&duplicate)
+                .is_err()
+        );
 
         let descending = payload(&[9, 7, 3]);
-        assert!(config()
-            .deserialize::<CanonicalSet<u32>>(&descending)
-            .is_err());
+        assert!(
+            config()
+                .deserialize::<CanonicalSet<u32>>(&descending)
+                .is_err()
+        );
     }
 
     #[test]

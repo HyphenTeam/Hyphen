@@ -18,7 +18,7 @@ use hyphen_core::block::Block;
 use hyphen_core::config::ChainConfig;
 use hyphen_crypto::Hash256;
 use hyphen_economics::{block_reward, total_supply_at_height};
-use hyphen_vm::{application_manifest, AppManifest, Contract, ContractAddress};
+use hyphen_vm::{AppManifest, Contract, ContractAddress, application_manifest};
 
 pub struct ExplorerState {
     pub blockchain: Arc<Blockchain>,
@@ -982,10 +982,10 @@ fn search_handler(
         )
     };
 
-    if let Ok(height) = query.parse::<u64>() {
-        if state.blockchain.blocks.get_block_by_height(height).is_ok() {
-            return Ok(hit("block", Some(height), None));
-        }
+    if let Ok(height) = query.parse::<u64>()
+        && state.blockchain.blocks.get_block_by_height(height).is_ok()
+    {
+        return Ok(hit("block", Some(height), None));
     }
 
     if let Some(hash) = parse_hash(query) {
@@ -1189,6 +1189,13 @@ impl ExplorerService {
         };
 
         let state = &self.state;
+        let _view = match route {
+            Route::Index | Route::AppJs | Route::Wasm | Route::Health => None,
+            _ => match state.blockchain.canonical_view() {
+                Ok(guard) => Some(guard),
+                Err(e) => return error_json(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+            },
+        };
         let outcome = match route {
             Route::Index => Ok(serve_frontend()),
             Route::AppJs => Ok(serve_app_js()),

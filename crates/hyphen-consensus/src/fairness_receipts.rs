@@ -326,10 +326,10 @@ impl ReceiptObligationSet {
         }
         let key = (statement.slot, statement.transaction_id);
         let digest = statement.digest();
-        if let Some(previous) = self.required.get(&key) {
-            if *previous != digest {
-                return Err(InclusionReceiptError::ConflictingReceipt);
-            }
+        if let Some(previous) = self.required.get(&key)
+            && *previous != digest
+        {
+            return Err(InclusionReceiptError::ConflictingReceipt);
         }
         if let Some(storage) = &self.storage {
             let storage_key = obligation_key(expected_chain_id, key.0, key.1);

@@ -5,8 +5,8 @@
 //! derivation and CLSAG signing before a vendor can be considered supported.
 
 use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
-use hyphen_crypto::clsag::{self, ClsagSignature};
 use hyphen_crypto::Hash256;
+use hyphen_crypto::clsag::{self, ClsagSignature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

@@ -1,35 +1,4 @@
-//! Single-use proof-of-work witness index.
-//!
-//! PoUW v3 accepts a chain witness exactly once. That is the whole anti-replay
-//! argument of the workload: a precomputed pool of prime chains is worthless
-//! because each entry can be spent a single time, so total work is conserved
-//! and precomputation degenerates into mining in advance.
-//!
-//! ## What this store is, and is not
-//!
-//! The block header commits the witnesses it spends through `pow_commitment`,
-//! which is a root over that block's exact list. This store exists only to answer
-//! one question locally: *has this witness been spent before?* No header field,
-//! state root or fork-choice weight depends on it, so its representation is a
-//! storage decision rather than a consensus rule. That matters, because the
-//! obvious representation is ruinous.
-//!
-//! A 256-level sparse Merkle tree over witness hashes stores roughly 245 nodes
-//! per key. Measured on a devnet block at difficulty 3294 that came to about
-//! 15 KiB of disk per witness, or 45 MiB per block — nine times the block
-//! itself, and the reason a 40 GB disk filled after a few hundred blocks.
-//!
-//! The same question is answered here by one entry per witness: the witness as
-//! an eight-byte big-endian key, its claiming height as an eight-byte value.
-//! Membership is a point lookup, claiming a block is one transaction per chunk,
-//! and a reorg removes exactly the witnesses it listed.
-//!
-//! ## Failure behaviour
-//!
-//! Claiming is fail-closed in both directions: a duplicate inside the batch is
-//! rejected before any write, and a chunk that conflicts with an existing claim
-//! rolls back the chunks already applied by this call. Losing a claim costs
-//! liveness; accepting a spent witness would be unsound.
+//! Single-use proof-of-work witnesses keyed by big-endian ID, with their claiming heights.
 
 use hyphen_crypto::Hash256;
 use sled::transaction::{ConflictableTransactionError, TransactionError};
@@ -69,7 +38,7 @@ impl From<sled::Error> for WitnessSetError {
 }
 
 pub struct WitnessSet {
-    tree: sled::Tree,
+    pub(crate) tree: sled::Tree,
 }
 
 impl WitnessSet {
@@ -104,6 +73,35 @@ impl WitnessSet {
 
     pub fn contains(&self, witness: u64) -> Result<bool, WitnessSetError> {
         Ok(self.tree.contains_key(key(witness))?)
+    }
+
+    /// Older nodes persisted claims before advancing the canonical tip. Rebuild
+    /// their derived index once from committed blocks, including after an interrupted upgrade.
+    pub fn reconcile_canonical(
+        &self,
+        blocks: &crate::BlockStore,
+        tip: u64,
+        meta: &sled::Tree,
+    ) -> Result<(), WitnessSetError> {
+        const FORMAT: &[u8] = b"atomic_witness_index_v1";
+        if meta.contains_key(FORMAT)? {
+            return Ok(());
+        }
+        self.tree.clear()?;
+        for height in 1..=tip {
+            let block = blocks
+                .get_block_by_height(height)
+                .map_err(|e| WitnessSetError::Storage(e.to_string()))?;
+            let mut batch = sled::Batch::default();
+            for witness in block.pow_witnesses {
+                batch.insert(key(witness).as_slice(), &height.to_le_bytes());
+            }
+            self.tree.apply_batch(batch)?;
+        }
+        self.tree.flush()?;
+        meta.insert(FORMAT, &[1])?;
+        meta.flush()?;
+        Ok(())
     }
 
     /// Claims a single witness.

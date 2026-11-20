@@ -35,8 +35,9 @@ free to produce.
 
 `crates/hyphen-neural/src/work.rs` supplies the one-way variant that a block may
 use. The seed fixes the *network*, a published threshold fixes the difficulty,
-and a solution is any `x` with `score(A(x)) < threshold`. Nothing derives such an
-`x`; the only way to obtain one is to run forward passes. The task commits to the
+and a solution is any `x` with `score(A(x)) < threshold`. The reference miner
+tests candidates with forward passes. A lower bound on the cost for other
+solvers remains open. The task commits to the
 exact descriptor through `program_hash`, so the threshold cannot be relaxed after
 publication. `hyphen_compute::NeuralWorkVerifier` is the node's default
 settlement verifier for this reason, and the inverse circuit is not eligible.

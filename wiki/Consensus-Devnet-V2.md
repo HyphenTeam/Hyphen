@@ -37,9 +37,11 @@ The state library contains atomic one-block commit/rollback, immutable branch
 body storage, persistent reorg journals and a real `Blockchain` reorg backend.
 The backend recomputes plan work, holds an exclusive transition lock, validates
 each candidate against its fork state, restores the old branch on failure and
-resumes a journal during database open. Automatic P2P competing-branch intake,
-fork-choice triggering and mempool/wallet/explorer/pool reconciliation are not
-implemented, so complete live reorg handling remains a release blocker.
+resumes a journal during database open. The node uses this backend to adopt
+bounded, strictly heavier P2P branches. A local contract-devnet run exercised
+detached transaction admission, canonical transaction lookup, wallet rescan and
+pool reward and payout recovery. Cross-host recovery under a public network
+partition remains a release condition. [Acceptance records](Operations-Verification.md)
 
 ---
 
@@ -61,4 +63,4 @@ Devnet v2 继承历史 [devnet v1 profile](Consensus-Devnet-V1) 的数值参数�
 
 精确 network magic、参数哈希和创世哈希仅以 `test-vectors/chain-identity-v6.json` 为规范依据。授权格式仍为版本 1，但二进制编码已切换到 schema 驱动的紧凑档（见 README 序列化一节），这正是本次身份下创世哈希发生变化、且 `chain-identity-v5.json` 转为历史记录的原因。
 
-状态库包含原子单区块提交/回滚、不可变分支区块体存储、持久化 reorg journal 和真实的 `Blockchain` reorg 后端。后端重算计划工作量，持有独占状态转换锁，在分叉状态上验证每个候选区块，失败时恢复旧分支，并在数据库打开期间恢复 journal。自动 P2P 竞争分支接入、fork-choice 触发以及 mempool/wallet/explorer/pool 对账尚未实现，因此完整实时 reorg 处理仍是发布阻断项。
+状态库包含原子单区块提交和回滚、不可变分支区块体存储、持久化 reorg journal 和 `Blockchain` reorg 后端。后端重算计划工作量，在独占状态转换锁内验证每个候选块，失败时恢复旧分支，重开数据库时恢复 journal。节点通过该后端接入有界、累计工作量严格更高的 P2P 分支。合约开发网已在单机验证原交易重新准入、规范链交易查询、钱包重扫和矿池奖励与付款恢复，公网多机分区恢复仍待验收。[验收记录](Operations-Verification.md)

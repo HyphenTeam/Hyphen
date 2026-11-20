@@ -5,13 +5,13 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
 
+use hyphen_crypto::Hash256;
 use hyphen_crypto::clsag;
 use hyphen_crypto::pedersen::{Commitment, PedersenGens};
 use hyphen_crypto::stealth::{
-    self, compute_view_tag, derive_commitment_blinding, derive_consensus_one_time_key,
-    encrypt_amount, StealthAddress,
+    self, StealthAddress, compute_view_tag, derive_commitment_blinding,
+    derive_consensus_one_time_key, encrypt_amount,
 };
-use hyphen_crypto::Hash256;
 use hyphen_proof::{prove_multiple_with_rng, range_proof::AggregatedRangeProof};
 
 use crate::note::OwnedNote;
@@ -24,6 +24,8 @@ pub enum BuilderError {
     NoInputs,
     #[error("no outputs")]
     NoOutputs,
+    #[error("transaction amount total exceeds u64")]
+    AmountOverflow,
     #[error("input/output value mismatch (inputs {inputs}, outputs {outputs}, fee {fee})")]
     ValueMismatch { inputs: u64, outputs: u64, fee: u64 },
     #[error("ring size mismatch on input {0}")]
@@ -106,9 +108,21 @@ impl TransactionBuilder {
             return Err(BuilderError::NoOutputs);
         }
 
-        let total_in: u64 = self.inputs.iter().map(|i| i.owned.value).sum();
-        let total_out: u64 = self.outputs.iter().map(|o| o.value).sum();
-        if total_in != total_out + self.fee {
+        let total_in = self
+            .inputs
+            .iter()
+            .try_fold(0u64, |sum, i| sum.checked_add(i.owned.value))
+            .ok_or(BuilderError::AmountOverflow)?;
+        let total_out = self
+            .outputs
+            .iter()
+            .try_fold(0u64, |sum, o| sum.checked_add(o.value))
+            .ok_or(BuilderError::AmountOverflow)?;
+        if total_in
+            != total_out
+                .checked_add(self.fee)
+                .ok_or(BuilderError::AmountOverflow)?
+        {
             return Err(BuilderError::ValueMismatch {
                 inputs: total_in,
                 outputs: total_out,
@@ -206,7 +220,7 @@ impl TransactionBuilder {
 
             let ki = nullifier::compute_nullifier(&spend_sk, &real_pk);
 
-            // ── TERA: compute temporal nonce and causal binding ──
+            // TERA: compute temporal nonce and causal binding
             let temporal_nonce = *hyphen_crypto::hash::hash_to_scalar(
                 b"TERA_nonce",
                 &[spend_sk.as_bytes().as_slice(), &self.epoch_context].concat(),

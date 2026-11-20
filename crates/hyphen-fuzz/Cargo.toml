@@ -2,7 +2,7 @@
 name = "hyphen-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2021"
+edition = "2024"
 authors = ["blueokanna <blueokanna@gmail.com>", "HyphenTeam"]
 license-file = "LICENSE"
 
@@ -10,9 +10,9 @@ license-file = "LICENSE"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
-prost = "0.14.4"
-rustbinary = { version = "0.1.8", features = ["derive"] }
+libfuzzer-sys = "0.4.13"
+prost = "0.14.6"
+rustbinary = { version = "0.1.10", features = ["derive"] }
 hyphen-network = { path = "../hyphen-network" }
 hyphen-rpc = { path = "../hyphen-rpc" }
 hyphen-tx = { path = "../hyphen-tx" }

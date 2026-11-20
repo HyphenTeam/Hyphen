@@ -14,7 +14,7 @@
 
 use std::vec::Vec;
 
-use crate::challenge::{ChallengeDescriptor, Verification, DOMAIN_SOLVER};
+use crate::challenge::{ChallengeDescriptor, DOMAIN_SOLVER, Verification};
 use crate::error::NeuralError;
 use crate::fixed::{self, ONE};
 use crate::linalg;

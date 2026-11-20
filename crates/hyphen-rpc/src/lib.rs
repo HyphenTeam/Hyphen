@@ -9,6 +9,7 @@ pub(crate) fn wire_config(max_bytes: usize) -> rustbinary::CompactConfig {
         .with_compact_format()
 }
 
+pub mod admission;
 pub mod handler;
 pub mod messages;
 pub mod server;

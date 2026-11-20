@@ -19,6 +19,9 @@ evidence the node validates locally, independent of chain state — from
 | Transaction payload decodes as none of the four transaction families and then fails `Transaction::deserialise_limited` | node gossip path | Every codec had its turn; the bytes are malformed for this chain. |
 | Sync response violates its structural budget | `SyncResponse::validate` | Bounded counts and sizes, checked before use. |
 | Sync block does not decode | `Block::deserialise_limited` | Same as gossip. |
+| Sync range exceeds the requested count or reports an unexpected block height | `PeerSync` and `validate_batch` | The outstanding request identifies the peer, starting height and maximum count. |
+
+For signed gossip, the node attributes a fault to the message author. For a sync response, it attributes the fault to the responding peer on the matching request.
 
 ## Contextual rejections (not counted)
 

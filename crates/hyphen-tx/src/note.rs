@@ -1,6 +1,6 @@
 use curve25519_dalek::scalar::Scalar;
-use hyphen_crypto::pedersen::Commitment;
 use hyphen_crypto::Hash256;
+use hyphen_crypto::pedersen::Commitment;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]

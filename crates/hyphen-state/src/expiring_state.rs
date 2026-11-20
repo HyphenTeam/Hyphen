@@ -382,6 +382,10 @@ pub struct ReferenceExpiringState {
 }
 
 impl ReferenceExpiringState {
+    pub(crate) fn chain_id(&self) -> Hash256 {
+        self.chain_id
+    }
+
     pub fn new(chain_id: Hash256, availability_root: Hash256) -> Self {
         Self {
             chain_id,

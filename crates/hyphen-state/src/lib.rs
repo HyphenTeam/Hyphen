@@ -27,8 +27,8 @@ pub mod wes_state;
 pub mod witness_set;
 
 pub use atomic::{
-    commit_block_update, consensus_state_root, revert_block_update, AtomicBlockUpdate,
-    AtomicStateError, AtomicStateStores, IndexedOutput,
+    AtomicBlockUpdate, AtomicStateError, AtomicStateStores, IndexedOutput, commit_block_update,
+    consensus_state_root, revert_block_update,
 };
 pub use branch_archive::{BranchArchiveError, BranchBlockArchive};
 pub use branch_store::{
@@ -37,31 +37,31 @@ pub use branch_store::{
 pub use chain_state::ChainState;
 pub use commitment_tree::PersistentCommitmentTree;
 pub use compress::CompressedTree;
-pub use compute_state::{ComputeStateStore, COMPUTE_STATE_KEY};
+pub use compute_state::{COMPUTE_STATE_KEY, ComputeStateStore};
 pub use expiring_state::{
-    verify_consume_witness, verify_lifecycle_receipt, verify_restore_witness, AuthorizationAction,
-    AuthorizationRequest, ConsumeWitness, LifecycleEvent, LifecycleReceipt, LifecycleTransition,
-    ReferenceExpiringState, RestoreOutcome, RestorePolicy, RestoreWitness, StateClass, StateRecord,
-    StateRoots, StateStatus, WesError,
+    AuthorizationAction, AuthorizationRequest, ConsumeWitness, LifecycleEvent, LifecycleReceipt,
+    LifecycleTransition, ReferenceExpiringState, RestoreOutcome, RestorePolicy, RestoreWitness,
+    StateClass, StateRecord, StateRoots, StateStatus, WesError, verify_consume_witness,
+    verify_lifecycle_receipt, verify_restore_witness,
 };
 pub use nullifier_set::NullifierSet;
 pub use persistent_smt::{
-    verify_sparse_merkle_proof, PersistentSmtError, PersistentSparseMerkleTree, SmtMutation,
-    SparseMerkleProof,
+    PersistentSmtError, PersistentSparseMerkleTree, SmtMutation, SparseMerkleProof,
+    verify_sparse_merkle_proof,
 };
 pub use proof_store::{
-    blob_hash, describe_blob, verify_blob_chunk_proof, verify_blob_metadata,
-    AuthenticatedBlobStore, BlobChunkProof, BlobMetadata, ProofStoreError, MAX_BLOB_CHUNKS,
-    MAX_BLOB_CHUNK_SIZE, MAX_PROOF_BLOB_SIZE, MIN_BLOB_CHUNK_SIZE,
+    AuthenticatedBlobStore, BlobChunkProof, BlobMetadata, MAX_BLOB_CHUNK_SIZE, MAX_BLOB_CHUNKS,
+    MAX_PROOF_BLOB_SIZE, MIN_BLOB_CHUNK_SIZE, ProofStoreError, blob_hash, describe_blob,
+    verify_blob_chunk_proof, verify_blob_metadata,
 };
 pub use reorg_journal::{
-    ReorgBackend, ReorgCoordinator, ReorgCoordinatorError, ReorgJournal, ReorgMode, ReorgOutcome,
-    MAX_REJECTION_REASON_BYTES, MAX_REORG_PATH_BLOCKS,
+    MAX_REJECTION_REASON_BYTES, MAX_REORG_PATH_BLOCKS, ReorgBackend, ReorgCoordinator,
+    ReorgCoordinatorError, ReorgJournal, ReorgMode, ReorgOutcome,
 };
 pub use store::BlockStore;
-pub use vm_state::{VmStateStore, VM_STATE_KEY};
+pub use vm_state::{VM_STATE_KEY, VmStateStore};
 pub use wes_state::{
-    owner_policy as wes_owner_policy, SignedStateCreate, WesStateStore, WesTransaction,
-    WesTransactionError, WES_STATE_KEY,
+    SignedStateCreate, WES_STATE_KEY, WesStateStore, WesTransaction, WesTransactionError,
+    owner_policy as wes_owner_policy,
 };
 pub use witness_set::{WitnessSet, WitnessSetError};

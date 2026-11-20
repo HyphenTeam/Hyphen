@@ -14,6 +14,8 @@ const G: RistrettoPoint = RISTRETTO_BASEPOINT_POINT;
 pub enum StealthError {
     #[error("point decompression failed")]
     DecompressionFailed,
+    #[error("recipient key must be a nonidentity point")]
+    IdentityKey,
 }
 
 #[derive(Clone, Serialize, Deserialize, Zeroize, rustbinary::CompactBinary)]
@@ -134,6 +136,9 @@ fn derive_one_time_key_with_scalar(
 
     let big_a = decompress(&addr.view_public)?;
     let big_b = decompress(&addr.spend_public)?;
+    if big_a == RistrettoPoint::default() || big_b == RistrettoPoint::default() {
+        return Err(StealthError::IdentityKey);
+    }
 
     // ss = Hs("Hyphen_ECDH" || r*A || idx)
     let r_a = r * big_a;

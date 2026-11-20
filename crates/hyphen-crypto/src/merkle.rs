@@ -1,4 +1,4 @@
-use crate::hash::{blake3_hash_many, Hash256};
+use crate::hash::{Hash256, blake3_hash_many};
 use serde::{Deserialize, Serialize};
 
 pub const MERKLE_DEPTH: usize = 32;

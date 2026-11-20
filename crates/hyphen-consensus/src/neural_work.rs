@@ -24,8 +24,8 @@
 //! number of forward passes per block tracks [`WORK_TARGET_SECS`]. The expected
 //! attempts for threshold `t` are `2^64 / t`, so keeping the block rate constant
 //! requires `t` to stay proportional to `elapsed / target`. The adjustment is
-//! integer-only, floored, and clamped to a factor of four per window so a single
-//! timestamp outlier cannot swing the chain.
+//! integer-only and floored. After the first full window, each block scales
+//! its parent's threshold by at most a factor of four.
 //!
 //! Every rule here is a pure function of public data: no clocks, no floating
 //! point, no host-dependent rounding.
@@ -87,7 +87,7 @@ pub const NEURAL_WORK_SPEC: MlpSpec = hyphen_neural::PROFILE_SPEC;
 /// because the operator's hashrate is unknown when the chain is created. It only
 /// carries the chain until the first full window exists; from there
 /// [`expected_threshold`] walks the threshold toward the configured block time
-/// at no more than a factor of [`WORK_MAX_ADJUST`] per window.
+/// at no more than a factor of [`WORK_MAX_ADJUST`] per block.
 pub const NEURAL_WORK_INITIAL_THRESHOLD: u64 = 1 << 56;
 
 /// Parameters of the compiled-in neural-work profile.
@@ -244,10 +244,8 @@ pub fn expected_threshold(history: &[BlockHeader], params: &NeuralWorkParams) ->
 /// `threshold`.
 ///
 /// The neural profile stores a *threshold* in the header's `difficulty` field,
-/// and a smaller threshold is harder. Fork choice must therefore rank blocks by
-/// the expected number of attempts `2^64 / threshold`. Summing the raw field, as
-/// the witness-count profiles do, would rank the *easiest* branch as the
-/// heaviest and hand the chain to whoever refuses to work.
+/// and a smaller threshold is harder. The v1 rule uses the integer quotient
+/// `(2^64 - 1) / threshold`. At the initial threshold `2^56` it contributes 255.
 ///
 /// A zero threshold is unreachable — [`NeuralWorkParams::validate`] and the
 /// descriptor reject it — and saturates to the maximum weight so a malformed

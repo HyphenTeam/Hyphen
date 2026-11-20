@@ -1,40 +1,4 @@
-//! DNS seed resolution for boot-node multiaddrs.
-//!
-//! libp2p's DNS transport is deliberately absent from this workspace's feature
-//! set: `.github/workflows/ci.yml` fails the build if any `hickory-*` crate
-//! reaches the runtime graph. The consequence is easy to miss — an operator
-//! writing the obvious
-//!
-//! ```text
-//! --boot-nodes /dns4/seed.example.org/tcp/48334/p2p/12D3Koo…
-//! ```
-//!
-//! gets a multiaddr that parses, is stored in Kademlia, and can never be
-//! dialled, with no error anywhere. This module closes that gap without
-//! re-introducing the dependency the CI guard exists to keep out: the host is
-//! resolved with [`recurse_x`], a DNSSEC-validating resolver whose own
-//! dependency graph is the HyphenTeam crates (`nextjson`, `tzcraft`, and
-//! `courierust` for encrypted transports), and each address is rebuilt into the
-//! `/ip4` or `/ip6` multiaddr that carries the same `/tcp/<port>[/p2p/<peer>]`
-//! tail.
-//!
-//! Resolution is *fail-closed*: a boot node whose host cannot be resolved is an
-//! error naming the host, never a silently dropped peer. A node that starts
-//! with fewer seeds than the operator listed is a node the operator did not ask
-//! for.
-//!
-//! ## Why a recursive resolver and not the OS stub
-//!
-//! The seed name decides which peers a node trusts to introduce it to the
-//! network, and it is resolved once per boot. Asking the local stub resolver
-//! means that answer is only as trustworthy as whatever recursive resolver the
-//! host happens to use — plaintext, unvalidated, and shared with every other
-//! application on the machine. `recurse-x` walks the delegation tree itself and
-//! validates DNSSEC, so the seed answer is authenticated end to end.
-//! Operators who must route DNS through their own infrastructure can name
-//! upstreams instead (see [`SeedResolver::with_upstreams`]); plain, DoT and DoH
-//! specs are accepted in `recurse-x`'s own format, e.g.
-//! `tls://1.1.1.1:853#cloudflare-dns.com`.
+//! Resolves configured DNS seeds to IP addresses while preserving their pinned peer IDs.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -198,18 +162,11 @@ impl SeedResolver {
             .filter_map(record_address)
             .collect::<Vec<_>>();
 
-        if addresses.is_empty() {
-            if !matches!(resolution.rcode, Rcode::NOERROR) {
-                return Err(SeedError::NoAddress {
-                    host: host.to_string(),
-                    family: family.label(),
-                    rcode: resolution.rcode.to_string(),
-                });
-            }
+        if !matches!(resolution.rcode, Rcode::NOERROR) {
             return Err(SeedError::NoAddress {
                 host: host.to_string(),
                 family: family.label(),
-                rcode: "no records".into(),
+                rcode: resolution.rcode.to_string(),
             });
         }
         Ok(addresses)
@@ -340,8 +297,9 @@ mod tests {
 
     #[test]
     fn dns6_seed_keeps_the_peer_id_tail() {
-        let address =
-            addr("/dns6/seed.example.org/tcp/48334/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN");
+        let address = addr(
+            "/dns6/seed.example.org/tcp/48334/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN",
+        );
         let seed = split_dns_seed(&address).unwrap();
         assert_eq!(seed.family, AddressFamily::V6);
         assert!(matches!(seed.tail[0], Protocol::Tcp(48334)));
@@ -413,9 +371,11 @@ mod tests {
             .resolve(&[addr("/dns4/one.one.one.one/tcp/443")])
             .expect("one.one.one.one must resolve");
         assert!(!resolved.is_empty());
-        assert!(resolved
-            .iter()
-            .all(|address| address.to_string().starts_with("/ip4/")));
+        assert!(
+            resolved
+                .iter()
+                .all(|address| address.to_string().starts_with("/ip4/"))
+        );
         resolver.shutdown();
     }
 }

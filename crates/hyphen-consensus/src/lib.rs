@@ -26,37 +26,38 @@ pub use availability::{
 };
 pub use chain::Blockchain;
 pub use fair_finality::{
-    verify_phase_certificate, verify_proposal, verify_timeout_certificate, DualHandoffCertificate,
-    FairFinalityError, FairFinalityProposal, FairFinalityValue, FinalityPhase, HandoffRole,
-    HandoffStatement, HandoffVote, HonestFinalityVoter, HonestHandoffVoter, PhaseCertificate,
-    PhaseVote, PhaseVoteStatement, TimeoutCertificate, TimeoutStatement, TimeoutVote,
+    DualHandoffCertificate, FairFinalityError, FairFinalityProposal, FairFinalityValue,
+    FinalityPhase, HandoffRole, HandoffStatement, HandoffVote, HonestFinalityVoter,
+    HonestHandoffVoter, PhaseCertificate, PhaseVote, PhaseVoteStatement, TimeoutCertificate,
+    TimeoutStatement, TimeoutVote, verify_phase_certificate, verify_proposal,
+    verify_timeout_certificate,
 };
 pub use fairness_receipts::{
     HonestReceiptVoter, InclusionReceiptError, InclusionReceiptStatement, InclusionReceiptVote,
-    InclusionReceiptVoteGossip, QuorumInclusionReceipt, QuorumInclusionReceiptGossip,
-    ReceiptObligationSet, MAX_RECEIPT_VOTES,
+    InclusionReceiptVoteGossip, MAX_RECEIPT_VOTES, QuorumInclusionReceipt,
+    QuorumInclusionReceiptGossip, ReceiptObligationSet,
 };
 pub use fast_ordering::{
-    committee_capture_probability, Committee, CommitteeSeat, FastOrderingError, HonestVoter,
-    OrderingCertificate, OrderingStatement, OrderingVote, WorkContribution,
+    Committee, CommitteeSeat, FastOrderingError, HonestVoter, OrderingCertificate,
+    OrderingStatement, OrderingVote, WorkContribution, committee_capture_probability,
 };
 pub use fusion::{
-    fuse_certified_frontier, ConflictKey, FrontierTip, FusionBlock, FusionError, FusionInput,
-    FusionResult, FusionTransaction, TransactionReceipt as FusionTransactionReceipt,
+    ConflictKey, FrontierTip, FusionBlock, FusionError, FusionInput, FusionResult,
+    FusionTransaction, TransactionReceipt as FusionTransactionReceipt, fuse_certified_frontier,
 };
 pub use hyphen_core::genesis::{build_genesis_block, genesis_epoch_seed};
 pub use neural_work::{
-    block_weight, expected_threshold, median_time_past, retarget_threshold, work_commitment,
-    work_seed, NeuralWorkError, NeuralWorkParams, WORK_MAX_ADJUST, WORK_MEDIAN_WINDOW,
-    WORK_RETARGET_WINDOW, WORK_TARGET_SECS,
+    NeuralWorkError, NeuralWorkParams, WORK_MAX_ADJUST, WORK_MEDIAN_WINDOW, WORK_RETARGET_WINDOW,
+    WORK_TARGET_SECS, block_weight, expected_threshold, median_time_past, retarget_threshold,
+    work_commitment, work_seed,
 };
 pub use private_fair_ordering::{
-    build_visible_fair_order, sign_reception, visible_metadata_root, FairBatch,
-    FairOrderingContext, FairOrderingError, ReceptionObservation, ReceptionStatement,
-    VisibleFairOrder, VisibleMetadata,
+    FairBatch, FairOrderingContext, FairOrderingError, ReceptionObservation, ReceptionStatement,
+    VisibleFairOrder, VisibleMetadata, build_visible_fair_order, sign_reception,
+    visible_metadata_root,
 };
 pub use replay::{
-    export_archive, replay_archive, verify_archive_envelopes, ChainArchive, ReplayReport,
-    CHAIN_ARCHIVE_VERSION,
+    CHAIN_ARCHIVE_VERSION, ChainArchive, ReplayReport, export_archive, replay_archive,
+    verify_archive_envelopes,
 };
 pub use validator::BlockValidator;

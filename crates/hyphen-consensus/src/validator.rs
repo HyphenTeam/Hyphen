@@ -5,8 +5,8 @@ use hyphen_core::error::CoreError;
 use hyphen_core::{
     FEATURE_CANONICAL_TX_ORDER, FEATURE_TERA, FEATURE_UNCLES, FEATURE_VRE, FROZEN_BLOCK_VERSION,
 };
-use hyphen_crypto::clsag;
 use hyphen_crypto::Hash256;
+use hyphen_crypto::clsag;
 use hyphen_tx::transaction::Transaction;
 use thiserror::Error;
 
@@ -52,6 +52,8 @@ pub enum ValidationError {
     Decompression,
     #[error("no inputs")]
     NoInputs,
+    #[error("each payment input must have exactly one CLSAG signature")]
+    SignatureCountMismatch,
     #[error("too many uncles")]
     TooManyUncles,
     #[error("uncle too old")]
@@ -60,17 +62,14 @@ pub enum ValidationError {
     UncleHeightInvalid,
     #[error("duplicate uncle")]
     DuplicateUncle,
-    // ── TERA errors ──
     #[error("TERA epoch_context does not match any recent epoch")]
     TeraEpochMismatch,
     #[error("TERA temporal_nonce reused for same key_image in this epoch")]
     TeraTemporalNonceReused,
-    // ── MD-VRE errors ──
     #[error("ring output-age diversity too low: {bands} age bands < min {min_bands}")]
     RingAgeDiversityLow { bands: usize, min_bands: usize },
     #[error("ring global-index span too narrow: {span_bps} bps < min {min_bps} bps")]
     RingIndexSpanTooNarrow { span_bps: u64, min_bps: u64 },
-    // ── Coinbase errors ──
     #[error("coinbase reward mismatch: expected {expected}, got {got}")]
     CoinbaseRewardMismatch { expected: u64, got: u64 },
     #[error("coinbase transaction must have no inputs")]
@@ -135,6 +134,19 @@ impl<'a> BlockValidator<'a> {
         let authorization = block
             .decode_authorization()
             .map_err(ValidationError::InvalidBlockAuthorization)?;
+        if self
+            .cfg
+            .feature_enabled(hyphen_core::config::FEATURE_ASSET_RULES_V1)
+            && block.header.extra_nonce
+                != hyphen_core::authorization::reward_commitment(
+                    &authorization.reward_view_public,
+                    &authorization.reward_spend_public,
+                )
+        {
+            return Err(ValidationError::InvalidBlockAuthorization(
+                "reward recipient differs from header commitment".into(),
+            ));
+        }
         authorization
             .verify(
                 &block.header,
@@ -180,10 +192,23 @@ impl<'a> BlockValidator<'a> {
                 return Err(ValidationError::UncleTooOld);
             }
 
-            if let Some(parent) = get_header_at_height(uncle.height.saturating_sub(1)) {
-                if uncle.prev_hash != parent.hash() {
-                    return Err(ValidationError::UncleHeightInvalid);
-                }
+            let canonical_header = |height| {
+                get_header_at_height(height).ok_or_else(|| {
+                    CoreError::Storage(format!("missing canonical header at height {height}"))
+                })
+            };
+            let parent = canonical_header(uncle.height - 1)?;
+            if uncle.prev_hash != parent.hash() || parent.height != uncle.height - 1 {
+                return Err(ValidationError::UncleHeightInvalid);
+            }
+            let sibling = canonical_header(uncle.height)?;
+            if sibling.height != uncle.height || sibling.prev_hash != parent.hash() {
+                return Err(
+                    CoreError::Storage("inconsistent canonical uncle ancestry".into()).into(),
+                );
+            }
+            if sibling.hash() == uncle_hash {
+                return Err(CoreError::UncleNotSibling.into());
             }
         }
 
@@ -253,6 +278,17 @@ impl<'a> BlockValidator<'a> {
         if tx.inputs.is_empty() {
             return Err(ValidationError::NoInputs);
         }
+        if tx.inputs.len() != tx.prunable.clsag_signatures.len() {
+            return Err(ValidationError::SignatureCountMismatch);
+        }
+        let mut images = std::collections::HashSet::with_capacity(tx.inputs.len());
+        if tx
+            .inputs
+            .iter()
+            .any(|input| !images.insert(input.key_image))
+        {
+            return Err(ValidationError::DuplicateNullifier);
+        }
 
         if !tx.check_balance() {
             return Err(ValidationError::BalanceFailed);
@@ -282,7 +318,7 @@ impl<'a> BlockValidator<'a> {
                 });
             }
 
-            // ── TERA: validate epoch_context ──
+            // TERA: validate epoch_context
             if self.cfg.feature_enabled(FEATURE_TERA)
                 && !valid_epoch_contexts.contains(&input.epoch_context)
             {
@@ -295,6 +331,11 @@ impl<'a> BlockValidator<'a> {
             let mut ring_indices = Vec::with_capacity(input.ring.len());
 
             for oref in &input.ring {
+                if oref.global_index >= total_outputs {
+                    return Err(ValidationError::Core(CoreError::Validation(
+                        "ring index outside the parent output set".into(),
+                    )));
+                }
                 let (pk, cm, height) = resolve_ring_member(oref.global_index)?;
                 ring_keys.push(pk);
                 ring_commits.push(cm);
@@ -303,17 +344,16 @@ impl<'a> BlockValidator<'a> {
             }
 
             if vre_active {
-                // ── VRE-1 + VRE-2: height span and distinct fraction ──
+                // VRE-1 + VRE-2: height span and distinct fraction
                 self.validate_ring_entropy(&ring_heights, block_height)?;
 
-                // ── MD-VRE-3: output-age band diversity ──
+                // MD-VRE-3: output-age band diversity
                 self.validate_ring_age_diversity(&ring_heights, block_height)?;
 
-                // ── MD-VRE-4: global-index span ──
+                // MD-VRE-4: global-index span
                 self.validate_ring_index_span(&ring_indices, total_outputs)?;
             }
 
-            // ── Compute per-input VRE quality score ──
             if self.cfg.feature_enabled(FEATURE_VRE) {
                 quality_acc += self.ring_quality_score(
                     &ring_heights,
@@ -584,6 +624,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checks_input_signature_count_before_ring_resolution() {
+        let (_, _, keys) = hyphen_crypto::stealth::generate_keys();
+        let mut tx = hyphen_tx::builder::build_coinbase_tx(
+            keys.view_public,
+            keys.spend_public,
+            1,
+            1,
+            Hash256::ZERO,
+        )
+        .unwrap();
+        tx.inputs.push(hyphen_tx::transaction::TxInput {
+            ring: vec![],
+            key_image: [0; 32],
+            pseudo_output: hyphen_crypto::pedersen::Commitment([0; 32]),
+            epoch_context: [0; 32],
+            temporal_nonce: [0; 32],
+            causal_binding: [0; 32],
+        });
+        let cfg = ChainConfig::devnet();
+        let validator = BlockValidator::new(&cfg);
+        for count in [0, 2] {
+            tx.prunable.clsag_signatures.resize(
+                count,
+                clsag::ClsagSignature {
+                    c0: [0; 32],
+                    s: vec![],
+                    key_image: [0; 32],
+                    commitment_key_image: [0; 32],
+                },
+            );
+            assert!(matches!(
+                validator.validate_transaction(&tx, |_| unreachable!(), &[], 0, 1),
+                Err(ValidationError::SignatureCountMismatch)
+            ));
+        }
+        tx.inputs.push(tx.inputs[0].clone());
+        assert!(matches!(
+            validator.validate_transaction(&tx, |_| unreachable!(), &[], 0, 1),
+            Err(ValidationError::DuplicateNullifier)
+        ));
+    }
+
+    #[test]
     fn anonymity_set_bias_experiment_penalizes_clustered_decoys() {
         let cfg = ChainConfig::testnet();
         let validator = BlockValidator::new(&cfg);
@@ -612,6 +695,37 @@ mod tests {
             stratified > clustered,
             "stratified decoys should outscore a recent/index-clustered anonymity set: {stratified} <= {clustered}"
         );
+    }
+
+    #[test]
+    fn uncle_requires_a_distinct_sibling_and_available_ancestry() {
+        let cfg = ChainConfig::testnet();
+        let validator = BlockValidator::new(&cfg);
+        let mut block = hyphen_core::build_genesis_block(&cfg);
+        let genesis = block.header.clone();
+        let mut canonical = genesis.clone();
+        canonical.height = 1;
+        canonical.prev_hash = genesis.hash();
+        block.header.height = 2;
+        block.uncle_headers.push(canonical.clone());
+        let history = [genesis, canonical];
+        let read = |height| history.get(height as usize).cloned();
+        assert!(matches!(
+            validator.validate_uncles(&block, &read),
+            Err(ValidationError::Core(CoreError::UncleNotSibling))
+        ));
+        block.uncle_headers[0].timestamp += 1;
+        assert!(validator.validate_uncles(&block, &read).is_ok());
+        for missing in [0, 1] {
+            assert!(matches!(
+                validator.validate_uncles(&block, &|height| if height == missing {
+                    None
+                } else {
+                    read(height)
+                }),
+                Err(ValidationError::Core(CoreError::Storage(_)))
+            ));
+        }
     }
 
     #[test]

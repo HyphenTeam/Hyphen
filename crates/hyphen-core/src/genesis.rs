@@ -6,11 +6,11 @@
 //! parameters hash and the genesis hash from `ChainConfig` rather than pinning
 //! literals that silently go stale when the protocol changes.
 
-use hyphen_crypto::{blake3_hash_many, Hash256};
+use hyphen_crypto::{Hash256, blake3_hash_many};
 
+use crate::FROZEN_BLOCK_VERSION;
 use crate::block::{Block, BlockHeader};
 use crate::config::{ChainConfig, GENESIS_TIMESTAMP_MS};
-use crate::FROZEN_BLOCK_VERSION;
 
 /// Epoch seed of the first epoch, bound to the consensus parameters.
 pub fn genesis_epoch_seed(cfg: &ChainConfig) -> Hash256 {

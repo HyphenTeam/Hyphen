@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use hyphen_core::{Block, ChainConfig};
 use hyphen_crypto::Hash256;
 
-use crate::{build_genesis_block, BlockValidator, Blockchain};
+use crate::{BlockValidator, Blockchain, build_genesis_block};
 
 pub const CHAIN_ARCHIVE_VERSION: u16 = 1;
 
@@ -212,11 +212,18 @@ mod tests {
         let bytes = std::fs::read(path).expect("read published chain identity vectors");
         let vectors: Vec<ChainIdentityVector> =
             serde_json::from_slice(&bytes).expect("parse published chain identity vectors");
-        assert_eq!(vectors.len(), 3);
+        assert_eq!(vectors.len(), 5);
+        let mut seen = std::collections::HashSet::new();
 
         for vector in vectors {
+            assert!(
+                seen.insert(vector.network_magic.clone()),
+                "duplicate identity"
+            );
             let cfg = match vector.profile.as_str() {
                 "devnet-v2" => ChainConfig::devnet(),
+                "neural-devnet-v1" => ChainConfig::neural_devnet(),
+                "contract-devnet-v1" => ChainConfig::contract_devnet(),
                 "testnet-research" => ChainConfig::testnet(),
                 "mainnet-research" => ChainConfig::mainnet(),
                 other => panic!("unknown chain identity vector profile {other}"),
@@ -247,9 +254,11 @@ mod tests {
             genesis_hash: build_genesis_block(&testnet).hash(),
             blocks: Vec::new(),
         };
-        assert!(verify_archive_envelopes(&mainnet, &archive, u64::MAX)
-            .unwrap_err()
-            .contains("identity"));
+        assert!(
+            verify_archive_envelopes(&mainnet, &archive, u64::MAX)
+                .unwrap_err()
+                .contains("identity")
+        );
     }
 
     #[test]
@@ -265,9 +274,11 @@ mod tests {
             genesis_hash: genesis.hash(),
             blocks: vec![child],
         };
-        assert!(verify_archive_envelopes(&cfg, &archive, u64::MAX)
-            .unwrap_err()
-            .contains("invalid block height"));
+        assert!(
+            verify_archive_envelopes(&cfg, &archive, u64::MAX)
+                .unwrap_err()
+                .contains("invalid block height")
+        );
     }
 
     #[test]
@@ -283,9 +294,11 @@ mod tests {
             genesis_hash: genesis.hash(),
             blocks: vec![child],
         };
-        assert!(verify_archive_envelopes(&cfg, &archive, u64::MAX)
-            .unwrap_err()
-            .contains("tx root mismatch"));
+        assert!(
+            verify_archive_envelopes(&cfg, &archive, u64::MAX)
+                .unwrap_err()
+                .contains("tx root mismatch")
+        );
     }
 
     #[test]
@@ -302,8 +315,10 @@ mod tests {
             genesis_hash: genesis.hash(),
             blocks: vec![child],
         };
-        assert!(verify_archive_envelopes(&cfg, &archive, u64::MAX)
-            .unwrap_err()
-            .contains("authorization"));
+        assert!(
+            verify_archive_envelopes(&cfg, &archive, u64::MAX)
+                .unwrap_err()
+                .contains("authorization")
+        );
     }
 }

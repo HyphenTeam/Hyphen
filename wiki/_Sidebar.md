@@ -16,6 +16,8 @@
 
 ### Operations
 
+- [Peer networking](Operations-Peer-Network) · [中文](Operations-Peer-Network-CN)
+- [Build and verification](Operations-Verification)
 - [Deploy on Linux](Operations-Deploy-Linux)
 - [Small Host (4 vCPU / 2 GiB)](Operations-Small-Host)
 - [Mining Acceleration](Operations-Mining-Acceleration)
@@ -29,10 +31,11 @@
 - [Neural-Cryptography](Research-Neural-Cryptography)
 - [Non-Custodial Pool](Research-Non-Custodial-Pool)
 - [Private Fair Ordering](Research-Private-Visible-Fair-Ordering)
-- [H-WES](Research-H-WES-Theorem-And-Object-Model)
+- [H-WES](Research-H-WES-Theorem-and-Object-Model)
 - [H-SAC](Research-H-SAC-Leakage-Lower-Bound)
 
 ### Security
 
+- [Wallet and consensus asset review](Security-Asset-Review)
 - [Activation Gates](Security-Cryptographic-Activation-Gates)
 - [Peer Policy](Security-Peer-Policy)
