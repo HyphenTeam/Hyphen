@@ -219,12 +219,9 @@ impl SigningRequest {
             return Err(SignerError::InvalidRequest("invalid output count".into()));
         }
 
-        let expect_mainnet = match self.network.network_magic {
-            [0x48, 0x59, 0x50, 0x4e] => true,
-            [0x48, 0x59, 0x54, 0x53]
-            | [0x48, 0x59, 0x44, 0x56]
-            | [0x48, 0x59, 0x4e, 0x4e]
-            | [0x48, 0x59, 0x4e, 0x32] => false,
+        let expect_mainnet = match &self.network.network_magic {
+            b"HYPN" => true,
+            b"HYTS" | b"HYDV" | b"HYNN" | b"HYN2" | b"HYN3" => false,
             _ => return Err(SignerError::InvalidRequest("unknown network magic".into())),
         };
         let mut output_total = 0u64;
@@ -386,7 +383,9 @@ mod tests {
             &(real_blind - pseudo_blind),
         )
         .unwrap();
-        let address = HyphenAddress::new_mainnet([3u8; 32], [4u8; 32]).encode();
+        let (_, _, recipient) = hyphen_crypto::stealth::generate_keys();
+        let address =
+            HyphenAddress::new_mainnet(recipient.view_public, recipient.spend_public).encode();
         let request = SigningRequest::new(
             NetworkBinding {
                 network_magic: [0x48, 0x59, 0x50, 0x4e],
@@ -427,8 +426,9 @@ mod tests {
 
         // Devnet families are not mainnet, so a mainnet address must be rejected
         // and a devnet address must be accepted.
-        let devnet_address = HyphenAddress::new_testnet([3u8; 32], [4u8; 32]).encode();
-        for magic in [[0x48, 0x59, 0x44, 0x56], [0x48, 0x59, 0x4e, 0x4e]] {
+        let devnet_address =
+            HyphenAddress::new_testnet(recipient.view_public, recipient.spend_public).encode();
+        for magic in [*b"HYDV", *b"HYNN", *b"HYN2", *b"HYN3"] {
             let mut devnet = request.clone();
             devnet.network.network_magic = magic;
             devnet.outputs[0].address = devnet_address.clone();

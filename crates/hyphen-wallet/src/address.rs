@@ -21,6 +21,8 @@ pub enum AddressError {
     ChecksumMismatch,
     #[error("unknown version byte 0x{0:02x}")]
     UnknownVersion(u8),
+    #[error("invalid recipient public key")]
+    InvalidPublicKey,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, rustbinary::CompactBinary)]
@@ -70,6 +72,10 @@ impl HyphenAddress {
 
     pub fn decode(s: &str) -> Result<Self, AddressError> {
         let body = s.strip_prefix(PREFIX).ok_or(AddressError::MissingPrefix)?;
+        // Base58 expands a 69-byte payload to at most 95 digits.
+        if body.len() > 95 {
+            return Err(AddressError::InvalidLength);
+        }
         let payload =
             hyphen_crypto::base58::decode(body).map_err(|_| AddressError::Base58Decode)?;
         if payload.len() != PAYLOAD_LEN {
@@ -87,6 +93,12 @@ impl HyphenAddress {
         if payload[65..69] != expected_cs {
             return Err(AddressError::ChecksumMismatch);
         }
+        hyphen_crypto::stealth::StealthAddress {
+            view_public: view,
+            spend_public: spend,
+        }
+        .recipient_points()
+        .map_err(|_| AddressError::InvalidPublicKey)?;
         Ok(Self {
             version,
             view_public: view,
@@ -120,7 +132,8 @@ mod tests {
 
     #[test]
     fn roundtrip_mainnet() {
-        let addr = HyphenAddress::new_mainnet([0xAA; 32], [0xBB; 32]);
+        let (_, _, keys) = hyphen_crypto::stealth::generate_keys();
+        let addr = HyphenAddress::new_mainnet(keys.view_public, keys.spend_public);
         let encoded = addr.encode();
         assert!(encoded.starts_with("hy1"));
         let decoded = HyphenAddress::decode(&encoded).unwrap();
@@ -130,12 +143,29 @@ mod tests {
 
     #[test]
     fn roundtrip_testnet() {
-        let addr = HyphenAddress::new_testnet([0x11; 32], [0x22; 32]);
+        let (_, _, keys) = hyphen_crypto::stealth::generate_keys();
+        let addr = HyphenAddress::new_testnet(keys.view_public, keys.spend_public);
         let encoded = addr.encode();
         assert!(encoded.starts_with("hy1"));
         let decoded = HyphenAddress::decode(&encoded).unwrap();
         assert_eq!(addr, decoded);
         assert!(decoded.is_testnet());
+    }
+
+    #[test]
+    fn reject_checksummed_invalid_payout_keys() {
+        let (_, _, valid) = hyphen_crypto::stealth::generate_keys();
+        for key in [[0; 32], [0xff; 32]] {
+            for addr in [
+                HyphenAddress::new_testnet(key, valid.spend_public),
+                HyphenAddress::new_testnet(valid.view_public, key),
+            ] {
+                assert!(matches!(
+                    HyphenAddress::decode(&addr.encode()),
+                    Err(AddressError::InvalidPublicKey)
+                ));
+            }
+        }
     }
 
     #[test]

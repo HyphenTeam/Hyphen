@@ -35,6 +35,18 @@ pub struct StealthAddress {
     pub spend_public: [u8; 32],
 }
 
+impl StealthAddress {
+    /// Decode both recipient keys and reject the identity before accepting a payout address.
+    pub fn recipient_points(&self) -> Result<(RistrettoPoint, RistrettoPoint), StealthError> {
+        let view = decompress(&self.view_public)?;
+        let spend = decompress(&self.spend_public)?;
+        if view == RistrettoPoint::default() || spend == RistrettoPoint::default() {
+            return Err(StealthError::IdentityKey);
+        }
+        Ok((view, spend))
+    }
+}
+
 impl std::fmt::Debug for StealthAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -134,11 +146,7 @@ fn derive_one_time_key_with_scalar(
 ) -> Result<(EphemeralKey, RistrettoPoint, Scalar), StealthError> {
     let big_r = r * G;
 
-    let big_a = decompress(&addr.view_public)?;
-    let big_b = decompress(&addr.spend_public)?;
-    if big_a == RistrettoPoint::default() || big_b == RistrettoPoint::default() {
-        return Err(StealthError::IdentityKey);
-    }
+    let (big_a, big_b) = addr.recipient_points()?;
 
     // ss = Hs("Hyphen_ECDH" || r*A || idx)
     let r_a = r * big_a;
