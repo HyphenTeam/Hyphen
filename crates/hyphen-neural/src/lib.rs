@@ -53,6 +53,9 @@ pub mod wire;
 pub mod work;
 
 #[cfg(feature = "std")]
+pub mod block_work;
+
+#[cfg(feature = "std")]
 mod linalg;
 
 #[cfg(feature = "std")]

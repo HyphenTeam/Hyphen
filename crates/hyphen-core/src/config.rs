@@ -36,6 +36,7 @@ pub const FEATURE_NEURAL_WORK: u32 = 1 << 8;
 pub const FEATURE_ASSET_RULES_V1: u32 = 1 << 9;
 pub const FEATURE_INLINE_COMPUTE: u32 = 1 << 10;
 pub const FEATURE_OFFLINE_CLAIMS: u32 = 1 << 11;
+pub const FEATURE_NEURAL_MEMORY_WORK: u32 = 1 << 12;
 pub const RESEARCH_CONSENSUS_FEATURES: u32 = FEATURE_UNCLES
     | FEATURE_TERA
     | FEATURE_VRE
@@ -213,6 +214,11 @@ impl ChainConfig {
             buf.extend_from_slice(b"neural-work/v1");
             buf.extend_from_slice(&self.neural_work_initial_threshold.to_le_bytes());
             buf.extend_from_slice(&self.neural_work_max_threshold.to_le_bytes());
+        }
+        if self.feature_enabled(FEATURE_NEURAL_MEMORY_WORK) {
+            buf.extend_from_slice(
+                b"neural-work/v2/nonce/mlp16-64-16/gate60/argon2id-19-m1024-t2-p1-out32",
+            );
         }
         *hyphen_crypto::blake3_hash(&buf).as_bytes()
     }
@@ -399,6 +405,23 @@ impl ChainConfig {
             neural_work_initial_threshold: 1 << 56,
             neural_work_max_threshold: 1 << 62,
             ..Self::devnet()
+        }
+    }
+
+    /// Unified development genesis for neural mining, payments and contracts.
+    pub fn neural_devnet_v2() -> Self {
+        Self {
+            network_name: "hyphen-neural-devnet-v2".into(),
+            network_magic: *b"HYN2",
+            consensus_features: FEATURE_NEURAL_WORK
+                | FEATURE_NEURAL_MEMORY_WORK
+                | FEATURE_WASM
+                | FEATURE_ASSET_RULES_V1
+                | FEATURE_USEFUL_WORK
+                | FEATURE_INLINE_COMPUTE
+                | FEATURE_OFFLINE_CLAIMS,
+            neural_work_initial_threshold: 1 << 60,
+            ..Self::neural_devnet()
         }
     }
 }

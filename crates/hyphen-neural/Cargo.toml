@@ -8,9 +8,10 @@ description = "Deterministic fixed-point neural challenge used by the Hyphen Ali
 
 [features]
 default = ["std"]
-std = ["dep:clap"]
+std = ["dep:clap", "dep:argon2"]
 
 [dependencies]
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc"], optional = true }
 clap = { workspace = true, optional = true }
 
 [[bin]]
