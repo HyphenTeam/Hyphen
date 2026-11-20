@@ -94,6 +94,7 @@ pub const NEURAL_WORK_INITIAL_THRESHOLD: u64 = 1 << 56;
 pub fn neural_work_params(cfg: &hyphen_core::ChainConfig) -> NeuralWorkParams {
     NeuralWorkParams {
         spec: NEURAL_WORK_SPEC,
+        memory_work: cfg.feature_enabled(hyphen_core::config::FEATURE_NEURAL_MEMORY_WORK),
         initial_threshold: cfg.neural_work_initial_threshold,
         max_threshold: cfg.neural_work_max_threshold,
     }
@@ -102,6 +103,8 @@ pub fn neural_work_params(cfg: &hyphen_core::ChainConfig) -> NeuralWorkParams {
 /// Work parameters of a chain profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NeuralWorkParams {
+    /// The nonce and Argon2id rule introduced at the v2 genesis.
+    pub memory_work: bool,
     /// Network shape. Every block of the profile uses the same shape.
     pub spec: MlpSpec,
     /// Threshold used until a full retarget window exists.
@@ -237,6 +240,30 @@ pub fn expected_threshold(history: &[BlockHeader], params: &NeuralWorkParams) ->
     let oldest = history[history.len() - 1 - window].timestamp;
     let elapsed = newest.saturating_sub(oldest);
     let current = history[history.len() - 1].difficulty;
+    if params.memory_work {
+        let intervals = &history[history.len() - window..];
+        if intervals[0].height <= 1 {
+            return params.initial_threshold;
+        }
+        // Estimate work per millisecond over this exact span. Each interval
+        // ends at the header whose threshold paid for it. Q32 fractional work
+        // keeps the estimate accurate even at the easiest permitted threshold.
+        const SCALE: u128 = 1 << 96;
+        let work: u128 = intervals
+            .iter()
+            .map(|h| SCALE / u128::from(h.difficulty.max(1)))
+            .sum();
+        let span = elapsed.clamp(1, WORK_TARGET_MS * WORK_RETARGET_WINDOW * WORK_MAX_ADJUST);
+        let estimated = SCALE * u128::from(span) / (work * u128::from(WORK_TARGET_MS));
+        return estimated.clamp(
+            u128::from(current.div_ceil(WORK_MAX_ADJUST).max(1)),
+            u128::from(
+                current
+                    .saturating_mul(WORK_MAX_ADJUST)
+                    .min(params.max_threshold),
+            ),
+        ) as u64;
+    }
     retarget_threshold(current, elapsed).min(params.max_threshold)
 }
 
@@ -287,7 +314,11 @@ pub fn verify(
             got: header.difficulty,
         });
     }
-    let input_dim = params.spec.input_dim as usize;
+    let input_dim = if params.memory_work {
+        1
+    } else {
+        params.spec.input_dim as usize
+    };
     if block.pow_witnesses.len() != input_dim {
         return Err(NeuralWorkError::WrongSolutionWidth {
             expected: input_dim,
@@ -312,6 +343,13 @@ pub fn verify(
         threshold: header.difficulty,
         chain_seed: *seed.as_bytes(),
     };
+    if params.memory_work {
+        return match hyphen_neural::block_work::verify_nonce(&descriptor, block.pow_witnesses[0]) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(NeuralWorkError::InsufficientWork),
+            Err(_) => Err(NeuralWorkError::InvalidParams),
+        };
+    }
     let mut solution = Vec::with_capacity(input_dim);
     for value in &block.pow_witnesses {
         let decoded = decode_component(*value);
@@ -350,6 +388,7 @@ mod tests {
     fn params() -> NeuralWorkParams {
         NeuralWorkParams {
             spec: SPEC,
+            memory_work: false,
             initial_threshold: 1 << 56,
             max_threshold: 1 << 62,
         }
@@ -662,6 +701,31 @@ mod tests {
         assert_eq!(
             expected_threshold(&history, &params),
             retarget_threshold(params.initial_threshold, WORK_RETARGET_WINDOW)
+        );
+    }
+
+    #[test]
+    fn nonce_work_retarget_accounts_for_each_intervals_own_threshold() {
+        let mut params = params();
+        params.memory_work = true;
+        let target = 1 << 55;
+        let mut time = 0;
+        let mut history = Vec::new();
+        for h in 1..=17 {
+            let t = if h % 2 == 0 { target * 2 } else { target / 2 };
+            time += if h % 2 == 0 {
+                WORK_TARGET_MS / 2
+            } else {
+                WORK_TARGET_MS * 2
+            };
+            history.push(header(h, time, t));
+        }
+        assert_eq!(expected_threshold(&history, &params), target);
+        history[0].height = 0;
+        history[1].height = 1;
+        assert_eq!(
+            expected_threshold(&history, &params),
+            params.initial_threshold
         );
     }
 

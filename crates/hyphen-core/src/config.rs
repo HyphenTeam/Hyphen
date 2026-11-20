@@ -217,7 +217,7 @@ impl ChainConfig {
         }
         if self.feature_enabled(FEATURE_NEURAL_MEMORY_WORK) {
             buf.extend_from_slice(
-                b"neural-work/v2/nonce/mlp16-64-16/gate60/argon2id-19-m1024-t2-p1-out32",
+                b"neural-work/v2/nonce/mlp16-64-16/gate60/argon2id-19-m1024-t2-p1-out32/window-work16",
             );
         }
         *hyphen_crypto::blake3_hash(&buf).as_bytes()
