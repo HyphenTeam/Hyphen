@@ -137,6 +137,15 @@ fn wes_consensus_root(state: &ReferenceExpiringState) -> Hash256 {
     }
 }
 
+fn compressed_snapshot(
+    value: &impl rustbinary::CompactEncode,
+) -> Result<Vec<u8>, AtomicStateError> {
+    let bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+        .serialize(value)
+        .map_err(|e| AtomicStateError::Serialize(e.to_string()))?;
+    compress(&bytes).map_err(|e| AtomicStateError::Compress(e.to_string()))
+}
+
 /// Commits every persistent effect of a canonical block as one sled
 /// transaction. The in-memory commitment tree changes only after persistence
 /// succeeds.
@@ -181,19 +190,12 @@ pub fn commit_block_update(
         previous_tip.as_ref(),
         &previous_commitment_tree,
     )?;
-    let previous_tree_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-        .serialize(&previous_commitment_tree)
-        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
-    let compressed_previous_tree = compress(&previous_tree_bytes)
-        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
     let expected_tree_state = commitment_tree
         .tree_data
         .get_raw(TREE_STATE_KEY)
-        .map_err(|error| AtomicStateError::Storage(error.to_string()))?
-        .map(|value| value.to_vec());
-    if expected_tree_state
-        .as_deref()
-        .is_some_and(|persisted| persisted != compressed_previous_tree.as_slice())
+        .map_err(|error| AtomicStateError::Storage(error.to_string()))?;
+    if let Some(persisted) = expected_tree_state.as_deref()
+        && persisted != compressed_snapshot(&previous_commitment_tree)?
     {
         return Err(AtomicStateError::ConcurrentStateChange);
     }
@@ -288,11 +290,7 @@ pub fn commit_block_update(
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
     let compressed_tip =
         compress(&tip_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let tree_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-        .serialize(&update.commitment_tree)
-        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
-    let compressed_tree =
-        compress(&tree_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let compressed_tree = compressed_snapshot(&update.commitment_tree)?;
     let compute_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
         .serialize(&update.compute_state)
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
@@ -346,11 +344,7 @@ pub fn commit_block_update(
         had_coinbase: update.coinbase.is_some(),
         epoch_seed: previous_epoch_seed,
     };
-    let undo_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-        .serialize(&undo)
-        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
-    let compressed_undo =
-        compress(&undo_bytes).map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let compressed_undo = compressed_snapshot(&undo)?;
 
     let trees = (
         blocks.blocks.inner(),
@@ -705,11 +699,7 @@ pub fn revert_block_update(
         .map(|bytes| compress(&bytes))
         .transpose()
         .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
-    let previous_tree_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-        .serialize(&undo.previous_commitment_tree)
-        .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;
-    let compressed_previous_tree = compress(&previous_tree_bytes)
-        .map_err(|error| AtomicStateError::Compress(error.to_string()))?;
+    let compressed_previous_tree = compressed_snapshot(&undo.previous_commitment_tree)?;
     let current_compute_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
         .serialize(&compute_state.snapshot())
         .map_err(|error| AtomicStateError::Serialize(error.to_string()))?;

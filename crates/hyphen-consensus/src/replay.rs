@@ -212,7 +212,7 @@ mod tests {
         let bytes = std::fs::read(path).expect("read published chain identity vectors");
         let vectors: Vec<ChainIdentityVector> =
             serde_json::from_slice(&bytes).expect("parse published chain identity vectors");
-        assert_eq!(vectors.len(), 5);
+        assert_eq!(vectors.len(), 7);
         let mut seen = std::collections::HashSet::new();
 
         for vector in vectors {
@@ -224,6 +224,8 @@ mod tests {
                 "devnet-v2" => ChainConfig::devnet(),
                 "neural-devnet-v1" => ChainConfig::neural_devnet(),
                 "contract-devnet-v1" => ChainConfig::contract_devnet(),
+                "compute-devnet-v1" => ChainConfig::compute_devnet(),
+                "offline-devnet-v1" => ChainConfig::offline_devnet(),
                 "testnet-research" => ChainConfig::testnet(),
                 "mainnet-research" => ChainConfig::mainnet(),
                 other => panic!("unknown chain identity vector profile {other}"),

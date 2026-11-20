@@ -26,6 +26,29 @@ impl NullifierSet {
         Ok(self.tree.contains_key(nullifier)?)
     }
 
+    pub fn spent_height(&self, nullifier: &[u8; 32]) -> Result<Option<u64>> {
+        self.tree
+            .get(nullifier)?
+            .map(|height| {
+                height
+                    .as_ref()
+                    .try_into()
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| sled::Error::Unsupported("invalid nullifier height".into()).into())
+            })
+            .transpose()
+    }
+
+    /// Stream a sorted namespace of canonical key images without copying the set.
+    pub fn with_prefix<'a>(&'a self, prefix: &[u8]) -> impl Iterator<Item = Result<[u8; 32]>> + 'a {
+        self.tree.scan_prefix(prefix).keys().map(|entry| {
+            entry?
+                .as_ref()
+                .try_into()
+                .map_err(|_| sled::Error::Unsupported("invalid nullifier length".into()).into())
+        })
+    }
+
     pub fn insert(&self, nullifier: &[u8; 32], block_height: u64) -> Result<()> {
         let prev = self.tree.insert(nullifier, &block_height.to_le_bytes())?;
         if prev.is_some() {

@@ -2,9 +2,51 @@
 
 **发布判断仍限于无价值开发网。** `hyphen-contract-devnet-v1` 已从创世启用奖励收款键绑定、父支付状态承诺、手续费核对及合约资源预算。本地节点完成了签名付款、共享矿池奖励脱链和原分配恢复，以及 Rust、C、Wasm 汇编合约的签名部署、调用和查询。主网激活、发布网络历史重放、跨主机分区恢复和独立密码学与共识审计仍是上线条件。[开发网验收](Operations-Verification.md)
 
-本次检查的是四份含未提交改动的 Windows 工作树。起始提交分别为 Hyphen `951ea01`、HyphenWallet `aac6300`、HyphenMiner `90895d6` 和 HyphenPool `f101835`。这些提交标明基线，无法单独重建受测版本。三个客户端的共享库均锁定于公开提交 `951ea013f0b61115632f463cea22850cd972df83`。本地主仓后续修改的验证器尚未随该提交发布。
+## 收款核验候选 · Receipt verification candidate
+
+本地四仓候选 `target/hyof-receipt-rc2/` 的提交与默认 Windows Rust 测试结果如下。三份客户端清单与独立锁文件均引用同一主仓提交。各仓通过格式检查、严格 Clippy 和 Windows release 构建。
+
+| 仓库 | 冻结提交 | 通过 / 忽略 |
+| --- | --- | ---: |
+| Node | `f78878eb53e2966ac10aaf51a272e57cf1e757b9` | 414 / 2 |
+| Miner | `d8cda0273b935190611b2bf6cf7c3d7e83e9a863` | 23 / 1 |
+| Pool | `73fc3a1ff08d7fa15d1daf5be8744fe89247fa27` | 51 / 0 |
+| Wallet | `ba84c48231e57243ce5b583e4fe2a392163eaa34` | 44 / 2 |
+
+四仓实跑中，资金交易 `0680b9b722a62669ea306c37319615c402b4b87d20eaa5608a89a78f92cb1fec` 预锁 10,000,000 原子单位。首次赢家收到 9,000,000，竞争方收到 0。换链后两人的余额互换。资金交易另一次重定位后，原末端收款人凭留存请求核对高度 14 的兑付 `fe86f6ac5d3aec40a7b10a146f1ab6505029b0737cf2ab50657e8f1446b76957`。三个分支使用同一个预锁花费标识。32 个零余额钱包均无法准备预锁付款。首页 8 项 Flutter 测试通过，另用实际 Windows release 动态库连接本机节点，核对赢家余额、竞争方余额、收款交易、扫描高度及链顶哈希。[收款操作](Offline-Payments.md)
+
+同一签名器通过 20 对并发转付和 26 次中断试验，其中实际终止 22 次。全部可见凭证均有持久化签名决定，原请求可逐字节重试。QEMU Linux 客体执行了 51 项矿池测试和 3 项签名器测试。候选 CUDA 插件在 RTX A4000 Laptop GPU 上逐项核对了 40,962 个神经评分。真机密钥保护、跨物理主机的恢复、第三方密码学与共识审查仍待验收。累计 499,989 个输出时，当前整树快照超过解码集合限制。[状态规模与测量](Operations-Small-Host.md)
+
+完整包 `HYOF-receipt-devnet.zip` 为 134,290,569 字节，SHA-256 为 `061ebd4473426a814b525704b9d2a35e584e2ca6b343f1009dccc14b475d2a4a`。解压程序核对了 116 个文件的摘要，并从七份归档分别重建数据库。另从最终 ZIP 中的四份 bundle 和四个锁文件，在空构建目录中重建五个命令行程序。重建程序重新完成四仓结算，换索引兑付的重放链顶为 `21c2c0b62e5e64292b671d37186d8dc8099374fad8c8efcaf49c7aad5b4b52e5`。重建程序也验证了包内原始七份归档。默认 Cargo release 设置下，两组程序的五个 SHA-256 均有差异。逐个摘要见 `target/hyof-receipt-rc2/clean-rebuild.json`。
+
+The four receipt-verification commits above were exercised together on a local HYOF network. The recipient's retained invoice was checked against the canonical payout on each branch, including after the funding output moved from index 6 to 12. A separate test used the packaged desktop wallet's release bridge against the packaged node. All five ordinary release executables rebuilt from the ZIP completed a fresh payment and replayed all seven histories. Their digests differed from the original ordinary builds. Independent certification and physical-device acceptance remain open.
+
+同一台 Windows 主机使用 Rust 1.97.0、MSVC、固定绝对路径、Rust 路径映射及 `/Brepro` 链接选项，从最终 ZIP 的四份 bundle 再做两次干净构建。五个命令行程序逐个 SHA-256 相同。第二组程序完整执行四仓付款并重放全部七份归档。补充包 `HYOF-reproducible-cli.zip` 为 16,331,919 字节，SHA-256 为 `d465b37d681a43509ad1d8495abc5f7c5b90d7a9a66187a4239beaa500a99ed4`。包内附两轮摘要、重建脚本和实测日志。
+
+桌面和 Android 钱包另从最终 ZIP 中的钱包 bundle 重建。对照 26 个桌面文件和 1 个 APK，17 个摘要相同，10 个不同。重建桌面钱包的 Rust 动态库从实际节点核对了高度 14 的赢家交易、余额与扫描链顶。重建 ARM64 APK 通过调试证书 v2 验签。真机运行和硬件签名尚待验收。
+
+Two fixed-path builds on the same Windows host produced identical SHA-256 values for all five console executables. The second build replayed all seven histories and completed another four-repository payment. A separate desktop and Android rebuild matched 17 of 27 distributed files. The rebuilt desktop bridge verified the canonical receipt and scan tip. The ARM64 APK passed v2 verification with the local Android Debug certificate.
+
+## 上一版 HYOF 候选 · Previous HYOF candidate
+
+早期检查使用四份含未提交改动的 Windows 工作树，起始提交分别为 Hyphen `951ea01`、HyphenWallet `aac6300`、HyphenMiner `90895d6` 和 HyphenPool `f101835`。上一版 HYOF 验收使用以下四份独立冻结的本地提交。原客户端工作树引用公开提交 `951ea013f0b61115632f463cea22850cd972df83`。
+
+| 本地 HYOF 候选 | Git 提交 | Windows 默认 Rust 测试通过 / 忽略 |
+| --- | --- | ---: |
+| Node | `c5719981a79fe4c5bb5704f2529a62f2922c0c42` | 413 / 2 |
+| Miner | `412a951ce6c88535ba35d035c0fe8ac2eacce857` | 23 / 1 |
+| Pool | `f4bbc0c7263f4479fea0db67d461b6baf831207f` | 51 / 0 |
+| Wallet | `3b0ded749a9097d0f587ae82d41734206dcabfb0` | 43 / 2 |
+
+四仓均通过格式、严格 Clippy 和 Windows release 构建。钱包另行通过七网身份向量和 7 项 Flutter 测试。冻结版 Node 从空库重放 1,024 个创世后区块，到达 `5500d899aa27b71d9702217f5448876e62d468f717cebd292034dec3dd285db8`。四仓结算的资金交易在高度 13 改至索引 12，末端以原始两跳授权在高度 14 再获 9,000,000 原子单位。该分支重放链顶为 `b4c618eca4e3f66792c3234a52bec7d71d04fe3ade3d6352f334e56180c315f0`。复核材料位于 `target/hyof-rc-souoxoy0/`。
+
+另从包内四份 bundle 克隆，在空的构建目录、独立 Cargo Git 缓存和相同的本地 crates.io 依赖上重建五个 Windows release 程序。四个锁文件摘要保持一致。重建程序完整走通四仓付款，换索引后兑付 9,000,000，重放本轮高度 14 链顶为 `50e731e69d130e6cf83c62fa2f81a9e84fc7602539d22027cae3dd50eaf89362`。五个重建程序的 SHA-256 均与首批构建不同，逐个摘要见 `checks/clean-rebuild.json`。目前已验证源码可重建与行为复现，逐字节构建复现仍未达成。
 
 ## 密码学与钱包
+
+收款方核验修订使用本地四仓开发网实测。32 个独立零余额钱包分别创建预锁条款，全部在资金交易准备阶段失败，也都无法用另一笔真实预锁的索引签发凭证。另一组检查将合法签署的转付交给持有独立检查点的收款方，32 份缺少规范预锁的凭证全部被拒。在两条竞争历史中，`confirm` 仅接受收款方留存的请求、实际赢家及预期兑付地址和净额。原赢家在重组后失去确认，同笔资金重定位后可用原请求和旧索引凭证核对新兑付。开发工作树的记录在 `target/offline-settlement-orqhho2w/result.json`。本段修订晚于上表四个冻结提交。旧复核包使用旧的 `status` 语义。操作说明见[离线付款](Offline-Payments.md)。
+
+The receipt revision binds the canonical payout to the recipient's retained request, expected address and net amount. The local four-repository run rejected all 32 unfunded wallets and revoked the previous winner's confirmation after a chain reorganization. The original review package predates these changes.
 
 | 风险及状态 | 检查结果 | 受影响路径 |
 | --- | --- | --- |
@@ -29,9 +71,11 @@ Flutter 新钱包容器采用 Argon2id（64 MiB、3 次迭代、1 路）和 XCha
 
 钱包 RPC 需要先升级节点。有奖励块的响应必须带 `block_authorization`（protobuf 字段 6）。钱包会验证严格签名，并依据收款密钥和 `header.reward` 重算奖励输出。普通付款查询核对块哈希、块内位置与交易根。扫描器使用所连节点提供的规范历史，确认数使用该节点报告的链顶。
 
-双离线时，收款设备只能检查本地已有的历史和收到的数据。有效签名证明付款人授权，另一收款人持有的冲突花费要等接触共同账本或可信的防回滚设备状态才能排除。当前 NFC 流程传递收款地址。双离线不可撤销收款仍需选定设备信任、余额防回滚和恢复联网后的结算规则，并在独立真机上验证。在线链上抗双花和本地分叉重扫的证据仅覆盖已运行的链上流程。
+`HYOF` 开发网采用预锁整额转付和有条件索偿。两笔竞争索偿分别在两个节点确认。两个节点通过本机 TCP 重连后，原收款人的扫描余额从 9,000,000 降至 0，另一收款人收到 9,000,000，并成功通过普通钱包再次支付。另一轮分叉使同一资金交易的输出索引由 6 移至 12，末端持有人保留全部离线签名，独立刷新证明并在高度 14 重新结算。各次规范兑付加上 1,000,000 的手续费等于 10,000,000 的整笔预锁。旧持有人仍能竞争兑付。Flutter NFC 当前传递地址，真机双离线、密钥防回滚和独立认证仍待验收。[规则、哈希与内存实测](Offline-Payments.md)
 
 ## 科学工作量和研究功能
+
+本地候选矿工在 RTX A4000 Laptop GPU 上把三个窗口共 40,962 个神经评分逐项与 Rust 核对，包含计数器回绕。GPU 插件 SHA-256 为 `f5bfcded5f365450ecf153ac0d50e3260df1875ec21f990bf09c48e7c1bc2c37`。该次检查验证计算结果。先前两轮各四组的 70 秒实验记录了独立链的增长、份额与显卡板载传感器读数；整机耗电、长期电费和同条件 ASIC/FPGA 效率仍缺测量。[配置和测量数据](Research-Aether-Compute.md)
 
 普通工作量逐项检查 `u64` 范围内的第一类 Cunningham 素数链，要求见证严格递增、数量正确且在当前链上首次使用。父承诺、高度和见证列表共同进入工作承诺。该规则验证数学结果和链上单次使用。见证可以预计算，库存集中、专用硬件优势、见证供给与长期难度稳定性仍缺少公开对抗性数据。[数学谓词](../crates/hyphen-pow/src/vms.rs)
 
@@ -41,9 +85,15 @@ Flutter 新钱包容器采用 Argon2id（64 MiB、3 次迭代、1 路）和 XCha
 
 ## 发布与证据
 
+冻结版 Pool 的 51 项 Linux 测试和签名日志的 2 项 Linux 测试已在本机 QEMU 11.1.0 虚拟机中执行并通过。测试程序在 Windows 上交叉链接至 `x86_64-unknown-linux-gnu`，然后在 Debian 6.1.0-50-amd64 内核和 Ubuntu glibc 2.39 中运行。覆盖项包括矿池账本重开、分叉恢复、Linux 密钥轮换及钱包文件锁。原始输出和测试程序摘要位于 `checks/pool-linux-runtime.log`、`checks/pool-linux-runtime.json`。公开候选的托管 CI 和跨物理主机网络验证仍待完成。
+
+冻结候选另行通过了 C 与 Wasm 汇编编译产物的共识测试，以及普通开发网首奖扫描、矿池账本重开和本机 P2P 节点同步重启。默认忽略的公网递归 DNS 测试在该候选上单独运行失败，根服务器解析路径报告 TCP 连接超时。四仓结算及同机 peer 测试使用 IP 地址。日志分别在复核包 `checks/compiled-contracts.log`、`checks/ordinary-peer-smoke.log` 和 `checks/public-dns.log`。
+
+在日志升级前的一次四仓验收中，主仓通过 411 项测试，默认忽略 2 项。四仓闭环的第三条历史把预锁由索引 6 移到 12，末端索偿 `955c316242cca3b44ce7e7c63b02b2670145d8c949b3a340294d780b546009c3` 在高度 14 确认，创世重放得到链顶 `ae522de70f8ff136f69d8da888542e98edc217b76b7c200feb8eea06cb3628be`。记录在 `target/offline-settlement-q50muksp/result.json`。redb 5.0 候选签名器保留此轮旧钱包的签名决定与收款记录。20 对竞争转付各仅发布一份凭证；5 份截断日志与 12 份截断导入均被拒绝。另有 26 次进程终止试验，实际终止的 18 次中，11 次未提交也未发布、4 次已提交未发布、3 次已提交并发布。全部 26 次原请求重试字节相同，竞争请求均拒绝。样本见复核包内 `checks/journal-upgrade.json` 和 `checks/interrupted-transfers.json`。[检查点与钱包内存测量](Offline-Payments.md)
+
 开发网复核包冻结了四仓源码、锁文件、9 份归档、三份矿池账本与三种语言的部署字节。收款和区块奖励的连续两次换链实测使用同一组节点、矿工及矿池程序。另行运行的公网递归 DNS 测试因 TCP 连接超时失败。P2P 实测使用 IP 多地址。真实资产发布仍需独立机构或操作者在不同主机上重建并审查候选版本。[复核入口及运行记录](Operations-Verification.md)
 
-主仓通过严格 Clippy，工作区 402 项测试通过，2 项忽略。运行包含真实 Rust Alice Wasm，C/ASM 工具链另行实测。跨交易 key image 回归在两种排序下分别检查严格拒绝和模板筛选。独立 fuzz 工作区通过所有目标的编译检查。钱包 Rust 默认通过 43 项，指定环境的链身份和首奖扫描另通过 2 项。Flutter 静态分析及 7 项测试通过。矿工通过 23 项，矿池通过 50 项。矿池回归覆盖同高度替换中途失败、数据库重开后重试、SOLO 恢复、旧共享账本缺明细、扫描期间发生结算及旧节点回复。
+合约开发网验收时，主仓工作区 402 项测试通过，2 项忽略。运行包含真实 Rust Alice Wasm，C/ASM 工具链另行实测。跨交易 key image 回归在两种排序下分别检查严格拒绝和模板筛选。独立 fuzz 工作区通过所有目标的编译检查。钱包 Rust 默认通过 43 项，指定环境的链身份和首奖扫描另通过 2 项。引入 `HYOF` 后用 Flutter 3.50.0 复跑的 7 项测试全部通过；矿工通过 23 项，矿池通过 51 项。矿池回归覆盖同高度替换中途失败、数据库重开后重试、SOLO 恢复、旧共享账本缺明细、扫描期间发生结算及旧节点回复。
 
 五份开发网历史使用含分支同步和模板修改的节点从创世再验，五个独立数据库共应用 143 块，与原高度及链顶逐一吻合。该节点 SHA-256 为 `c3d89e6cc11516540bf7c66ad7c065b9b84b9abc1b499d78a4cdb129fa7a26bc`，记录目录为 `target/reorg-replay-004494cd-fee6-4f6d-a439-b2978ec67933/`。两种历史开发网均关闭叔块。[逐份高度与完整链顶](Operations-Verification.md)
 
@@ -62,4 +112,4 @@ Flutter 新钱包容器采用 Argon2id（64 MiB、3 次迭代、1 路）和 XCha
 
 ## English release assessment
 
-Real-asset launch remains blocked. Contract-devnet binds the reward keys and validates parent payment roots and fees. Its VM enforces transaction, block and storage limits from genesis. Two local branch changes reversed and restored three miners' PPLNS allocations, the pool fee and the original payment. Signed Rust, C and Wasm assembly deployments and calls survived a node restart and returned the expected query bytes. Mainnet activation, uncle rules, public-network partition recovery, independent economic and cryptographic review, hardware-backed signing and offline settlement remain open. The client lockfiles still pin the earlier public base-chain revision.
+Real-asset launch remains blocked. Contract-devnet binds the reward keys and validates parent payment roots and fees. Its VM enforces transaction, block and storage limits from genesis. Two local branch changes reversed and restored three miners' PPLNS allocations, the pool fee and the original payment. Signed Rust, C and Wasm assembly deployments and calls survived a node restart and returned the expected query bytes. On offline-devnet, local peers adopted a heavier history that switched the canonical payout to the competing holder. In a separate branch change the original funding transaction moved to another index. Its terminal holder refreshed the proof and settled the same two-hop voucher independently. The four local HYOF candidate bundles restore the exact commits listed above. Each reconstructed client's lockfile resolves the same shared-library commit. Public release, mainnet activation, uncle rules, multi-host partition recovery, independent economic and cryptographic review, hardware-backed signing and mobile offline acceptance remain open.

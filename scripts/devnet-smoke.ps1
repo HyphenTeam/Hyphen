@@ -2,7 +2,7 @@ param(
     [switch]$SkipBuild,
     [switch]$Offline,
     [switch]$VerifyPeerSync,
-    [ValidateSet('devnet', 'neural-devnet', 'contract-devnet')]
+    [ValidateSet('devnet', 'neural-devnet', 'contract-devnet', 'compute-devnet')]
     [string]$Network = 'devnet',
     [ValidateRange(1, 100)]
     [int]$TargetHeight = 1,
@@ -139,6 +139,7 @@ try {
     $balance = $null
     $memorySamples = [Collections.Generic.List[object]]::new()
     $nextHeight = 1
+    $lastReadError = $null
     while ([DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 500
         foreach ($entry in @(@('miner', $miner), @('pool', $pool), @('node', $node))) {
@@ -147,28 +148,33 @@ try {
             }
         }
         try {
-            $balance = Invoke-RestMethod -Uri $balanceUri -TimeoutSec 2
             $nodeInfo = Invoke-RestMethod -Uri 'http://127.0.0.1:49680/api/info' -TimeoutSec 2
-            $height = [uint64]$nodeInfo.height
-            if ($height -ge $nextHeight) {
-                $memorySamples.Add([pscustomobject]@{
-                    height = $height
-                    peak_working_set_bytes = Get-PeakWorkingSet @($node, $pool, $miner)
-                })
-                while ($nextHeight -le $height) { $nextHeight *= 2 }
-            }
-            if ([uint64]$balance.total_blocks_found -ge $TargetHeight -and [uint64]$nodeInfo.height -ge $TargetHeight) {
-                break
-            }
+            $balance = Invoke-RestMethod -Uri $balanceUri -TimeoutSec 2
+            $lastReadError = $null
         }
         catch {
-            # Keep polling until the miner registers and submits work.
+            $lastReadError = "$($_.Exception.Message) $($_.ErrorDetails)"
+            if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 400) {
+                throw "Invalid smoke request. $lastReadError. Logs in $runDir"
+            }
+            continue
+        }
+        $height = [uint64]$nodeInfo.height
+        if ($height -ge $nextHeight) {
+            $memorySamples.Add([pscustomobject]@{
+                height = $height
+                peak_working_set_bytes = Get-PeakWorkingSet @($node, $pool, $miner)
+            })
+            while ($nextHeight -le $height) { $nextHeight *= 2 }
+        }
+        if ([uint64]$balance.total_blocks_found -ge $TargetHeight -and $height -ge $TargetHeight) {
+            break
         }
     }
 
     if ($null -eq $balance -or [uint64]$balance.valid_shares -eq 0 -or
         [uint64]$balance.total_blocks_found -lt $TargetHeight -or [uint64]$nodeInfo.height -lt $TargetHeight) {
-        throw "node and pool did not reach target height $TargetHeight within $TimeoutSeconds seconds"
+        throw "Target $TargetHeight timed out after ${TimeoutSeconds}s. Last node height $($nodeInfo.height). Last HTTP error '$lastReadError'. Logs in $runDir"
     }
     $firstReward = @($balance.recent_reward_events | Where-Object { $_.height -eq 1 -and $_.direct_coinbase })
     if ($firstReward.Count -ne 1) { throw 'Missing or duplicate pool settlement for the first reward' }

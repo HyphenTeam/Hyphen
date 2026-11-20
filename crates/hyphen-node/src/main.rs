@@ -35,7 +35,7 @@ struct Cli {
 
     #[arg(
         long,
-        value_parser = ["mainnet", "testnet", "devnet", "neural-devnet", "contract-devnet"],
+        value_parser = ["mainnet", "testnet", "devnet", "neural-devnet", "contract-devnet", "compute-devnet", "offline-devnet"],
         default_value = "devnet"
     )]
     network: String,
@@ -132,6 +132,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "devnet" => ChainConfig::devnet(),
         "neural-devnet" => ChainConfig::neural_devnet(),
         "contract-devnet" => ChainConfig::contract_devnet(),
+        "compute-devnet" => ChainConfig::compute_devnet(),
+        "offline-devnet" => ChainConfig::offline_devnet(),
         _ => unreachable!("clap validates network"),
     };
     if cli.print_chain_identity {

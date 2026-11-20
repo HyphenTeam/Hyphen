@@ -18,6 +18,18 @@
     "genesis_hash": "422475c11a829f198cc502ca4f5cd4489336569997c3cdf048dddaf1d71f1b33"
   },
   {
+    "profile": "compute-devnet-v1",
+    "network_magic": "48594143",
+    "consensus_params_hash": "8cb229414e48614e7c1e5c47bb819de2974af9735747e0f2d7728b91ededa2e9",
+    "genesis_hash": "381fa56cec297fad0d25563a8c0a14fa1fd226b143f3d1ec198b897aeac339bb"
+  },
+  {
+    "profile": "offline-devnet-v1",
+    "network_magic": "48594f46",
+    "consensus_params_hash": "abcc133c433575b338b6a38f3522cd2602f2b08c28f970c7c4fbd08280e28bae",
+    "genesis_hash": "2c80d0881102a4e2d4a080bca8b08d2726b303f5877a8c585eb315eae49f9aa5"
+  },
+  {
     "profile": "testnet-research",
     "network_magic": "48595453",
     "consensus_params_hash": "dacfd24354a308d149ee8676444d92bc9e48a54b5c6f191272b40b16653dffa9",

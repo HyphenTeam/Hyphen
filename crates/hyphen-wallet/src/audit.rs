@@ -527,6 +527,43 @@ mod tests {
     }
 
     #[test]
+    fn archived_payment_opens_with_the_published_ownership_proof() {
+        #[derive(Deserialize)]
+        struct Vector {
+            transaction_hex: String,
+            disclosure: SelectiveDisclosure,
+            verified_at: u64,
+            capability_id: String,
+        }
+        let vector: Vector =
+            serde_json::from_str(include_str!("../../../test-vectors/h-sac-payment-v0.json"))
+                .unwrap();
+        let bytes = hyphen_crypto::hex_decode(&vector.transaction_hex).unwrap();
+        let transaction = Transaction::deserialise_limited(&bytes).unwrap();
+        let proof = &vector.disclosure;
+        assert_eq!(
+            (proof.global_index, proof.output_index, proof.value),
+            (15, 0, 1_000_000_000)
+        );
+        assert_eq!(
+            transaction.hash().to_string(),
+            "cfd8577b3eafaf78cffbf158b5c85cd34a22420343478c19cacf47f18468f8be"
+        );
+        assert_eq!(proof.capability_id().to_string(), vector.capability_id);
+        verify_disclosure(
+            proof,
+            &transaction,
+            AuditVerificationContext {
+                chain_id: proof.chain_id,
+                auditor: proof.auditor,
+                scope_hash: proof.scope_hash,
+                now: vector.verified_at,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn reference_context_vector_is_stable() {
         let vector: serde_json::Value = serde_json::from_str(include_str!(
             "../../../test-vectors/h-sac-disclosure-v0.json"

@@ -164,6 +164,10 @@ consistency, the real ring input or provenance path, policy credentials,
 real-world legitimacy, or auditor-only readability. V0 is targeted opening
 disclosure, not a complete audit key or optimal selective transparency.
 
+`test-vectors/h-sac-payment-v0.json` contains the serialized contract-devnet payment, its signed disclosure, and the block and tip at which its global index was checked. With Python packages `blake3` and `rbcl` installed, run `python scripts/test-h-sac-vector.py` to recompute the transaction hash, Pedersen opening, Schnorr equation and capability ID. The wallet regression test also decodes the transaction and checks its selected output. `hyphen-audit` reads a local node database to verify its current canonical position.
+
+Pass `--wallet-bin PATH_TO_HYPHEN_DISCLOSE` to issue a fresh proof with the independent wallet's public devnet fixture seed. The script checks the new scope and expiry, compares the output and opening against the archive, verifies the new Schnorr proof with libsodium and checks rejection with a different seed.
+
 ## 9. Why no new ZK crate is connected yet
 
 A proof-system choice fixes field, curve, setup, recursion, circuit-audit and
@@ -401,6 +405,10 @@ nonce, commitment, one-time public key, amount, blinding, Schnorr proof.
 - 包只对 auditor 可读。
 
 所以 v0 应称 targeted opening disclosure，不应称完整 audit key 或最优选择性透明。
+
+`test-vectors/h-sac-payment-v0.json` 保存合约开发网付款的交易字节、签名披露、核验全局索引时的区块和链顶。安装 Python 包 `blake3` 和 `rbcl` 后，运行 `python scripts/test-h-sac-vector.py` 可独立复算交易哈希、Pedersen opening、Schnorr 等式和能力标识。钱包回归测试还会解码交易并核对所选输出。`hyphen-audit` 通过本地节点数据库核验当前规范链位置。
+
+加上 `--wallet-bin PATH_TO_HYPHEN_DISCLOSE` 可用开发网公开测试种子让独立钱包重新签发披露。脚本校验新范围和有效期，对照归档核对输出和开封，用 libsodium 验证新的 Schnorr 证明，并检查另一种子被拒绝。
 
 ## 9. 为什么此时不接入一个新 ZK crate
 

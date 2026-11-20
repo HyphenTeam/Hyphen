@@ -26,8 +26,15 @@ hyphen-transport.workspace = true
 hyphen-explorer.workspace = true
 hyphen-rpc.workspace = true
 hyphen-compute.workspace = true
+hyphen-neural.workspace = true
 hyphen-vm.workspace = true
 hyphen-wire.workspace = true
+hyphen-wallet.workspace = true
+sled.workspace = true
+redb = "5.0.0"
+tempfile = "3.27.0"
+zeroize.workspace = true
+serde_json.workspace = true
 
 
 tokio.workspace = true

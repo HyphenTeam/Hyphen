@@ -178,6 +178,23 @@ impl Wallet {
             blinding: blinding_scalar.to_bytes(),
             spend_sk: spend_scalar.to_bytes(),
         };
+        if let Some(previous) = self
+            .owned_notes
+            .iter()
+            .find(|old| old.global_index == global_index)
+        {
+            if previous.commitment != note.commitment
+                || previous.one_time_pubkey != note.one_time_pubkey
+                || previous.ephemeral_pubkey != note.ephemeral_pubkey
+                || previous.encrypted_amount != note.encrypted_amount
+                || previous.block_height != note.block_height
+            {
+                return Err(WalletError::Stealth(
+                    "stored output differs at this index; rescan the canonical chain".into(),
+                ));
+            }
+            return Ok(Some(value));
+        }
         self.owned_notes.push(note);
         Ok(Some(value))
     }
@@ -189,17 +206,41 @@ impl Wallet {
     }
 
     pub fn balance(&self) -> u64 {
-        self.owned_notes
+        self.spendable_records().into_iter().map(|n| n.value).sum()
+    }
+
+    // Reused one-time keys consume the same key image. Keep one spendable
+    // output per key, including when reading a wallet saved by an older scanner.
+    fn spendable_records(&self) -> Vec<&SerializableOwnedNote> {
+        use std::collections::{HashMap, HashSet};
+        let spent: HashSet<_> = self.spent_indices.iter().copied().collect();
+        let spent_keys: HashSet<_> = self
+            .owned_notes
             .iter()
-            .filter(|n| !self.spent_indices.contains(&n.global_index))
-            .map(|n| n.value)
-            .sum()
+            .filter(|n| spent.contains(&n.global_index))
+            .map(|n| n.one_time_pubkey)
+            .collect();
+        let mut positions = HashMap::new();
+        let mut records: Vec<&SerializableOwnedNote> = Vec::new();
+        for note in &self.owned_notes {
+            if spent_keys.contains(&note.one_time_pubkey) {
+                continue;
+            }
+            let index = *positions
+                .entry(note.one_time_pubkey)
+                .or_insert(records.len());
+            if index == records.len() {
+                records.push(note);
+            } else if records[index].value < note.value {
+                records[index] = note;
+            }
+        }
+        records
     }
 
     pub fn unspent_notes(&self) -> Vec<OwnedNote> {
-        self.owned_notes
-            .iter()
-            .filter(|n| !self.spent_indices.contains(&n.global_index))
+        self.spendable_records()
+            .into_iter()
             .map(|sn| OwnedNote {
                 note: hyphen_tx::note::Note {
                     commitment: hyphen_crypto::pedersen::Commitment(sn.commitment),
@@ -303,6 +344,7 @@ mod tests {
             blinding: [0; 32],
             spend_sk: [0; 32],
         });
+        w.owned_notes[1].one_time_pubkey = [1; 32];
         assert_eq!(w.balance(), 1500);
         w.mark_spent(1);
         assert_eq!(w.balance(), 500);
@@ -362,6 +404,38 @@ mod tests {
         );
         assert!(matches!(result, Err(WalletError::Stealth(_))));
         assert_eq!(wallet.balance(), 0);
+    }
+
+    #[test]
+    fn repeated_scans_and_reused_output_keys_have_one_spendable_balance() {
+        let mut wallet = Wallet::from_seed([0x31; 32]);
+        let (ephemeral, one_time, shared) =
+            stealth::derive_one_time_key(&wallet.stealth_address(), 0).unwrap();
+        let scan = |wallet: &mut Wallet, index, amount| {
+            let commitment = hyphen_crypto::pedersen::Commitment::create(
+                amount,
+                derive_commitment_blinding(&shared),
+            );
+            wallet.try_own_output(
+                *commitment.as_bytes(),
+                &one_time.compress().to_bytes(),
+                &ephemeral.0,
+                &stealth::encrypt_amount(amount, &shared),
+                index,
+                1,
+                0,
+            )
+        };
+        assert_eq!(scan(&mut wallet, 1, 42).unwrap(), Some(42));
+        assert_eq!(scan(&mut wallet, 1, 42).unwrap(), Some(42));
+        assert!(scan(&mut wallet, 1, 90).is_err());
+        assert_eq!(wallet.owned_notes.len(), 1);
+        scan(&mut wallet, 2, 50).unwrap();
+        assert_eq!(wallet.balance(), 50);
+        assert_eq!(wallet.unspent_notes().len(), 1);
+        wallet.mark_spent(1);
+        assert_eq!(wallet.balance(), 0);
+        assert!(wallet.unspent_notes().is_empty());
     }
 
     #[test]

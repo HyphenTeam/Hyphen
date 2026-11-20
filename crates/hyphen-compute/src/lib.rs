@@ -9,11 +9,13 @@
 
 use std::collections::BTreeMap;
 
+pub mod inline;
 mod neural;
 
 pub use neural::{
     NEURAL_PROOF_SYSTEM, NEURAL_WORK_PROOF_SYSTEM, NeuralChallengeVerifier, NeuralWorkVerifier,
-    neural_circuit_id, neural_work_circuit_id, neural_work_program_hash,
+    neural_challenge_program_hash, neural_circuit_id, neural_work_circuit_id,
+    neural_work_program_hash,
 };
 
 use hyphen_wire::CanonicalSet;
@@ -186,7 +188,7 @@ impl SignedTask {
         Ok(Self { spec, signature })
     }
 
-    fn verify(&self, chain_id: Hash256, at_height: u64) -> Result<(), ComputeError> {
+    pub fn verify(&self, chain_id: Hash256, at_height: u64) -> Result<(), ComputeError> {
         if self.spec.chain_id != chain_id {
             return Err(ComputeError::WrongChain);
         }
@@ -240,7 +242,7 @@ impl SignedResult {
         Ok(Self { claim, signature })
     }
 
-    fn verify_signature(&self) -> Result<(), ComputeError> {
+    pub fn verify_signature(&self) -> Result<(), ComputeError> {
         self.claim
             .worker
             .verify(self.claim.statement_digest().as_bytes(), &self.signature)
@@ -344,9 +346,12 @@ pub enum ComputeTransaction {
 
 impl ComputeTransaction {
     pub fn encode(&self) -> Result<Vec<u8>, ComputeError> {
-        let payload = wire_config(MAX_ENVELOPE_BYTES)
+        let payload = wire_config(MAX_ENVELOPE_BYTES - ENVELOPE_MAGIC.len())
             .serialize(self)
             .map_err(|error| ComputeError::Encoding(error.to_string()))?;
+        if payload.len() > MAX_ENVELOPE_BYTES - ENVELOPE_MAGIC.len() {
+            return Err(ComputeError::EnvelopeTooLarge);
+        }
         let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + payload.len());
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.extend_from_slice(&payload);
@@ -404,6 +409,9 @@ pub struct ComputeState {
 }
 
 pub trait ProofVerifier: Send + Sync {
+    fn has_inline_output(&self, _task: &TaskSpec, _claim: &ExecutionClaim) -> bool {
+        false
+    }
     fn supports(&self, circuit_id: Hash256, proof_system: u16) -> bool;
     fn verify_execution(&self, task: &TaskSpec, claim: &ExecutionClaim) -> Result<(), String>;
     fn verify_fraud(
@@ -518,7 +526,9 @@ impl ComputeState {
             ComputeTransaction::AttestRetention(attestation) => {
                 self.attest_retention(at_height, attestation, verifier)
             }
-            ComputeTransaction::Finalize { task_id } => self.finalize(at_height, *task_id),
+            ComputeTransaction::Finalize { task_id } => {
+                self.finalize(at_height, *task_id, verifier)
+            }
         }
     }
 
@@ -697,7 +707,12 @@ impl ComputeState {
         Ok(())
     }
 
-    fn finalize(&mut self, at_height: u64, task_id: Hash256) -> Result<(), ComputeError> {
+    fn finalize(
+        &mut self,
+        at_height: u64,
+        task_id: Hash256,
+        verifier: &dyn ProofVerifier,
+    ) -> Result<(), ComputeError> {
         let record = self
             .tasks
             .get_mut(&task_id)
@@ -721,7 +736,7 @@ impl ComputeState {
             .values()
             .filter(|attestation| attestation.retain_until_height >= required_until)
             .count();
-        if independent < 3 {
+        if independent < 3 && !verifier.has_inline_output(&record.task.spec, &result.claim) {
             return Err(ComputeError::InsufficientRetention);
         }
         record.status = TaskStatus::Finalized {

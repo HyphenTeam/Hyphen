@@ -42,6 +42,10 @@ impl ComputeStateStore {
         self.committed.clone()
     }
 
+    pub fn committed(&self) -> &ComputeState {
+        &self.committed
+    }
+
     pub fn root(&self) -> hyphen_crypto::Hash256 {
         self.committed.root()
     }

@@ -26,7 +26,10 @@
 //! relaxed after publication.
 
 use hyphen_crypto::Hash256;
-use hyphen_neural::{DESCRIPTOR_BYTES, WorkDescriptor, decode_descriptor, decode_values_into};
+use hyphen_neural::{
+    ChallengeDescriptor, DESCRIPTOR_BYTES, WorkDescriptor, decode_descriptor, decode_values_into,
+    encode_descriptor,
+};
 
 use crate::{
     DataCommitment, ExecutionClaim, FraudClaim, ProofVerifier, RetentionAttestation, TaskSpec,
@@ -45,6 +48,12 @@ const D_NEURAL_WORK_PARAMS: &[u8] = b"HYPHEN_NEURAL_WORK_PARAMS_V1";
 /// Circuit identifier a task must name to settle through this verifier.
 pub fn neural_circuit_id() -> Hash256 {
     crate::hash(D_NEURAL_CIRCUIT, &[])
+}
+
+pub fn neural_challenge_program_hash(descriptor: &ChallengeDescriptor) -> Result<Hash256, String> {
+    let mut bytes = [0; DESCRIPTOR_BYTES];
+    encode_descriptor(descriptor, &mut bytes).map_err(|error| error.to_string())?;
+    Ok(crate::hash(b"HYPHEN_NEURAL_ALICE_PARAMS_V1", &bytes))
 }
 
 /// Circuit identifier of the one-way neural work challenge.
@@ -160,6 +169,9 @@ impl ProofVerifier for NeuralChallengeVerifier {
             .ok_or_else(|| "neural proof is shorter than its descriptor".to_string())?;
         let descriptor = decode_descriptor(descriptor_bytes)
             .map_err(|error| format!("neural descriptor rejected: {error}"))?;
+        if task.program_hash != neural_challenge_program_hash(&descriptor)? {
+            return Err("task does not commit to this challenge descriptor".into());
+        }
 
         let input_dim = descriptor.spec.input_dim as usize;
         let mut weights = vec![0_i64; descriptor.spec.weight_count()];
@@ -261,7 +273,7 @@ mod tests {
             domain: ScientificDomain::Connectomics,
             arithmetic: ArithmeticProfile::DeterministicFixedPointV1,
             circuit_id: neural_circuit_id(),
-            program_hash: Hash256::from_bytes([5; 32]),
+            program_hash: neural_challenge_program_hash(&descriptor()).unwrap(),
             input: DataCommitment {
                 object_hash: Hash256::from_bytes([6; 32]),
                 byte_len: 64,
@@ -332,11 +344,125 @@ mod tests {
     }
 
     #[test]
+    fn challenge_uses_the_publishers_descriptor() {
+        let committed = task();
+        let other = ChallengeDescriptor {
+            chain_seed: [6; 32],
+            ..descriptor()
+        };
+        let result = claim(
+            proof(&other, &derived_solution(&other)),
+            NEURAL_PROOF_SYSTEM,
+        );
+        assert!(
+            NeuralChallengeVerifier
+                .verify_execution(&committed, &result)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn inline_verification_rebuilds_the_entire_statement() {
+        use crate::inline::{InlineNeuralVerifier, inline_circuit_id, inline_claim, inline_input};
+        let descriptor = descriptor();
+        let task = TaskSpec {
+            circuit_id: inline_circuit_id(),
+            input: inline_input(&descriptor).unwrap(),
+            max_operations: 1536,
+            ..task()
+        };
+        let proof = proof(&descriptor, &derived_solution(&descriptor));
+        let signed = inline_claim(
+            &task,
+            hyphen_crypto::SecretKey([2; 32]).public_key(),
+            &proof,
+        )
+        .unwrap();
+        assert_eq!(signed.operations, 1536);
+        let verifier = InlineNeuralVerifier;
+        verifier.verify_execution(&task, &signed).unwrap();
+        for field in 0..7 {
+            let mut changed = signed.clone();
+            match field {
+                0 => changed.operations -= 1,
+                1 => changed.output.object_hash = Hash256::ZERO,
+                2 => changed.output.chunk_root = Hash256::ZERO,
+                3 => changed.trace_root = Hash256::ZERO,
+                4 => changed.checkpoint_root = Hash256::ZERO,
+                5 => changed.output.byte_len -= 1,
+                _ => changed.proof.push(0),
+            }
+            assert!(verifier.verify_execution(&task, &changed).is_err());
+        }
+        let mut other = task;
+        other.input.object_hash = Hash256::ZERO;
+        assert!(inline_claim(&other, signed.worker, &proof).is_err());
+    }
+
+    #[test]
     fn another_proof_system_or_circuit_is_not_supported() {
         let verifier = NeuralChallengeVerifier;
         assert!(verifier.supports(neural_circuit_id(), NEURAL_PROOF_SYSTEM));
         assert!(!verifier.supports(neural_circuit_id(), NEURAL_PROOF_SYSTEM + 1));
         assert!(!verifier.supports(Hash256::from_bytes([1; 32]), NEURAL_PROOF_SYSTEM));
+    }
+
+    #[test]
+    fn inline_state_checks_signed_results_and_the_exact_finalization_height() {
+        use crate::inline::{
+            InlineNeuralVerifier, forward_operations, inline_circuit_id, inline_claim, inline_input,
+        };
+        use crate::{ComputeError, ComputeState, ComputeTransaction, SignedResult, SignedTask};
+
+        let descriptor = descriptor();
+        let publisher = hyphen_crypto::SecretKey([1; 32]);
+        let worker = hyphen_crypto::SecretKey([2; 32]);
+        let spec = TaskSpec {
+            circuit_id: inline_circuit_id(),
+            input: inline_input(&descriptor).unwrap(),
+            max_operations: forward_operations(descriptor.spec),
+            ..task()
+        };
+        let chain = spec.chain_id;
+        let id = spec.id();
+        let submission_height = spec.publish_deadline;
+        let deadline = submission_height + spec.challenge_blocks;
+        let retain_until = deadline + 1 + spec.retention_blocks;
+        let claim = inline_claim(
+            &spec,
+            worker.public_key(),
+            &proof(&descriptor, &derived_solution(&descriptor)),
+        )
+        .unwrap();
+        let mut state = ComputeState::default();
+        let publish = ComputeTransaction::Publish(SignedTask::sign(spec, &publisher).unwrap());
+        let verifier = InlineNeuralVerifier;
+        state.apply(chain, 1, &publish, &verifier).unwrap();
+        let previous_root = state.root();
+        let submit =
+            |claim| ComputeTransaction::Submit(SignedResult::sign(claim, &worker).unwrap());
+        let mut miscounted = claim.clone();
+        miscounted.operations -= 1;
+        assert!(matches!(
+            state.apply(chain, submission_height, &submit(miscounted), &verifier),
+            Err(ComputeError::ProofRejected(_))
+        ));
+        assert_eq!(state.root(), previous_root);
+        state
+            .apply(chain, submission_height, &submit(claim), &verifier)
+            .unwrap();
+        let submitted_root = state.root();
+        let finalize = ComputeTransaction::Finalize { task_id: id };
+        assert!(matches!(
+            state.apply(chain, deadline, &finalize, &verifier),
+            Err(ComputeError::ChallengePeriodOpen)
+        ));
+        assert_eq!(state.root(), submitted_root);
+        state
+            .apply(chain, deadline + 1, &finalize, &verifier)
+            .unwrap();
+        assert!(state.is_available_through(id, retain_until));
+        assert!(!state.is_available_through(id, retain_until + 1));
     }
 
     #[test]

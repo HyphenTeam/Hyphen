@@ -20,6 +20,8 @@ Open the [local explorer](http://127.0.0.1:8080) to inspect the chain. To join a
 | --- | --- |
 | Protocol and research status | [Whitepaper](wiki/Whitepaper.md) · [Consensus profiles](wiki/Consensus-Devnet-V2.md) |
 | Node operations | [Linux deployment](wiki/Operations-Deploy-Linux.md) · [Peer policy](wiki/Security-Peer-Policy.md) |
+| Signed neural tasks on compute-devnet | [Task verification, finalization and limits](wiki/Research-Aether-Compute.md) |
+| Conditional offline payments on offline-devnet | [Reserve funding, transfer and settlement](wiki/Offline-Payments.md) |
 | Related software | [Miner](https://github.com/HyphenTeam/HyphenMiner) · [Pool](https://github.com/HyphenTeam/HyphenPool) · [Wallet](https://github.com/HyphenTeam/HyphenWallet) |
 
 [Project Wiki](wiki/Home.md)

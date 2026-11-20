@@ -34,6 +34,8 @@ pub const FEATURE_WASM: u32 = 1 << 6;
 pub const FEATURE_H_WES: u32 = 1 << 7;
 pub const FEATURE_NEURAL_WORK: u32 = 1 << 8;
 pub const FEATURE_ASSET_RULES_V1: u32 = 1 << 9;
+pub const FEATURE_INLINE_COMPUTE: u32 = 1 << 10;
+pub const FEATURE_OFFLINE_CLAIMS: u32 = 1 << 11;
 pub const RESEARCH_CONSENSUS_FEATURES: u32 = FEATURE_UNCLES
     | FEATURE_TERA
     | FEATURE_VRE
@@ -264,6 +266,26 @@ impl ChainConfig {
             network_name: "hyphen-contract-devnet-v1".into(),
             network_magic: *b"HYCD",
             consensus_features: FEATURE_WASM | FEATURE_ASSET_RULES_V1,
+            ..Self::devnet()
+        }
+    }
+
+    pub fn offline_devnet() -> Self {
+        Self {
+            network_name: "hyphen-offline-devnet-v1".into(),
+            network_magic: *b"HYOF",
+            consensus_features: FEATURE_OFFLINE_CLAIMS | FEATURE_ASSET_RULES_V1,
+            ..Self::devnet()
+        }
+    }
+
+    pub fn compute_devnet() -> Self {
+        Self {
+            network_name: "hyphen-compute-devnet-v1".into(),
+            network_magic: *b"HYAC",
+            consensus_features: FEATURE_USEFUL_WORK
+                | FEATURE_INLINE_COMPUTE
+                | FEATURE_ASSET_RULES_V1,
             ..Self::devnet()
         }
     }

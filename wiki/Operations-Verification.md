@@ -4,6 +4,16 @@
 
 ## Frozen devnet verification inputs · 开发网冻结复核材料
 
+### HYOF 整笔预锁索偿 · Offline reserve settlement
+
+本地候选 `target/hyof-rc-souoxoy0/HYOF-devnet-review.zip` 包含四份 Git bundle、各仓锁文件、六份短历史和一份 1,024 块长历史。用同目录的 `SHA256SUMS` 核对 ZIP。解压后运行 `python audit/verify.py` 核对逐文件摘要，增加 `--node PATH_TO_HYPHEN_NODE --signer PATH_TO_HYPHEN_OFFLINE` 可在七份独立空库重放归档，重新定位资金输出、验收两跳及十六跳凭证，并核对三个分支各自的结算交易。增加 `--wallet PATH_TO_HYPHEN_RESERVE_WALLET` 可从归档重扫赢家、竞争者、普通付款收款人和找零。编译工具链和 crates.io 依赖由复核方提供。候选版本、忽略项和证据范围见[资产安全评估](Security-Asset-Review.md)。
+
+The local HYOF review ZIP contains four independent source bundles and lockfiles. `checks/source-restore.json` records the commits and shared-library resolution. The bundled verifier reproduces the terminal settlement at output index 12 and the archived 1,024-block tip. The same release binaries also mined the first ordinary-devnet reward, synchronized a second local node and recovered the pool ledger and peer tip after restart. The wallet independently scanned the first reward of 99,999,994,075,298 atomic units. See `checks/ordinary-peer-smoke.log` in the ZIP.
+
+A separate clean Windows build from the restored source completed the full four-repository settlement again. Its five executables have different SHA-256 digests from the first build. `checks/clean-rebuild.json` records their digests and outcomes. On a Linux guest running Debian kernel 6.1.0-50-amd64 and Ubuntu glibc 2.39, the frozen Pool passed 51 tests and the signer passed both journal tests. `checks/pool-linux-runtime.log` contains the guest output. The explicitly enabled root-server DNS test timed out on its TCP connection from the Windows host.
+
+### 合约与矿池分叉 · Contracts and pool reorganizations
+
 The review ZIP contains four working-tree snapshots, their lockfiles, nine history archives, three pool ledgers, the three deployed Wasm modules and verifier sources. Use `python audit/verify.py` with `hashes`, `ledger`, `replay`, `contracts` or `fork` from the extracted root. `contracts` checks the compiled module digests, six signed transaction hashes and the ABI bytes after reopening a fresh chain. Native development builds are recorded by digest for each run. The package README lists toolchain and platform requirements.
 
 复核包内的 9 份归档共计 216 次创世后区块应用，各分支的共同前缀分别计入。5 份普通及神经开发网历史共 143 块，另 4 份合约开发网历史的高度为 9、16、22、26。合约发布构建移除符号名，包内附原始部署字节。三种语言最近一次签名部署、调用及重开查询记录在 `target/contract-rpc-22x3ojou/result.json`，对应连续两次换链的账本与收款记录在 `target/payment-fork-9gqyb7_j/result.json`。

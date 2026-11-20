@@ -34,13 +34,15 @@ The wallet buffers 8,192 key images before using a temporary file. The miner spi
 | Item | Cost |
 | --- | --- |
 | Block body | bounded by `max_block_size`, zstd-compressed at rest |
-| Undo record | zstd-compressed, proportional to the block's state change |
+| Undo record | zstd-compressed previous commitment tree and protocol snapshots, plus the block's index changes |
 | Claimed witnesses | 16 bytes each plus storage overhead |
 | Transaction / height / output indexes | proportional to the block's contents |
 
-Measured: **37 blocks occupy 3 MB**, about 80 KiB per block including every
-index. A 40 GB disk therefore holds on the order of 500 000 blocks, not the
-roughly 7 200 the previous witness representation allowed.
+A 37-block development run occupied 3 MB, about 80 KiB per block including indexes. A separate 1,024-block HYOF run with 1,022 reserve settlements occupied 189,266,577 bytes across files in its stopped node database. Its 2,016,720-byte history archive reproduced the same tip in a fresh database occupying 187,610,140 bytes. The current undo format retains the previous output tree for each block, so disk growth depends on the accumulated outputs as well as the new block. [Checkpoint measurements](Offline-Payments.md)
+
+The snapshot reader allows 1,000,000 entries in a collection and 64 MiB per encoded tree. With `N` leaves, the persisted node count is the sum of `ceil(N / 2^level)` for levels 0 through 32. At 499,988 cumulative outputs the node count still fits the collection limit. At 499,989 it exceeds it. This is a storage scalability limit relevant to state reopening and rollback. The 200,000-leaf benchmark is below it. A production history needs paged persistence and migration coverage at larger sizes.
+
+In the archived HYOF history the compressed undo value for one block grew from 1,475 bytes at height 3 to 145,743 bytes at height 1,024. The height-1,023 parent had 2,044 outputs and 75,015,400 bytes of compressed undo values. Across five copies of that parent, median validation, commit and flush time was 58.66 ms. Median rollback and flush time was 4.12 ms. Reopening each rolled-back database reproduced the parent tip and both payment-state roots. [Block measurements](Offline-Payments.md)
 
 ## The witness index
 

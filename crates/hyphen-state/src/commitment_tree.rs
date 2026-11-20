@@ -26,10 +26,17 @@ pub struct PersistentCommitmentTree {
 impl PersistentCommitmentTree {
     pub fn open(db: &sled::Db) -> Result<Self> {
         let tree_data = CompressedTree::new(db.open_tree("commitment_tree")?);
-        let inner = match tree_data.get(TREE_STATE_KEY)? {
-            Some(data) => crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-                .deserialize(&data)
-                .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?,
+        let inner = match tree_data.get_raw(TREE_STATE_KEY)? {
+            Some(frame) => {
+                // Snapshots are written with zstd bulk compression. Decode into a
+                // size-bounded buffer, then release the page before building the map.
+                let data = zstd::bulk::decompress(&frame, crate::DEFAULT_WIRE_BYTES)
+                    .map_err(|e| crate::compress::CompressError::Decompress(e.to_string()))?;
+                drop(frame);
+                crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+                    .deserialize(&data)
+                    .map_err(|e| CommitmentTreeError::Serde(e.to_string()))?
+            }
             None => MerkleTree::new(),
         };
         Ok(Self { tree_data, inner })

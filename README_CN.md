@@ -20,6 +20,8 @@ cargo run --release --locked -p hyphen-node -- --network devnet --data-dir data/
 | --- | --- |
 | 协议与研究进展 | [白皮书](wiki/Whitepaper.md) · [开发网共识](wiki/Consensus-Devnet-V2.md) |
 | 节点运维 | [Linux 部署](wiki/Operations-Deploy-Linux.md) · [对等节点策略](wiki/Security-Peer-Policy.md) |
+| 计算开发网的签名神经任务 | [验证、最终化与容量上限](wiki/Research-Aether-Compute.md#计算开发网的内联-alice-任务) |
+| 双离线开发网付款 | [预锁、离线转付及规范链结算](wiki/Offline-Payments.md) |
 | 配套软件 | [矿工](https://github.com/HyphenTeam/HyphenMiner) · [矿池](https://github.com/HyphenTeam/HyphenPool) · [钱包](https://github.com/HyphenTeam/HyphenWallet) |
 
 [项目 Wiki](wiki/Home.md)

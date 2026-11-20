@@ -1,13 +1,20 @@
 # AetherCompute protocol boundary
 
-Status: implemented consensus lifecycle; proof backends remain activation-gated.
+## Inline Alice tasks on compute-devnet
+
+`hyphen-compute-devnet-v1` (`HYAC`) activates an inline Alice verifier at genesis. The `hyphen-compute` client signs publications and solutions, reads task records, and requests finalization through the node RPC. The node recomputes the descriptor commitment, target, candidate output, hidden activations and operation count. Finalization requires a block height strictly greater than the challenge deadline. The finalized record retains the descriptor and solution. A branch change can replace or remove that record.
+
+The profile accepts up to 32 compute transitions per block, 4,096 bytes per envelope and 2,048 task records over the lifetime of the chain. The publisher declares `reward` in the signed specification. The current transitions provide neither escrow nor a transfer to the worker.
+
+`hyphen-compute show TASK_ID` checks the publisher and worker signatures and recomputes submitted or finalized solutions. The RPC node supplies the chain status. To check against your own validated chain, stop your compute-devnet node and run `hyphen-compute show TASK_ID --data-dir PATH`. The client checks the locally stored protocol state against the tip header and writes the tip height, hash and state root to stderr. The signed record is written to stdout.
+
+Build `hyphen-node`, `hyphen-compute`, `bob-miner`, the independent miner and the pool server in their default debug directories. Run `python scripts/test-compute-rpc.py` from the workspace to submit a task to a fresh network and compare its finalized record before and after a node restart. The script prints the directory containing its transactions, heights and signed record. [RPC test](../scripts/test-compute-rpc.py)
 
 ## Consensus-enforced behavior
 
 `hyphen-compute` defines bounded, domain-separated transactions for publishing
 scientific tasks, submitting state updates, filing fraud proofs, renewing
-proof-of-custody attestations and finalizing after a challenge period. Every
-mutating object is signed. Task identity binds the chain, scientist nonce,
+proof-of-custody attestations and finalizing after a challenge period. Publishers, workers, challengers and custody providers sign their statements. Anyone may request finalization. Task identity binds the chain, scientist nonce,
 domain, deterministic arithmetic profile, program and circuit hashes, input
 commitment, operation ceiling, challenge window, retention term and deadline.
 
@@ -17,10 +24,7 @@ H-WES roots are persisted in the same sled transaction as the block, tip,
 commitment tree, nullifiers, indexes and undo journal. Reorg rollback restores
 the preceding snapshots.
 
-Long-term DA is renewable. Finalization needs three independent providers whose
-verified custody responses cover the retention term. Later responses extend
-the committed height only when three providers jointly cover it. This does not
-claim permanent storage; expired obligations remain observable.
+The external custody path requires attestations from three distinct signing keys covering the retention term. The count establishes key diversity. Operator independence requires separate evidence. The bundled neural backends reject external custody attestations.
 
 WASM deployment and calls use signed, chain-bound envelopes and monotonic
 account nonces. The executor forbids floating point, SIMD, threads, unbounded
@@ -55,29 +59,22 @@ proof-system ID and current retention-provider count. Search accepts a task ID.
 
 ## Native execution host
 
-The independent `HyphenMiner` repository contains a versioned C ABI for native
-CUDA, HIP, Intel OpenVINO NPU/GPU and Qualcomm QNN plugins. ABI loading,
-capability checks, bounded result ownership and error isolation stay in Rust.
-ABI v2 implements the consensus 64x64 Q12 periodic diffusion step with
-bounded non-negative `i32` cells. CUDA, HIP and OpenVINO use the same
-four-neighbour relation and seven-operation accounting of the retired
-hyphen-pow v2 research kernel. Old ABI v1 plugins are rejected. Every accepted device output is
-recomputed by the independent Rust implementation, checked byte-for-byte and
-committed with domain-separated BLAKE3 input/output hashes.
+On standard devnet, the miner can use CUDA or HIP to sieve Cunningham candidates. The host verifies surviving chains before submission. `accelerator-check` compares one complete window against the portable CPU sieve. An RTX A4000 Laptop GPU with CUDA 12.9 matched six million-candidate windows across lengths 3 and 4. On `neural-devnet`, CUDA kernel 4 derives candidates and scores the 16/64/16 network. The miner reproduces the winning score in Rust before signing. Three device windows matched Rust at all 40,962 positions, including counter wraparound. The compute-devnet node verifies inline Alice tasks in Rust.
 
-The CUDA source compiles with CUDA 13.2 on the current development host. No
-compatible device execution was performed in this verification run, and HIP,
-OpenVINO and QNN were not built because their SDK/runtime and target hardware
-were unavailable. QNN advertises no kernel capability until a target-specific
-deterministic graph implements ABI v2. Provider discovery is not treated as
-useful computation.
+The following local measurements used release builds on one Windows host with an i7-11850H, one miner thread, an RTX A4000 Laptop GPU, the same miner key and a fresh database for each run. Each miner ran for 70 seconds against a local SOLO pool. The board sensor was sampled every 500 ms and integrated over observed timestamps. Other host activity was not controlled.
 
-The ABI v2 execution path is connected to block mining: the host drives the
-nonce search, and each attempt runs the exact header-derived consensus grid on
-a verified device when one is available, with the Rust CPU implementation as
-the default path. `--require-accelerator` makes device availability and
-successful execution mandatory. This boundary does not replace the consensus
-`ProofVerifier` and does not settle user-published AetherCompute tasks.
+| Network | Search | Node height (runs 1 / 2) | Valid shares (1 / 2) | Mean GPU board watts (1 / 2) |
+| --- | --- | ---: | ---: | ---: |
+| Standard devnet | CPU | 13 / 13 | 21 / 21 | 30.08 / 30.20 |
+| Standard devnet | CUDA sieve | 55 / 57 | 101 / 105 | 37.14 / 36.45 |
+| Neural devnet | CPU | 27 / 25 | 27 / 25 | 29.38 / 30.29 |
+| Neural devnet | CUDA scoring | 28 / 29 | 28 / 29 | 62.98 / 67.00 |
+
+All eight runs recorded zero invalid shares. The two median neural search times were 2.098 and 1.987 ms on CPU and 2.512 and 2.045 ms with CUDA. Each chain retargets its work independently. CPU package energy, wall power and ASIC/FPGA implementations still require measurement.
+
+The medians include the easy initial blocks. In runs 1 and 2 the completed neural solutions accounted for 8,160,520 and 2,444,440 candidate scores on CPU and 1,292,808,543 and 1,446,900,064 on CUDA. The GPU counts the whole final batch. Both totals omit search for the next block still in progress when the run ends. In run 1, the last accepted CUDA solution alone took 55.10 seconds.
+
+Build the node, pool, miner and CUDA plugin in release mode in the four-repository checkout. Run `python scripts/measure-mining.py --accelerator-dir PATH_TO_PLUGIN_DIRECTORY` with `nvidia-smi` on PATH. The script writes the executable hashes, device and driver details, observed tips, board samples, share counts and miner logs under `target/mining-measurement-*`. Select a GPU with `--gpu` and set the duration per configuration with `--seconds`.
 
 ## Non-claims
 
@@ -88,12 +85,7 @@ successful execution mandatory. This boundary does not replace the consensus
 - A small SNARK exists only after complete arithmetization and activation of a
   versioned verifier key.
 
-The default node uses `NeuralWorkVerifier`: tasks naming the one-way work
-circuit (`neural_work_circuit_id()`, proof system `NEURAL_WORK_PROOF_SYSTEM`)
-settle when the submitted `x` makes `score(A(x))` fall below the threshold the
-task committed to in `program_hash`. Verification is one deterministic forward
-pass; producing `x` costs one forward pass per attempt. Every other circuit, and
-every fraud or custody proof, still fails closed.
+Other profiles that enable compute use `NeuralWorkVerifier`. It verifies the solution against the threshold in the committed work descriptor. This verifier does not reconstruct all output and accounting fields. Finalization on its external custody path requires a custody verifier.
 
 `NeuralChallengeVerifier` remains available for the inverse Alice circuit, whose
 target is `A(x*)` with `x*` derived from the public `chain_seed`. It is
@@ -137,15 +129,23 @@ until a versioned statement binds such a beacon, the task and the worker.
 
 # AetherCompute 协议边界
 
-状态：共识生命周期已实现；证明后端仍受激活门槛限制。
+## 计算开发网的内联 Alice 任务
+
+`hyphen-compute-devnet-v1`（`HYAC`）从创世启用内联 Alice 验证器。`hyphen-compute` 客户端通过节点 RPC 签署发布和解，查询任务并请求最终化。节点复算描述符承诺、目标、候选输出、隐藏层激活值和操作数。最终化区块的高度必须严格超过挑战截止高度。规范链记录保留描述符与解，重组可以替换或移除记录。
+
+每块最多接受 32 次计算状态转换，每个交易封装最多 4,096 字节，整条链累计可容纳 2,048 条任务记录。`reward` 是发布者签名声明的金额，现有状态转换没有锁定资金或向工作者转账。
+
+`hyphen-compute show TASK_ID` 校验发布者和工作者签名，复算已提交或已最终化的解。任务的上链状态由 RPC 节点提供。要核对自己验证过的链，停止本地计算开发网节点，运行 `hyphen-compute show TASK_ID --data-dir PATH`。客户端对照链顶区块头核验本地协议状态，将链顶高度、哈希和状态根写入标准错误，将签名记录写入标准输出。
+
+在各仓库默认 debug 目录构建 `hyphen-node`、`hyphen-compute`、`bob-miner`、独立矿工和矿池服务端后，在主仓运行 `python scripts/test-compute-rpc.py`。脚本在新网络提交任务，比较节点重启前后的最终化记录，并打印含交易哈希、高度和签名记录的目录。[RPC 联调脚本](../scripts/test-compute-rpc.py)
 
 ## 共识强制行为
 
-`hyphen-compute` 定义有界、域分离的交易，用于发布科学任务、提交状态更新、提出欺诈证明、续期 proof-of-custody attestation，以及在挑战期后完成结算。每个改变状态的对象都带签名。任务身份绑定链、scientist nonce、领域、确定性算术 profile、程序和电路哈希、输入 commitment、操作上限、挑战窗口、保存期限和 deadline。
+`hyphen-compute` 定义有界、域分离的交易，用于发布科学任务、提交状态更新、提出欺诈证明、续期保管证明和请求最终化。发布者、工作者、挑战者和保管方签署各自的声明，任何人均可请求最终化。任务身份绑定链、发布者 nonce、领域、确定性算术规则、程序和电路哈希、输入承诺、操作上限、挑战窗口、保存期限和截止高度。
 
 Validator 按交易顺序执行转换，并用 `BlockHeader.state_root` 检查后状态。AetherCompute、WASM 和全部五个 H-WES 根与区块、tip、commitment tree、nullifier、索引和 undo journal 在同一个 sled 事务中持久化。Reorg 回滚恢复此前快照。
 
-长期 DA 可续期。完成结算需要三个独立 provider，其已验证 custody response 覆盖保存期限。只有三个 provider 共同覆盖更高高度时，后续 response 才扩展已承诺高度。这不声称永久存储；已过期义务仍可观察。
+外部保管路径要求三个不同签名公钥的有效证明共同覆盖保存期限。三个公钥是否属于独立运营者需要另外验证。内置神经验证器均拒绝外部保管证明。
 
 WASM 部署和调用使用签名、链绑定 envelope 和单调账户 nonce。执行器禁用浮点、SIMD、线程、无界内存、start section 和未批准 import。执行与 host call 均计量；执行失败不改变已提交状态。
 
@@ -169,11 +169,13 @@ Explorer 提供 `/api/science/tasks`、`/api/science/task/{id}` 以及对应 `#/
 
 ## 原生执行宿主
 
-独立 `HyphenMiner` 仓库包含版本化 C ABI，用于原生 CUDA、HIP、Intel OpenVINO NPU/GPU 和 Qualcomm QNN plugin。ABI 加载、能力检查、有界结果所有权和错误隔离由 Rust 负责。v1 确定性 kernel 是 Q12 周期 diffusion/PDE step，使用有界非负 `i32` cell。每个设备输出都由独立 Rust 实现重新计算，逐字节检查，并以域分离 BLAKE3 输入/输出哈希承诺。
+独立 `HyphenMiner` 仓库定义原生设备的 C ABI。普通矿工可用 CUDA 或 HIP 筛选坎宁安候选，再由主机逐条验证幸存素数链。`accelerator-check` 将整个窗口与可移植 CPU 筛选器比较。使用 CUDA 12.9 的 RTX A4000 Laptop GPU 对链长 3 和 4 共运行六个窗口，每个窗口一百万个候选，结果均与 CPU 一致。Q12 周期扩散内核属于较早的研究配置。计算开发网节点用 Rust 验证内联任务。
 
-在当前开发主机上，CUDA plugin 使用 CUDA 13.2 编译，并在 NVIDIA RTX A4000 Laptop GPU 上通过设备执行。由于缺少 SDK/runtime 与目标硬件，HIP 和 OpenVINO 仍不可用。已安装的 x86_64 Qualcomm SDK 可以初始化 HTP provider，但在没有目标 SoC 确定性 graph package 时，QNN plugin 不公布 kernel 能力。发现 provider 不等于完成有用计算。
+`neural-devnet` 的 CUDA 内核 4 从公开种子和计数器派生候选，对 16/64/16 网络评分，矿工用 Rust 复算达标分数再签名。三个设备窗口共 40,962 项评分全部匹配，包括计数器回绕。上表每种配置均在同一台 i7-11850H 和 RTX A4000 Laptop 主机上进行了两次 70 秒 release 测试，各使用一个矿工线程、相同矿工密钥、全新数据库和本机 SOLO 矿池。每 500 毫秒采样显卡板卡功耗，按实测时间戳积分。普通网 CPU 两次均到高度 13，CUDA 到 55 和 57。神经网 CPU 到高度 27 和 25，CUDA 到 28 和 29。八次均为零无效份额。神经搜索日志中位数为 CPU 2.098 和 1.987 毫秒，CUDA 2.512 和 2.045 毫秒。各链自行调难，其他主机负载未受控。CPU 封装功耗、整机功耗以及 ASIC、FPGA 的同条件数据仍待实测。
 
-该执行 ABI 尚未连接 Pool Protocol 科学 job transport 或结果 envelope 提交。它提供经过复算验证的原生执行边界，但不能替代共识 `ProofVerifier`。
+复测上表时，在四仓工作区构建 release 节点、矿池、矿工和 CUDA 插件，并确保命令行可调用 `nvidia-smi`。运行 `python scripts/measure-mining.py --accelerator-dir 插件目录`，原始链顶、份额、板卡功耗、二进制哈希和设备信息保存在 `target/mining-measurement-*`。`--gpu` 可选择显卡，`--seconds` 设置每组采样时长。
+
+中位数包含初始低难度区块。两轮已解出的神经区块中，CPU 评分数分别为 8,160,520 和 2,444,440，CUDA 为 1,292,808,543 和 1,446,900,064。GPU 计入找到解的最后一整批。两者都没有计入测量结束时仍在搜索的下一个区块。第一轮 CUDA 最后一个已接收解单独耗时 55.10 秒。
 
 ## 非声明事项
 
@@ -183,7 +185,7 @@ Explorer 提供 `/api/science/tasks`、`/api/science/task/{id}` 以及对应 `#/
 - Bulletproofs 不会自动证明任意 Rust/C job。
 - 只有完整算术化并激活版本化 verifier key 后，才存在小型 SNARK。
 
-默认节点使用 `NeuralWorkVerifier`：声明单向神经工作量电路（`neural_work_circuit_id()`、证明系统 `NEURAL_WORK_PROOF_SYSTEM`）的任务，当提交的 `x` 使 `score(A(x))` 低于任务在 `program_hash` 中承诺的阈值时结算。验证是一次确定性前向传播；求解每次尝试也是一次前向传播。其余电路以及所有欺诈证明与 custody proof 仍然 fail-closed。
+其他启用计算交易的配置使用 `NeuralWorkVerifier`，按已承诺工作描述符中的阈值核对解。该验证器尚未逐项复算输出和计量字段，其外部保管路径仍需保管验证器才能最终化。
 
 `NeuralChallengeVerifier` 仍保留给 Alice 逆问题电路：它的目标是 `A(x*)`，而 `x*` 由公开的 `chain_seed` 推出。它具备确定性但不代表工作量，因此不能用于决定区块有效性的结算。生产 profile 必须安装已审计 `ProofVerifier`，并在共识中绑定 `circuit_id` 和 `proof_system`。
 

@@ -83,6 +83,20 @@ pub struct BlockValidator<'a> {
 }
 
 impl<'a> BlockValidator<'a> {
+    /// Enforce the offline profile's smaller byte/collection budgets before decoding.
+    pub fn decode_payment(&self, bytes: &[u8]) -> Result<Transaction, CoreError> {
+        let decoded = if bytes.first() == Some(&hyphen_tx::offline::CLAIM_VERSION)
+            && self
+                .cfg
+                .feature_enabled(hyphen_core::config::FEATURE_OFFLINE_CLAIMS)
+        {
+            hyphen_core::wire_config(hyphen_tx::offline::MAX_CLAIM_BYTES).deserialize(bytes)
+        } else {
+            Transaction::deserialise_limited(bytes)
+        };
+        decoded.map_err(|error| CoreError::Serialisation(error.to_string()))
+    }
+
     pub fn new(cfg: &'a ChainConfig) -> Self {
         Self { cfg }
     }
@@ -275,6 +289,29 @@ impl<'a> BlockValidator<'a> {
     where
         F: Fn(u64) -> Result<(RistrettoPoint, RistrettoPoint, u64), ValidationError>,
     {
+        if tx.version == hyphen_tx::offline::CLAIM_VERSION
+            && self
+                .cfg
+                .feature_enabled(hyphen_core::config::FEATURE_OFFLINE_CLAIMS)
+        {
+            let index = match tx.inputs.as_slice() {
+                [input] => match input.ring.as_slice() {
+                    [out] if out.global_index < total_outputs => out.global_index,
+                    _ => return Err(ValidationError::EmptyRing),
+                },
+                _ => return Err(ValidationError::NoInputs),
+            };
+            let (key, commitment, _) = resolve_ring_member(index)?;
+            hyphen_tx::offline::verify_claim(
+                tx,
+                hyphen_core::build_genesis_block(self.cfg).hash(),
+                index,
+                key.compress().to_bytes(),
+                hyphen_crypto::Commitment::from_point(&commitment),
+            )
+            .map_err(|error| CoreError::Validation(error.into()))?;
+            return Ok(0);
+        }
         if tx.inputs.is_empty() {
             return Err(ValidationError::NoInputs);
         }

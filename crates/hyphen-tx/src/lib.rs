@@ -12,6 +12,7 @@ pub(crate) fn wire_config(max_bytes: usize) -> rustbinary::CompactConfig {
 pub mod builder;
 pub mod note;
 pub mod nullifier;
+pub mod offline;
 pub mod transaction;
 
 pub use builder::TransactionBuilder;

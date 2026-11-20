@@ -2,7 +2,6 @@ use hyphen_consensus::{BlockValidator, Blockchain, validator::ValidationError};
 use hyphen_core::error::CoreError;
 use hyphen_crypto::Hash256;
 use hyphen_mempool::{Mempool, Validated, ValidatedProtocol};
-use hyphen_tx::transaction::Transaction;
 use parking_lot::RwLock;
 
 #[derive(Debug, thiserror::Error)]
@@ -44,7 +43,9 @@ pub fn admit_transaction(
         pool.write()
             .insert_protocol_at(bytes, ValidatedProtocol::new(), now_ms)
     } else {
-        let tx = Transaction::deserialise_limited(&bytes)
+        let validator = BlockValidator::new(&chain.cfg);
+        let tx = validator
+            .decode_payment(&bytes)
             .map_err(|e| AdmissionError::Malformed(format!("bad tx data: {e}")))?;
         for input in &tx.inputs {
             if chain
@@ -62,7 +63,7 @@ pub fn admit_transaction(
             .map_err(|e| AdmissionError::State(e.to_string()))?;
         let store = chain.store();
         let count = chain.commitment_tree.read().count();
-        let quality = BlockValidator::new(&chain.cfg)
+        let quality = validator
             .validate_transaction(
                 &tx,
                 |index| {

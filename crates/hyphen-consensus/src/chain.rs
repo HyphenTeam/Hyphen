@@ -2,9 +2,14 @@ use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 use tracing::info;
 
+use hyphen_compute::inline::{
+    InlineNeuralVerifier, MAX_INLINE_ENVELOPE, MAX_INLINE_TASKS, MAX_INLINE_TRANSITIONS_PER_BLOCK,
+    inline_circuit_id,
+};
 use hyphen_compute::{ComputeTransaction, NeuralWorkVerifier, ProofVerifier, TaskRecord};
 use hyphen_core::block::{Block, BlockHeader};
 use hyphen_core::config::ChainConfig;
+use hyphen_core::config::FEATURE_INLINE_COMPUTE;
 use hyphen_core::error::CoreError;
 use hyphen_core::timestamp::ntp_adjusted_timestamp_ms;
 use hyphen_crypto::Hash256;
@@ -99,6 +104,25 @@ pub struct CandidateTemplate {
     pub total_fee: u64,
 }
 
+pub struct CanonicalOutput {
+    pub tip: ChainTip,
+    pub block_hash: Hash256,
+    pub block_height: u64,
+    pub transaction: Transaction,
+    pub output_index: u32,
+}
+
+/// Protocol envelopes occupy block positions but do not create shielded outputs.
+pub fn protocol_envelope(blob: &[u8]) -> bool {
+    [
+        hyphen_compute::ENVELOPE_MAGIC,
+        hyphen_vm::VM_ENVELOPE_MAGIC,
+        hyphen_state::wes_state::WES_ENVELOPE_MAGIC,
+    ]
+    .iter()
+    .any(|magic| blob.starts_with(*magic))
+}
+
 struct ProtocolState {
     compute: hyphen_compute::ComputeState,
     vm: hyphen_vm::VmLedger,
@@ -138,7 +162,12 @@ impl Blockchain {
         cache_bytes: u64,
     ) -> Result<Self, CoreError> {
         let db = open_db(path, cache_bytes)?;
-        Self::open_db_with_verifier(db, cfg, Arc::new(NeuralWorkVerifier))
+        let verifier: Arc<dyn ProofVerifier> = if cfg.feature_enabled(FEATURE_INLINE_COMPUTE) {
+            Arc::new(InlineNeuralVerifier)
+        } else {
+            Arc::new(NeuralWorkVerifier)
+        };
+        Self::open_db_with_verifier(db, cfg, verifier)
     }
 
     /// Tests that exercise unrelated consensus rules keep the fail-closed
@@ -153,6 +182,11 @@ impl Blockchain {
         cfg: ChainConfig,
         verifier: Arc<dyn ProofVerifier>,
     ) -> Result<Self, CoreError> {
+        if cfg.feature_enabled(FEATURE_INLINE_COMPUTE) {
+            return Err(CoreError::Validation(
+                "inline compute network requires its consensus verifier".into(),
+            ));
+        }
         let db = open_db(path, DEFAULT_DB_CACHE_BYTES)?;
         Self::open_db_with_verifier(db, cfg, verifier)
     }
@@ -287,7 +321,7 @@ impl Blockchain {
 
     pub fn compute_task(&self, task_id: Hash256) -> Option<TaskRecord> {
         let _transition = self.transition.lock();
-        self.compute_state.read().snapshot().task(task_id).cloned()
+        self.compute_state.read().committed().task(task_id).cloned()
     }
 
     pub fn compute_tasks(
@@ -296,7 +330,8 @@ impl Blockchain {
         limit: usize,
     ) -> (Vec<(Hash256, TaskRecord)>, usize) {
         let _transition = self.transition.lock();
-        let state = self.compute_state.read().snapshot();
+        let store = self.compute_state.read();
+        let state = store.committed();
         (state.tasks_page(offset, limit), state.task_count())
     }
 
@@ -368,6 +403,64 @@ impl Blockchain {
 
     pub fn store(&self) -> &BlockStore {
         &self.blocks
+    }
+
+    /// Resolve the exact transaction and ordinal, including the reward appended last in a block.
+    pub fn canonical_output(&self, index: u64) -> Result<CanonicalOutput, CoreError> {
+        let _view = self.canonical_view()?;
+        let _transition = self.transition.lock();
+        let tip = self.tip()?;
+        if index >= tip.total_outputs {
+            return Err(CoreError::Validation(
+                "output is outside the canonical ledger".into(),
+            ));
+        }
+        let storage = |e: hyphen_state::store::StoreError| CoreError::Storage(e.to_string());
+        let (key, commitment, _, height) = self.blocks.output_record(index).map_err(storage)?;
+        let block = self.blocks.get_block_by_height(height).map_err(storage)?;
+        let mut first = 0;
+        let mut end = index;
+        while first < end {
+            let mid = first + (end - first) / 2;
+            if self.blocks.output_record(mid).map_err(storage)?.3 < height {
+                first = mid + 1;
+            } else {
+                end = mid;
+            }
+        }
+        let reward = (height > 0 && block.header.reward > 0)
+            .then(|| self.blocks.get_coinbase(height))
+            .transpose()
+            .map_err(storage)?;
+        let mut ordinal = index - first;
+        for blob in block
+            .transactions
+            .iter()
+            .filter(|blob| !protocol_envelope(blob))
+            .chain(reward.iter())
+        {
+            let tx = Transaction::deserialise_limited(blob)
+                .map_err(|e| CoreError::Serialisation(e.to_string()))?;
+            if ordinal < tx.outputs.len() as u64 {
+                let output = &tx.outputs[ordinal as usize];
+                if output.one_time_pubkey != key || *output.commitment.as_bytes() != commitment {
+                    return Err(CoreError::Storage(
+                        "canonical output index disagrees with block".into(),
+                    ));
+                }
+                return Ok(CanonicalOutput {
+                    tip,
+                    block_hash: block.hash(),
+                    block_height: height,
+                    transaction: tx,
+                    output_index: ordinal as u32,
+                });
+            }
+            ordinal -= tx.outputs.len() as u64;
+        }
+        Err(CoreError::Storage(
+            "canonical output missing from indexed block".into(),
+        ))
     }
 
     /// Read the canonical block and its separately indexed reward in one chain state.
@@ -537,14 +630,7 @@ impl Blockchain {
         let mut outputs = Vec::new();
         let mut nullifiers = Vec::new();
         for tx_blob in &block.transactions {
-            if [
-                hyphen_compute::ENVELOPE_MAGIC,
-                hyphen_vm::VM_ENVELOPE_MAGIC,
-                hyphen_state::wes_state::WES_ENVELOPE_MAGIC,
-            ]
-            .iter()
-            .any(|prefix| tx_blob.starts_with(*prefix))
-            {
+            if protocol_envelope(tx_blob) {
                 continue;
             }
             let tx = Transaction::deserialise_limited(tx_blob)
@@ -896,12 +982,24 @@ impl Blockchain {
         );
         let mut total_fee = 0u64;
 
+        let inline = self.cfg.feature_enabled(FEATURE_INLINE_COMPUTE);
+        let mut compute_count = 0;
+
         for tx_blob in transaction_blobs {
             let transaction_hash = hyphen_crypto::blake3_hash(tx_blob);
             let result = (|| {
                 if transaction_hashes.contains(&transaction_hash) {
                     return Err(CoreError::Validation(
                         "duplicate transaction in block candidate".into(),
+                    ));
+                }
+                if inline
+                    && tx_blob.starts_with(hyphen_compute::ENVELOPE_MAGIC)
+                    && (tx_blob.len() > MAX_INLINE_ENVELOPE
+                        || compute_count >= MAX_INLINE_TRANSITIONS_PER_BLOCK)
+                {
+                    return Err(CoreError::Validation(
+                        "inline compute block or envelope limit exceeded".into(),
                     ));
                 }
                 if let Some(transaction) = ComputeTransaction::decode(tx_blob)
@@ -913,6 +1011,15 @@ impl Blockchain {
                                 .into(),
                         ));
                     }
+                    if inline
+                        && let ComputeTransaction::Publish(task) = &transaction
+                        && (task.spec.circuit_id != inline_circuit_id()
+                            || state.compute.task_count() >= MAX_INLINE_TASKS)
+                    {
+                        return Err(CoreError::Validation(
+                            "unsupported inline circuit or task capacity exhausted".into(),
+                        ));
+                    }
                     state
                         .compute
                         .apply(
@@ -922,6 +1029,7 @@ impl Blockchain {
                             self.compute_verifier.as_ref(),
                         )
                         .map_err(|error| CoreError::Validation(error.to_string()))?;
+                    compute_count += 1;
                     return Ok(());
                 }
                 if let Some(transaction) = VmTransaction::decode(tx_blob)
@@ -951,8 +1059,7 @@ impl Blockchain {
                         .map_err(|error| CoreError::Validation(error.to_string()))?;
                     return Ok(());
                 }
-                let tx = Transaction::deserialise_limited(tx_blob)
-                    .map_err(|error| CoreError::Serialisation(error.to_string()))?;
+                let tx = validator.decode_payment(tx_blob)?;
                 let next_fee = total_fee
                     .checked_add(tx.fee)
                     .ok_or_else(|| CoreError::Validation("transaction fee sum overflow".into()))?;
@@ -1608,6 +1715,140 @@ mod tests {
         assert_eq!(chain.tip().unwrap().height, 1);
     }
 
+    #[test]
+    fn offline_conflicts_consume_one_reserve_through_reorg_and_reopen() {
+        use hyphen_tx::offline::{Funding, Invoice, Reserve, Voucher, redeem, spent_image};
+        let cfg = ChainConfig::offline_devnet();
+        let chain_id = build_genesis_block(&cfg).hash();
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let chain = Blockchain::open_db(db.clone(), cfg.clone()).unwrap();
+        let branch = Blockchain::open_db(
+            sled::Config::new().temporary(true).open().unwrap(),
+            cfg.clone(),
+        )
+        .unwrap();
+        let owner = SecretKey([1; 32]);
+        let reserve = Reserve {
+            chain: chain_id,
+            owner: owner.public_key(),
+            amount: hyphen_economics::emission::lcd_base_reward(1, &cfg),
+            fee: 1_000_000,
+            nonce: [5; 32],
+        };
+        let recipient = hyphen_crypto::stealth::generate_keys().2;
+        let build = |chain: &Blockchain,
+                     marker: u8,
+                     mut blobs: Vec<Vec<u8>>,
+                     reward_addr: hyphen_crypto::StealthAddress| {
+            let parent = chain
+                .store()
+                .get_block_by_height(chain.tip().unwrap().height)
+                .unwrap();
+            let template = chain.prepare_template(&mut blobs).unwrap();
+            let mut block = child(&cfg, &parent, marker, 30_000);
+            block.transactions = blobs;
+            block.header.tx_root = block.compute_tx_root();
+            block.header.state_root = template.state_root;
+            block.header.commitment_root = template.commitment_root;
+            block.header.nullifier_root = template.nullifier_root;
+            block.header.total_fee = template.total_fee;
+            block.header.difficulty = template.difficulty;
+            mine_witnesses(&cfg, &mut block, parent.header.pow_commitment, marker);
+            block.header.extra_nonce = hyphen_core::authorization::reward_commitment(
+                &reward_addr.view_public,
+                &reward_addr.spend_public,
+            );
+            let auth = BlockAuthorization::sign(
+                &block.header,
+                cfg.network_magic,
+                cfg.consensus_params_hash(),
+                chain_id,
+                reward_addr.view_public,
+                reward_addr.spend_public,
+                &SecretKey([marker; 32]),
+            )
+            .unwrap();
+            block.block_authorization = crate::wire_config(1024).serialize(&auth).unwrap();
+            chain.accept_block(&block).unwrap();
+            block
+        };
+        let funded = build(&chain, 1, vec![], reserve.address().unwrap());
+        branch.accept_block(&funded).unwrap();
+        let note = chain
+            .canonical_output(0)
+            .unwrap()
+            .transaction
+            .outputs
+            .remove(0);
+        let voucher = Voucher {
+            funding: Funding {
+                reserve,
+                index: 0,
+                ephemeral: note.ephemeral_pubkey,
+                ordinal: 0,
+            },
+            transfers: vec![],
+        };
+        let image = spent_image(chain_id, &note);
+        // A valid holder signature is independent of whether that holder's reserve was funded.
+        let mut unfunded = voucher.clone();
+        let other_owner = SecretKey([91; 32]);
+        unfunded.funding.reserve.owner = other_owner.public_key();
+        let unbacked = redeem(unfunded, chain_id, &other_owner, recipient).unwrap();
+        let mut proposed = vec![unbacked.serialise()];
+        assert!(
+            chain
+                .validate_transaction_blobs_for_height(&proposed, 2)
+                .is_err()
+        );
+        chain.prepare_template(&mut proposed).unwrap();
+        assert!(proposed.is_empty());
+        assert!(!chain.nullifiers.contains(image.as_bytes()).unwrap());
+        let withdrawal = |seed| {
+            let mut copy = voucher.clone();
+            let receiver = SecretKey([seed; 32]);
+            let invoice = Invoice::new(copy.funding.id(), &receiver, [seed; 32]);
+            copy.transfer(chain_id, &owner, invoice).unwrap();
+            redeem(copy, chain_id, &receiver, recipient).unwrap()
+        };
+        let a = withdrawal(2);
+        let b = withdrawal(3);
+        let both = vec![a.serialise(), b.serialise()];
+        assert!(matches!(
+            chain.validate_transaction_blobs_for_height(&both, 2),
+            Err(CoreError::DuplicateNullifier(_))
+        ));
+        let first = build(&chain, 4, both, recipient);
+        assert_eq!(first.transactions, vec![a.serialise()]);
+        let alt = build(&branch, 5, vec![b.serialise()], recipient);
+        let extended = build(&branch, 6, vec![], recipient);
+        chain
+            .accept_peer_branch(
+                &[alt, extended],
+                branch.tip().unwrap().cumulative_difficulty,
+            )
+            .unwrap();
+        drop(chain);
+        let reopened = Blockchain::open_db(db, cfg.clone()).unwrap();
+        assert_eq!(reopened.tip().unwrap().hash, branch.tip().unwrap().hash);
+        assert_eq!(
+            reopened.canonical_output(1).unwrap().transaction.hash(),
+            b.hash()
+        );
+        assert!(reopened.nullifiers.contains(image.as_bytes()).unwrap());
+        assert_eq!(
+            reopened
+                .nullifiers
+                .with_prefix(hyphen_tx::offline::SPENT_PREFIX)
+                .count(),
+            1
+        );
+        assert!(matches!(
+            reopened.validate_transaction_blobs_for_height(&[a.serialise()], 4),
+            Err(CoreError::DuplicateNullifier(_))
+        ));
+    }
+
     fn competing_branches(cfg: &ChainConfig) -> (Block, Vec<Block>, Vec<Block>) {
         let genesis = build_genesis_block(cfg);
         let old_one = child(cfg, &genesis, 11, 1);
@@ -1668,6 +1909,9 @@ mod tests {
         for block in &old {
             chain.accept_block(block).unwrap();
         }
+        let detached = chain.canonical_output(0).unwrap();
+        assert_eq!(detached.block_hash, old[0].hash());
+        assert!(chain.canonical_output(2).is_err());
         for block in &new {
             chain.stage_reorg_block(block).unwrap();
         }
@@ -1685,6 +1929,10 @@ mod tests {
         assert_eq!(tip.height, 3);
         assert_eq!(tip.cumulative_difficulty, 6);
         assert_eq!(tip.total_outputs, 3);
+        let replacement = chain.canonical_output(0).unwrap();
+        assert_eq!(replacement.block_hash, new[0].hash());
+        assert_eq!(replacement.tip.hash, tip.hash);
+        assert_ne!(detached.transaction.hash(), replacement.transaction.hash());
         assert!(chain.reorg.pending().unwrap().is_none());
     }
 
@@ -2135,6 +2383,24 @@ mod tests {
             assert_eq!(template.total_fee, fee);
             assert_eq!(both.as_slice(), std::slice::from_ref(first));
         }
+        let mut block = child(&cfg, &second, 13, 1);
+        block.transactions.push(original.clone());
+        block.header.total_fee = 1_000_000;
+        block.header.tx_root = block.compute_tx_root();
+        authorize_block(&cfg, &mut block, 13);
+        chain.accept_block(&block).unwrap();
+        let payment = Transaction::deserialise_limited(&original).unwrap();
+        for (ordinal, _) in payment.outputs.iter().enumerate() {
+            let found = chain.canonical_output(2 + ordinal as u64).unwrap();
+            assert_eq!((found.block_height, found.block_hash), (3, block.hash()));
+            assert_eq!(found.transaction.hash(), payment.hash());
+            assert_eq!(found.output_index as usize, ordinal);
+        }
+        let reward = chain
+            .canonical_output(2 + payment.outputs.len() as u64)
+            .unwrap();
+        assert!(reward.transaction.is_coinbase());
+        assert_eq!(reward.output_index, 0);
     }
 
     #[test]
