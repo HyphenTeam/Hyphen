@@ -93,18 +93,21 @@ mod tests {
 
     #[test]
     fn identity_tracks_the_configuration() {
-        let devnet = ChainIdentity::of(&ChainConfig::devnet());
-        assert_eq!(devnet.network_magic, ChainConfig::devnet().network_magic);
+        let devnet = ChainIdentity::of(&ChainConfig::archived_devnet_v2());
+        assert_eq!(
+            devnet.network_magic,
+            ChainConfig::archived_devnet_v2().network_magic
+        );
         assert_eq!(
             devnet.consensus_params_hash,
-            ChainConfig::devnet().consensus_params_hash()
+            ChainConfig::archived_devnet_v2().consensus_params_hash()
         );
         assert_eq!(
             devnet.genesis_hash,
-            build_genesis_block(&ChainConfig::devnet()).hash()
+            build_genesis_block(&ChainConfig::archived_devnet_v2()).hash()
         );
 
-        let mut mutated = ChainConfig::devnet();
+        let mut mutated = ChainConfig::archived_devnet_v2();
         mutated.epoch_length += 1;
         assert_ne!(
             ChainIdentity::of(&mutated).consensus_params_hash,

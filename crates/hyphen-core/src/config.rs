@@ -267,32 +267,32 @@ impl ChainConfig {
         }
     }
 
-    pub fn contract_devnet() -> Self {
+    pub fn archived_contract_devnet_v1() -> Self {
         Self {
             network_name: "hyphen-contract-devnet-v1".into(),
             network_magic: *b"HYCD",
             consensus_features: FEATURE_WASM | FEATURE_ASSET_RULES_V1,
-            ..Self::devnet()
+            ..Self::archived_devnet_v2()
         }
     }
 
-    pub fn offline_devnet() -> Self {
+    pub fn archived_offline_devnet_v1() -> Self {
         Self {
             network_name: "hyphen-offline-devnet-v1".into(),
             network_magic: *b"HYOF",
             consensus_features: FEATURE_OFFLINE_CLAIMS | FEATURE_ASSET_RULES_V1,
-            ..Self::devnet()
+            ..Self::archived_devnet_v2()
         }
     }
 
-    pub fn compute_devnet() -> Self {
+    pub fn archived_compute_devnet_v1() -> Self {
         Self {
             network_name: "hyphen-compute-devnet-v1".into(),
             network_magic: *b"HYAC",
             consensus_features: FEATURE_USEFUL_WORK
                 | FEATURE_INLINE_COMPUTE
                 | FEATURE_ASSET_RULES_V1,
-            ..Self::devnet()
+            ..Self::archived_devnet_v2()
         }
     }
 
@@ -340,15 +340,50 @@ impl ChainConfig {
         }
     }
 
-    /// Development network v2 used for reproducible consensus testing.
-    ///
-    /// Unreviewed research mechanisms are disabled. Any future activation
-    /// requires a new profile, test vectors and therefore a new chain ID.
-    pub fn devnet() -> Self {
+    /// Historical identity used by archived block vectors.
+    pub fn archived_devnet_v2() -> Self {
         Self {
             network_name: "hyphen-devnet-v2".into(),
-            network_magic: [0x48, 0x59, 0x44, 0x56],
+            network_magic: *b"HYDV",
             consensus_features: 0,
+            neural_work_initial_threshold: 0,
+            neural_work_max_threshold: 0,
+            ..Self::neural_devnet()
+        }
+    }
+
+    /// Devnet profile whose block rule is the one-way neural work challenge
+    /// instead of Cunningham witnesses.
+    ///
+    /// The profile differs from [`ChainConfig::archived_devnet_v2`] in its name, its magic,
+    /// the feature bit, and the two neural-work thresholds. In particular
+    /// `pouw_chain_length` is inert here — no Cunningham witness is ever checked
+    /// — and is kept only because the field is part of the parameter hash.
+    /// Activating this profile is therefore a new chain identity, never an
+    /// in-place upgrade.
+    pub fn archived_neural_devnet_v1() -> Self {
+        Self {
+            network_name: "hyphen-neural-devnet-v1".into(),
+            network_magic: *b"HYNN",
+            consensus_features: FEATURE_NEURAL_WORK,
+            neural_work_initial_threshold: 1 << 56,
+            neural_work_max_threshold: 1 << 62,
+            ..Self::archived_devnet_v2()
+        }
+    }
+
+    /// Unified development genesis for neural mining, payments and contracts.
+    pub fn neural_devnet() -> Self {
+        Self {
+            network_name: "hyphen-neural-devnet-v2".into(),
+            network_magic: *b"HYN2",
+            consensus_features: FEATURE_NEURAL_WORK
+                | FEATURE_NEURAL_MEMORY_WORK
+                | FEATURE_WASM
+                | FEATURE_ASSET_RULES_V1
+                | FEATURE_USEFUL_WORK
+                | FEATURE_INLINE_COMPUTE
+                | FEATURE_OFFLINE_CLAIMS,
             difficulty_algorithm: DifficultyAlgorithm::LwmaV1,
             block_time: Duration::from_secs(30),
             epoch_length: 128,
@@ -380,48 +415,11 @@ impl ChainConfig {
             mse_gamma: 0,
             mse_floor_bps: 10_000,
             mse_ceil_bps: 10_000,
-            neural_work_initial_threshold: 0,
-            neural_work_max_threshold: 0,
+            neural_work_initial_threshold: 1 << 60,
+            neural_work_max_threshold: 1 << 62,
             p2p_port: DEVNET_P2P_PORT,
             rpc_port: DEVNET_RPC_PORT,
             discovery_port: DEVNET_DISCOVERY_PORT,
-        }
-    }
-
-    /// Devnet profile whose block rule is the one-way neural work challenge
-    /// instead of Cunningham witnesses.
-    ///
-    /// The profile differs from [`ChainConfig::devnet`] in its name, its magic,
-    /// the feature bit, and the two neural-work thresholds. In particular
-    /// `pouw_chain_length` is inert here — no Cunningham witness is ever checked
-    /// — and is kept only because the field is part of the parameter hash.
-    /// Activating this profile is therefore a new chain identity, never an
-    /// in-place upgrade.
-    pub fn neural_devnet() -> Self {
-        Self {
-            network_name: "hyphen-neural-devnet-v1".into(),
-            network_magic: *b"HYNN",
-            consensus_features: FEATURE_NEURAL_WORK,
-            neural_work_initial_threshold: 1 << 56,
-            neural_work_max_threshold: 1 << 62,
-            ..Self::devnet()
-        }
-    }
-
-    /// Unified development genesis for neural mining, payments and contracts.
-    pub fn neural_devnet_v2() -> Self {
-        Self {
-            network_name: "hyphen-neural-devnet-v2".into(),
-            network_magic: *b"HYN2",
-            consensus_features: FEATURE_NEURAL_WORK
-                | FEATURE_NEURAL_MEMORY_WORK
-                | FEATURE_WASM
-                | FEATURE_ASSET_RULES_V1
-                | FEATURE_USEFUL_WORK
-                | FEATURE_INLINE_COMPUTE
-                | FEATURE_OFFLINE_CLAIMS,
-            neural_work_initial_threshold: 1 << 60,
-            ..Self::neural_devnet()
         }
     }
 }
@@ -432,7 +430,7 @@ mod tests {
 
     #[test]
     fn frozen_devnet_disables_research_consensus_features() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         assert_eq!(cfg.consensus_features, 0);
         assert_eq!(cfg.difficulty_algorithm, DifficultyAlgorithm::LwmaV1);
         assert_eq!(cfg.max_uncles, 0);
@@ -443,7 +441,7 @@ mod tests {
 
     #[test]
     fn consensus_profile_changes_chain_identity() {
-        let frozen = ChainConfig::devnet();
+        let frozen = ChainConfig::archived_devnet_v2();
         let mut research = frozen.clone();
         research.consensus_features = FEATURE_VRE;
         assert_ne!(
