@@ -28,7 +28,7 @@ jobs:
           - os: windows-2022
             artifact: hyphen-node-windows-x86_64
             executable: hyphen-node.exe
-          - os: macos-14
+          - os: macos-15
             artifact: hyphen-node-macos-aarch64
             executable: hyphen-node
     runs-on: ${{ matrix.os }}
