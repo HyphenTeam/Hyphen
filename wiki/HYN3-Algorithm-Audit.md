@@ -22,7 +22,7 @@ Parent Chain 按高度横向排列可选区块卡片，分支单独占行。Chro
 
 ## Pascal 构建与调难开销
 
-GTX 1060 对应 Pascal `sm_61`。本轮用 CUDA 12.9.86 编译 `sm_61`、`sm_75`、`sm_86` 及 `compute_61` PTX，静态链接 CUDA 运行时。Release 插件 SHA-256 为 `cdd720dee3ba6cde9512a43c701745b95dcf84853969dff12df704e0d7c9a66a`。在 RTX A4000 Laptop 上原生运行 32,768 个 nonce，另强制驱动从 PTX 编译并运行后续 8,192 个 nonce，分别得到与 Rust 一致的 119 和 33 个解。GTX 1060 的实际吞吐、功耗及温度尚缺板测。[构建说明](../HyphenMiner/wiki/Operations.md)
+GTX 1060 对应 Pascal `sm_61`。本轮用 CUDA 12.9.86 编译 `sm_61`、`sm_75`、`sm_86` 及 `compute_61` PTX，静态链接 CUDA 运行时。Release 插件 SHA-256 为 `cdd720dee3ba6cde9512a43c701745b95dcf84853969dff12df704e0d7c9a66a`。在 RTX A4000 Laptop 上原生运行 32,768 个 nonce，另强制驱动从 PTX 编译并运行后续 8,192 个 nonce，分别得到与 Rust 一致的 119 和 33 个解。GTX 1060 的实际吞吐、功耗及温度尚缺板测。[构建说明](https://github.com/HyphenTeam/HyphenMiner/blob/9abbbc37a190b8e602c8196dd55ed84b31650029/wiki/Operations.md)
 
 HYN3 调难沿用 16 个间隔、30 秒目标及逐块四倍调整界限。节点按链顶哈希复用最近的区块头，正常延长只需读取新增块；重组时沿新父哈希回溯，重开后从持久化链重建。高度 21 同一静止链顶交替执行两条读取路径，每种 8 轮、每轮 500 次。逐次读取并解码 17 个块体与缓存命中的单次平均耗时取各轮中位数，分别为 80.504 和 7.259 微秒，两者均算出门槛 `1125899906842624`。这是热链顶查询耗时。[窗口实现](../crates/hyphen-consensus/src/chain.rs) · [调难规则](../crates/hyphen-consensus/src/neural_work.rs)
 
