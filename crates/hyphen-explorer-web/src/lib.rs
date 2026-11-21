@@ -13,6 +13,14 @@ struct Info {
     difficulty: u64,
     current_epoch: u64,
     total_outputs: u64,
+    neural_work: Option<NeuralWorkInfo>,
+}
+
+#[derive(Deserialize)]
+struct NeuralWorkInfo {
+    tip_weight: String,
+    retarget_intervals: u64,
+    max_adjustment: u64,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +84,7 @@ struct ScientificTask {
 
 #[derive(Deserialize)]
 struct ScientificTasks {
+    chain: ListChain,
     tasks: Vec<ScientificTask>,
     total: usize,
     offset: usize,
@@ -145,10 +154,29 @@ struct ContractApplication {
 
 #[derive(Deserialize)]
 struct ContractApplications {
+    chain: ListChain,
     contracts: Vec<ContractApplication>,
     total: usize,
     offset: usize,
     limit: usize,
+}
+
+#[derive(Deserialize)]
+struct ListChain {
+    network: String,
+    height: u64,
+    tip_hash: String,
+}
+
+fn list_context(output: &mut String, chain: &ListChain) {
+    let hash = escape(&chain.tip_hash);
+    let _ = write!(
+        output,
+        "<p class=\"list-meta\" data-tip=\"{hash}\">{} · Canonical tip <a title=\"{hash}\" href=\"#/block/{hash}\">#{} · {}</a></p>",
+        escape(&chain.network),
+        grouped(chain.height),
+        short(&chain.tip_hash)
+    );
 }
 
 fn escape(value: &str) -> String {
@@ -217,7 +245,7 @@ fn metric(output: &mut String, label: &str, value: &str, tone: &str) {
 
 fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
     let data: HomePayload = serde_json::from_str(payload).map_err(|error| error.to_string())?;
-    let neural = data.info.network == "hyphen-neural-devnet-v3";
+    let neural = data.info.neural_work.is_some();
     let mut output = String::with_capacity(16_384);
     output.push_str("<section class=\"metrics\">");
     metric(
@@ -284,7 +312,17 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
         "<div><span>ISSUED</span><b>{} HPN</b></div>",
         escape(&data.info.total_supply)
     );
-    output.push_str("</section><div class=\"section-head\"><div><span class=\"kicker\">CANONICAL LEDGER</span><h1>Recent blocks</h1></div><span class=\"live\">LIVE</span></div>");
+    output.push_str("</section>");
+    if let Some(work) = &data.info.neural_work {
+        let _ = write!(
+            output,
+            "<p class=\"list-meta\">Tip work weight {} · A smaller threshold requires more work. After {} mined intervals, the threshold adjusts every block by up to {}×.</p>",
+            escape(&work.tip_weight),
+            work.retarget_intervals,
+            work.max_adjustment
+        );
+    }
+    output.push_str("<div class=\"section-head\"><div><span class=\"kicker\">CANONICAL LEDGER</span><h1>Recent blocks</h1></div><span class=\"live\">LIVE</span></div>");
     let target_label = if neural {
         "Work threshold"
     } else {
@@ -355,7 +393,11 @@ fn render_science(payload: &str) -> Result<String, String> {
     let data: ScientificTasks = serde_json::from_str(payload).map_err(|error| error.to_string())?;
     let mut output = String::with_capacity(12_000);
     output.push_str("<div class=\"section-head\"><div><span class=\"kicker\">AETHERCOMPUTE</span><h1>Verifiable scientific work</h1></div><span class=\"privacy-mark\">COMMITMENTS ONLY</span></div>");
-    output.push_str("<div class=\"domain-band\"><b>QCD</b><b>MANIFOLD DYNAMICS</b><b>CONNECTOMICS</b><span>fixed-point deterministic kernels</span></div>");
+    list_context(&mut output, &data.chain);
+    if data.total == 0 {
+        output.push_str("<p class=\"empty\">No AetherCompute tasks have been published on this canonical chain.</p>");
+        return Ok(output);
+    }
     output.push_str("<div class=\"data-table\"><table><thead><tr><th>Task</th><th>State</th><th>Domain</th><th>Budget</th><th>Declared reward</th><th>Published</th><th>Retention</th></tr></thead><tbody>");
     for task in &data.tasks {
         let _ = write!(
@@ -432,7 +474,7 @@ fn render_task(payload: &str) -> Result<String, String> {
     );
     detail_row(
         &mut output,
-        "Declared reward (unfunded)",
+        "Publisher's declared reward",
         &format!("{} HPN", task.reward),
     );
     detail_row(
@@ -514,7 +556,7 @@ fn render_task(payload: &str) -> Result<String, String> {
     }
     let _ = write!(
         output,
-        "<article><h2>Privacy boundary</h2><dl><dt>Published</dt><dd>content hashes, Merkle roots, byte lengths</dd><dt>Withheld</dt><dd>object locators, credentials, private transaction payloads</dd><dt>Retention</dt><dd>{} independent attestations</dd></dl></article></section>",
+        "<article><h2>Privacy boundary</h2><dl><dt>Published</dt><dd>content hashes, Merkle roots, byte lengths</dd><dt>Withheld</dt><dd>object locators, credentials, private transaction payloads</dd><dt>Retention</dt><dd>{} attesting provider keys</dd></dl></article></section>",
         task.retention_providers
     );
     Ok(output)
@@ -635,7 +677,13 @@ fn render_applications(payload: &str) -> Result<String, String> {
         serde_json::from_str(payload).map_err(|error| error.to_string())?;
     let mut output = String::with_capacity(10_000);
     output.push_str("<div class=\"section-head\"><div><span class=\"kicker\">HYPHEN WASM ABI V1</span><h1>On-chain applications</h1></div><span class=\"privacy-mark\">STATE ROOT COMMITTED</span></div>");
-    output.push_str("<div class=\"domain-band\"><b>DEFI</b><b>GAME</b><b>UTILITY</b><span>deterministic wasm32 &middot; metered host calls &middot; atomic rollback</span></div>");
+    list_context(&mut output, &data.chain);
+    if data.total == 0 {
+        output.push_str(
+            "<p class=\"empty\">No Wasm contracts have been deployed on this canonical chain.</p>",
+        );
+        return Ok(output);
+    }
     output.push_str("<div class=\"data-table\"><table><thead><tr><th>Application</th><th>Category</th><th>Contract</th><th>ABI</th><th>Code</th><th>Deployed</th></tr></thead><tbody>");
     for contract in &data.contracts {
         let (name, category, version, abi) = match &contract.application {

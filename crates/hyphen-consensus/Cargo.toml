@@ -27,6 +27,7 @@ parking_lot.workspace = true
 hyphen-wire.workspace = true
 
 [dev-dependencies]
+tempfile = "3.27.0"
 blake3.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true

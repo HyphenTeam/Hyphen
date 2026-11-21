@@ -97,6 +97,15 @@ struct InfoResponse {
     epoch_length: u64,
     current_epoch: u64,
     total_outputs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    neural_work: Option<NeuralWorkInfo>,
+}
+
+#[derive(Serialize)]
+struct NeuralWorkInfo {
+    tip_weight: String,
+    retarget_intervals: u64,
+    max_adjustment: u64,
 }
 
 #[derive(Serialize)]
@@ -159,14 +168,18 @@ struct ForkBlock {
     recent_sibling: bool,
 }
 
-/// A historical Ethash-style kinship window for the *next* block. HYN3
-/// accounts for work and emission on the selected branch only.
-fn recent_sibling(tip: u64, height: u64, same_parent: bool, validated: bool) -> bool {
-    validated
-        && same_parent
-        && height > 0
-        && tip != u64::MAX
-        && tip.checked_sub(height).is_some_and(|age| age < 6)
+/// A distinct, previously accepted HYN3 witness for the same parent, within
+/// the retarget observation window. This is local evidence, with no payout.
+fn hyn3_sibling(tip: u64, canonical: &Block, candidate: &Block) -> bool {
+    let a = &canonical.header;
+    let b = &candidate.header;
+    a.height > 0
+        && a.height == b.height
+        && a.prev_hash == b.prev_hash
+        && a.pow_commitment != b.pow_commitment
+        && tip
+            .checked_sub(a.height)
+            .is_some_and(|age| age < hyphen_consensus::neural_work::WORK_RETARGET_WINDOW)
 }
 
 #[derive(Serialize)]
@@ -294,6 +307,7 @@ struct ScientificTaskResponse {
 
 #[derive(Serialize)]
 struct ScientificTasksResponse {
+    chain: ListChain,
     tasks: Vec<ScientificTaskResponse>,
     total: usize,
     offset: usize,
@@ -312,10 +326,29 @@ struct ContractResponse {
 
 #[derive(Serialize)]
 struct ContractsResponse {
+    chain: ListChain,
     contracts: Vec<ContractResponse>,
     total: usize,
     offset: usize,
     limit: usize,
+}
+
+#[derive(Serialize)]
+struct ListChain {
+    network: String,
+    height: u64,
+    tip_hash: String,
+}
+
+impl ListChain {
+    fn read(state: &ExplorerState) -> Result<Self, Rejection> {
+        let tip = state.blockchain.tip().map_err(Rejection::internal)?;
+        Ok(Self {
+            network: state.cfg.network_name.clone(),
+            height: tip.height,
+            tip_hash: tip.hash.to_string(),
+        })
+    }
 }
 
 fn contract_response(contract: Contract) -> ContractResponse {
@@ -336,10 +369,19 @@ fn get_contracts(state: &ExplorerState, params: &QueryParams) -> Result<Response
         .number::<usize>("limit")?
         .unwrap_or(PAGE_LIMIT_DEFAULT)
         .clamp(1, PAGE_LIMIT_MAX);
+    let chain = ListChain::read(state)?;
+    if params.get("known_tip") == Some(&chain.tip_hash) {
+        return Ok(secure_response(
+            StatusCode::NO_CONTENT,
+            "application/json",
+            "",
+        ));
+    }
     let (contracts, total) = state.blockchain.vm_contracts(offset, limit);
     Ok(json_response(
         StatusCode::OK,
         &ContractsResponse {
+            chain,
             contracts: contracts.into_iter().map(contract_response).collect(),
             total,
             offset,
@@ -510,18 +552,27 @@ impl ExplorerState {
 fn build_info_response(
     state: &ExplorerState,
     tip: hyphen_state::chain_state::ChainTip,
+    difficulty: u64,
 ) -> InfoResponse {
     let reward = block_reward(tip.height, &state.cfg);
     let supply = total_supply_at_height(tip.height, &state.cfg);
 
-    let difficulty = state
-        .blockchain
-        .blocks
-        .get_block_by_height(tip.height)
-        .map(|block| block.header.difficulty)
-        .unwrap_or(0);
-
+    use hyphen_consensus::neural_work::{WORK_MAX_ADJUST, WORK_RETARGET_WINDOW, block_weight};
+    let neural_work = state
+        .cfg
+        .feature_enabled(hyphen_core::config::FEATURE_NEURAL_MEMORY_WORK)
+        .then(|| NeuralWorkInfo {
+            tip_weight: if tip.height == 0 {
+                0
+            } else {
+                block_weight(difficulty)
+            }
+            .to_string(),
+            retarget_intervals: WORK_RETARGET_WINDOW,
+            max_adjustment: WORK_MAX_ADJUST,
+        });
     InfoResponse {
+        neural_work,
         height: tip.height,
         tip_hash: tip.hash.to_string(),
         cumulative_difficulty: tip.cumulative_difficulty.to_string(),
@@ -694,6 +745,14 @@ fn get_scientific_tasks(
         .number::<usize>("limit")?
         .unwrap_or(PAGE_LIMIT_DEFAULT)
         .clamp(1, PAGE_LIMIT_MAX);
+    let chain = ListChain::read(state)?;
+    if params.get("known_tip") == Some(&chain.tip_hash) {
+        return Ok(secure_response(
+            StatusCode::NO_CONTENT,
+            "application/json",
+            "",
+        ));
+    }
     let (tasks, total) = state.blockchain.with_compute_state(|compute| {
         let tasks = compute
             .task_entries(offset, limit)
@@ -704,6 +763,7 @@ fn get_scientific_tasks(
     Ok(json_response(
         StatusCode::OK,
         &ScientificTasksResponse {
+            chain,
             tasks,
             total,
             offset,
@@ -911,14 +971,17 @@ fn serve_health() -> Response<Body> {
     secure_response(StatusCode::OK, "text/plain; charset=utf-8", "ok\n")
 }
 
-fn get_info(state: &ExplorerState) -> Response<Body> {
-    let tip = match state.blockchain.tip() {
-        Ok(t) => t,
-        Err(e) => {
-            return error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
-        }
-    };
-    json_response(StatusCode::OK, &build_info_response(state, tip))
+fn get_info(state: &ExplorerState) -> Result<Response<Body>, Rejection> {
+    let tip = state.blockchain.tip().map_err(Rejection::internal)?;
+    let block = state
+        .blockchain
+        .blocks
+        .get_block_by_hash(&tip.hash)
+        .map_err(Rejection::internal)?;
+    Ok(json_response(
+        StatusCode::OK,
+        &build_info_response(state, tip, block.header.difficulty),
+    ))
 }
 
 fn get_blocks(state: &ExplorerState, params: &QueryParams) -> Result<Response<Body>, Rejection> {
@@ -1001,17 +1064,33 @@ impl ForkWindow {
                 .blocks
                 .has_block(&hash)
                 .map_err(Rejection::internal)?;
+            let recent_sibling = if validated
+                && let Some(block) = canonical.filter(|b| b.header.prev_hash == parent)
+            {
+                if state
+                    .cfg
+                    .feature_enabled(hyphen_core::config::FEATURE_NEURAL_MEMORY_WORK)
+                {
+                    let candidate = state
+                        .blockchain
+                        .blocks
+                        .get_block_by_hash(&hash)
+                        .map_err(Rejection::internal)?;
+                    hyn3_sibling(tip, block, &candidate)
+                } else {
+                    height > 0
+                        && tip != u64::MAX
+                        && tip.checked_sub(height).is_some_and(|age| age < 6)
+                }
+            } else {
+                false
+            };
             self.blocks.push(ForkBlock {
                 hash: hash.to_string(),
                 prev_hash: parent.to_string(),
                 cell: StackCell::from_block(hash, height),
                 status: if validated { "detached" } else { "staged" },
-                recent_sibling: recent_sibling(
-                    tip,
-                    height,
-                    canonical.is_some_and(|b| b.header.prev_hash == parent),
-                    validated,
-                ),
+                recent_sibling,
             });
             shown += 1;
         }
@@ -1236,9 +1315,8 @@ fn get_updates(state: &ExplorerState, params: &QueryParams) -> Result<Response<B
     let latest_block = state
         .blockchain
         .blocks
-        .get_block_by_height(tip.height)
-        .ok()
-        .map(|block| block_summary(&block));
+        .get_block_by_hash(&tip.hash)
+        .map_err(Rejection::internal)?;
     let changed = params
         .number::<u64>("since")?
         .map(|since| since < tip.height)
@@ -1248,8 +1326,8 @@ fn get_updates(state: &ExplorerState, params: &QueryParams) -> Result<Response<B
         StatusCode::OK,
         &ExplorerUpdatesResponse {
             changed,
-            info: build_info_response(state, tip),
-            latest_block,
+            info: build_info_response(state, tip, latest_block.header.difficulty),
+            latest_block: Some(block_summary(&latest_block)),
         },
     ))
 }
@@ -1347,7 +1425,7 @@ impl ExplorerService {
             Route::AppJs => Ok(serve_app_js()),
             Route::Wasm => Ok(serve_wasm()),
             Route::Health => Ok(serve_health()),
-            Route::Info => Ok(get_info(state)),
+            Route::Info => get_info(state),
             Route::Updates => get_updates(state, &params),
             Route::Blocks => get_blocks(state, &params),
             Route::Block(id) => Ok(get_block_handler(state, &id)),
@@ -1516,19 +1594,22 @@ mod tests {
     }
 
     #[test]
-    fn recent_siblings_require_validated_shared_parent_and_six_block_window() {
-        assert!(recent_sibling(12, 12, true, true));
-        assert!(recent_sibling(12, 7, true, true));
-        for (tip, height, parent, validated) in [
-            (12, 6, true, true),
-            (12, 13, true, true),
-            (12, 12, false, true),
-            (12, 12, true, false),
-            (0, 0, true, true),
-            (u64::MAX, u64::MAX, true, true),
-        ] {
-            assert!(!recent_sibling(tip, height, parent, validated));
-        }
+    fn hyn3_siblings_require_distinct_work_and_a_recent_shared_parent() {
+        let mut canonical = hyphen_consensus::build_genesis_block(&ChainConfig::neural_devnet());
+        let mut candidate = canonical.clone();
+        candidate.header.pow_commitment = Hash256::from_bytes([7; 32]);
+        assert!(!hyn3_sibling(0, &canonical, &candidate));
+        canonical.header.height = 5;
+        candidate.header.height = 5;
+        assert!(hyn3_sibling(5, &canonical, &candidate));
+        assert!(hyn3_sibling(20, &canonical, &candidate));
+        assert!(!hyn3_sibling(21, &canonical, &candidate));
+        assert!(!hyn3_sibling(4, &canonical, &candidate));
+        candidate.header.prev_hash = Hash256::from_bytes([9; 32]);
+        assert!(!hyn3_sibling(5, &canonical, &candidate));
+        candidate = canonical.clone();
+        candidate.header.timestamp += 1;
+        assert!(!hyn3_sibling(5, &canonical, &candidate));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 'use strict';
 
-// One demand-driven frame queue for navigation, the light field and block geometry.
+// One demand-driven frame queue for navigation and block geometry.
 const aurora = (() => {
   const pending = new Set();
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -20,15 +20,12 @@ const aurora = (() => {
     frame = pending.size && !document.hidden ? requestAnimationFrame(flush) : 0;
   });
   const tabs = document.querySelector('.tabs');
-  const light = document.querySelector('.aurora-field');
   const indicator = document.querySelector('.tab-indicator');
   const links = Array.from(tabs.querySelectorAll('a'));
   function align() {
     const link = tabs.querySelector('[aria-current="page"]');
     if (!link) return;
-    const slot = links.indexOf(link);
     indicator.style.transform = `translateX(${link.offsetLeft}px) scaleX(${link.offsetWidth})`;
-    light.style.transform = `translate3d(${slot * 3 - 5}%,${slot % 2 * 3}%,0) rotate(${slot * 4 - 6}deg)`;
   }
   const size = new ResizeObserver(() => schedule(align));
   size.observe(tabs);
@@ -63,6 +60,7 @@ const aurora = (() => {
     transition = undefined;
     tag(undefined);
     if (animate && !document.hidden && !reduced.matches && document.startViewTransition) {
+      document.documentElement.classList.add('changing-view');
       // A block lists its transactions. Keep the transaction as the shared object in both directions.
       const returningToBlock = from?.startsWith('/tx/') && to.startsWith('/block/');
       const destination = from !== to && detail(to) && !returningToBlock && linkTo(to);
@@ -78,11 +76,13 @@ const aurora = (() => {
       transition = run;
       run.finished.catch(() => {}).then(() => {
         if (transition !== run) return;
+        document.documentElement.classList.remove('changing-view');
         tag(undefined);
         transition = undefined;
       });
       return run.updateCallbackDone;
     }
+    document.documentElement.classList.remove('changing-view');
     update();
     return Promise.resolve();
   }

@@ -2,6 +2,34 @@
 
 本次验证对象是 `hyphen-neural-devnet-v3`。单线程 Rust 与 CUDA 评分加主机内存计算在相同的 131,072 个 nonce 上得出相同的 507 个有效解。8 份已有归档和 1 份本轮生成的 16 跳兑付归档，分别通过独立工作量验算和节点全状态重放。离线储备在一条规范历史中至多兑付一次，收款人的到账取决于广播、入块和此后的分叉选择。直接使用过主仓 Rust 子地址 API 的集成需要迁移旧子地址资产。[钱包迁移说明](Security-Asset-Review.md) · [网络参数](../crates/hyphen-core/src/config.rs) · [归档验证入口](../crates/hyphen-consensus/src/replay.rs)
 
+最终节点与集成矿工另生成五份实矿归档，四份高度 21，一份高度 22。连同上述九份，十四份归档共核对 249 条创世后记录，计数包含共享历史。当前发布判断为继续 HYN3 开发网验证。主网放行仍缺专用硬件测量、长期多机稳定性、独立密码学与共识评审，以及真实资产验收。
+
+## 满块转账与 Parent Chain 复核
+
+HYN3 对完整编码区块设置 2,097,152 字节上限。模板选择原先只累计交易正文，临界负载会漏算区块头、工作量见证、矿工授权和交易长度前缀。节点现在按实际线格式收取每笔前缀，给 v5 区块结构和见证预留空间。矿池自定义模板使用同一预算。RPC 和对等节点共用的准入入口也检查区块中单个交易字节向量的 1,000,000 元素上限。[节点模板](../crates/hyphen-node/src/main.rs) · [交易准入](../crates/hyphen-rpc/src/admission.rs)
+
+在临时磁盘库中挖出 HYN3 奖励，链上拆分得到 4,096 个可独立花费的输出，每个输出签发一笔普通 CLSAG 转账。测试使用节点默认手续费、容量和过期策略，调用 RPC 与 P2P 共用的准入函数、矿池模板及区块提交处理函数。每次提交后逐笔检查剩余交易仍在内存池，数据库重开后逐笔匹配区块哈希与交易序号。接收钱包解密并核对全部输出承诺，净收 99,995,625,075,298 原子单位。结果来自单节点进程内调用。[容量回归测试](../crates/hyphen-node/src/payment_capacity.rs)
+
+| 高度 | 收录转账 | 完整编码字节 | 池中待确认 |
+|---:|---:|---:|---:|
+| 8 | 1,733 | 2,095,723 | 2,363 |
+| 9 | 1,733 | 2,095,725 | 630 |
+| 10 | 630 | 762,198 | 0 |
+
+复测命令为 `cargo test --release --locked --offline -p hyphen-node --bin hyphen-node payments_roll_over -- --ignored --nocapture`。1,733 是本次单输入、单输出支付的装载量。费用优先级、交易大小、协议交易、过期及内存池驱逐都会影响实际确认高度。
+
+Parent Chain 按高度横向排列可选区块卡片，分支单独占行。Chrome 核对了高度 13 的 14 个规范块、2 个旁支及 15 条连线，逐条比对完整父哈希与卡片边界。390 和 1,280 像素视口分别验证了选择窗口内任一区块后卡片完整可见。哈希坐标视图单独按需绘制。[渲染实现](../crates/hyphen-explorer/src/stack.js) · [浏览器验收](../scripts/measure-explorer.mjs)
+
+## Pascal 构建与调难开销
+
+GTX 1060 对应 Pascal `sm_61`。本轮用 CUDA 12.9.86 编译 `sm_61`、`sm_75`、`sm_86` 及 `compute_61` PTX，静态链接 CUDA 运行时。Release 插件 SHA-256 为 `cdd720dee3ba6cde9512a43c701745b95dcf84853969dff12df704e0d7c9a66a`。在 RTX A4000 Laptop 上原生运行 32,768 个 nonce，另强制驱动从 PTX 编译并运行后续 8,192 个 nonce，分别得到与 Rust 一致的 119 和 33 个解。GTX 1060 的实际吞吐、功耗及温度尚缺板测。[构建说明](../HyphenMiner/wiki/Operations.md)
+
+HYN3 调难沿用 16 个间隔、30 秒目标及逐块四倍调整界限。节点按链顶哈希复用最近的区块头，正常延长只需读取新增块；重组时沿新父哈希回溯，重开后从持久化链重建。高度 21 同一静止链顶交替执行两条读取路径，每种 8 轮、每轮 500 次。逐次读取并解码 17 个块体与缓存命中的单次平均耗时取各轮中位数，分别为 80.504 和 7.259 微秒，两者均算出门槛 `1125899906842624`。这是热链顶查询耗时。[窗口实现](../crates/hyphen-consensus/src/chain.rs) · [调难规则](../crates/hyphen-consensus/src/neural_work.rs)
+
+对应节点 SHA-256 为 `e6bcebe11f88b3b26bde40c493a6c8471a48e7b12bc37f0852022ac091bc3045`。节点重放既有 14 份归档均匹配原链顶。新 CUDA 插件另实矿 45.44 秒，接受 21 份，拒绝 0 份。新增归档的高度 21 和累计工作 5,691 经节点重放和独立 Rust 实现复核。本轮工作区 release 测试 449 项通过、3 项默认忽略，上述转账压力测试单独执行通过。Clippy 使用 `-D warnings`。RustSec 数据库 `f291af9b1cc0d21dfcea1709d6b037963cef262b` 扫描工作区及独立矿工锁文件，匹配漏洞数均为 0；工作区依赖有 `fxhash`、`instant`、`paste` 三项停止维护提示。本轮原始记录在 `target/parent-chain-audit/`。
+
+其余两个默认忽略项也已单独执行。五种已编译合约在两种配置下的部署、执行和重开测试通过。公共根 DNS 递归解析测试连续两次在 TCP 建连时超时，本轮记录为失败。
+
 ## 工作量、吞吐与内存
 
 Core i7-11850H、RTX A4000 Laptop GPU、Windows x64、驱动 596.71、Rust 1.97.0 release。挑战来自创世块的第一个子块，矿工公钥为 32 个 `0x13`。连续 16 窗口，每窗 8,192 个 nonce，每个窗口先运行 CUDA，再运行单线程 Rust。CUDA 只计算神经评分，两条完整路径都在主机计算两道 BLAKE3 门槛。计时排除插件加载、权重生成、签名、网络和出块。主机另有编译与测试负载，两个后端的先后顺序固定。[挖矿流程](Operations-Mining-Acceleration.md)
@@ -15,6 +43,22 @@ Core i7-11850H、RTX A4000 Laptop GPU、Windows x64、驱动 596.71、Rust 1.97.
 同窗完整搜索吞吐比为 **1.22 倍**。每个评分都与 Rust 比较，每个获胜 nonce 及其顺序也逐个比较。另用主仓 `work_cost` 跑 16 个不同种子各 1,024 次，1,016 次进入内存阶段，60 个获胜。搜索共 18.991 s，逐个重新生成权重并验证 60 个解共 0.974 s。这一组种子、二进制和同期主机负载与上表不同。[Rust 基准](../crates/hyphen-consensus/examples/work_cost.rs)
 
 另以真实本地节点、SOLO 矿池和矿工各连续运行约 180 秒。CPU 和 CUDA 各接受 22 份、拒绝 0 份，均达到高度 22。逐高度核对了后端记录，CUDA 未发生回退。每组各采集 179 个 GPU 板卡功率样本。两条链分别调难，板卡传感器只覆盖 GPU 用电。稳定性记录覆盖每个后端实际运行的三分钟。[逐组计时、温度和功耗](Operations-Mining-Acceleration.md)
+
+新 CUDA 内核以规格化除数的高位估计商，再用完整整数乘积校正。旧、新 DLL 按窗口交替先后，在同一挑战下各搜索 8 × 8,192 个 nonce，每个版本的 65,536 个评分和 245 个获胜 nonce 均与 Rust 相符。旧、新版本的评分调用合计分别为 0.6853、0.6546 秒，含主机判定的完整搜索分别为 18.5856、19.1782 秒。评分用时下降 4.5%，该批完整搜索用时上升 3.2%。新 DLL 的 SHA-256 为 `48cb91e97f196232b4394dcdef9ff2c37d0ba80b4773a4d7c97232f051716ba2`。在使用原锁定共享库的矿工上另从创世启动 CPU 和新 CUDA 两组 SOLO 实矿，分别运行 70.37 和 70.47 秒，均在高度 21 累计接受 21 份、拒绝 0 份，逐高度日志确认后端。
+
+主机挖矿线程在首次进入第二道门槛时分配 1 MiB，此后在该线程复用；验块按次分配和释放。1,024 个输入逐个比对完整摘要一致。独立矿工的一份隔离构建通过 Cargo 本地覆盖使用工作区 `hyphen-neural`，SHA-256 为 `14fdf9b075fd836360715e4e00d0fee8bdc2708e8136c83e9bc18c8cdd6a3062`。在相同新版 CUDA DLL 上，原锁定矿工与该构建交替搜索同样的八个窗口。单线程 CPU 完整搜索合计从 32.122 秒降至 28.457 秒，CUDA 加主机判定从 31.373 秒降至 28.890 秒，两种构建各找到相同的 245 个解。测量期间本机并行运行其他验证任务。生产集成需将独立矿工的共享库版本指向发布该变更的提交。[主机工作实现](../crates/hyphen-neural/src/block_work.rs)
+
+为单独测量缓冲区复用，又在同一源码目录、同一锁文件和原 CUDA 插件下各编译一次，只替换 `block_work.rs` 的分配实现。每种构建先预热，再交替完成相同的 8 × 8,192 个 nonce。逐次分配与线程内复用的 CPU 完整搜索分别用时 18.0042、15.2265 秒，CUDA 加主机分别为 17.4670、15.1321 秒，两者各得到 245 个解。本轮累计用时分别减少 15.4% 和 13.4%。据此保留主机复用。逐窗原始数据见 `host-control/windows.csv`。
+
+最终节点与上述集成矿工的 CPU 和 CUDA 实矿分别运行 70.15 和 70.46 秒，各接受 21 份、拒绝 0 份。两条独立链均在高度 18 开始调整，至高度 21 门槛为 `2^52`、累计工作为 5,691。对两份导出归档又分别运行节点全状态重放和独立 Rust 工作量验算。CPU 归档 SHA-256 为 `c92bf86ada2a6f0f5a6dca8685b1988d4eef87154466e0a39a5fc86b88375a92`，CUDA 归档为 `6a3c69c8b0fb70daa6d49cacb079ec8191cb197d8ebf6f188f0e33c95976a605`。两次短测各覆盖四个调整高度。较长时间内能否稳定贴近 30 秒目标，还需随算力变化实测。
+
+集成矿工预热后，再对同样 8 个窗口交替加载原 CUDA 内核和候选内核。两者各核对 65,536 个评分、245 个解。评分合计分别为 0.5828、0.5908 秒，完整搜索为 14.6370、14.5465 秒。候选内核在两轮完整搜索中的耗时变化方向相反，矿工源码选用原来的整数内核。逐窗计时保存在 `integrated-plugin-windows.csv`。
+
+选用的原 CUDA 内核与集成矿工在新数据目录中实矿 70.50 秒，接受 22 份、拒绝 0 份，逐高度核对了 CUDA 后端。其高度 22 链顶为 `99536a4007ee197973424f95f24b365c498841e366de1f2098829e5235ee711e`，累计工作 22,074。导出归档的 SHA-256 为 `37e95f90eb92e243ca3229cc00f0cd837e45135877586dd5772039f4b8f515a3`，由节点重放和独立 Rust 实现再次核对。记录位于 `selected-cuda/result.json` 及 `selected-cuda/replay.json`。
+
+从相同配置和锁文件重新链接后，可执行文件的 SHA-256 变为 `58993ed58396bcda0a7504d428686e635f174ad8cb9bf3a32e83fe6fe58e9a6e`。本机保留此副本为 `integrated-miner.exe`。独立数据目录内的 CPU 和原 CUDA 插件分别实矿 30.27、30.19 秒，各接受 21 份、拒绝 0 份。两份归档均经节点和独立 Rust 实现复核至高度 21、累计工作 5,691。二进制清单及逐组链顶保存在 `integrated-miner.json`。两次链接的字节级可重复性尚未建立。
+
+调难回归测试以确定性的平均解题时间驱动实际 `expected_threshold`，四段算力依次为基线的 1、8、1 和 1/8 倍，每段 32 个块。逐块核对四倍变化界限和门槛上限。前三段的末次间隔距 30 秒均在 2 毫秒以内，末段达到最易门槛 `2^62` 后，模型的平均间隔为 60 秒。该模型省略随机出块和传播延迟。[调难回归测试](../crates/hyphen-consensus/src/neural_work.rs)
 
 固定向量 `nonce=125` 的第二阶段有 32,768 个顺序填充单元和 32,768 次状态依赖读取。下表对每种间隔实际重算并比对完整 32 字节摘要。调用数计入内存初始化与最终摘要，第一道筛选另算。[Rust 独立实现](../crates/hyphen-consensus/examples/hyn3_work_audit.rs) · [固定向量](../test-vectors/neural-block-work-v3.json)
 
@@ -52,7 +96,21 @@ Core i7-11850H、RTX A4000 Laptop GPU、Windows x64、驱动 596.71、Rust 1.97.
 
 **AetherCompute。** HYN3 节点重新执行 Alice 描述符和候选解，核对输出、隐藏激活、操作数与签名，超过挑战截止高度才能最终化。该描述符公开导出一个有效参考输入，最终化证明的是接受关系成立，无法证明求解者耗费了特定时间或完成任意外部科学任务。`reward` 是发布者签署的报价。`hyphen-compute reward` 可用一笔独立的原生储备把报价实际付给工作者；发布者仍须出资并签署，最终化本身不划款。测试覆盖不同发票、重试、深度、重组撤销、重新入块、工作者钱包余额及归档重放。[执行验证](../crates/hyphen-compute/src/inline.rs) · [付款测试](../crates/hyphen-node/tests/compute_reward.rs)
 
-**叔块与发行。** 历史以太坊 Ethash 每块最多引用两个叔块，验证祖先关系、近期已引用集合与叔块头，叔块作者得到 `(8 − 深度) / 8` 倍补贴，收录矿工每个得到 `1/32` 倍补贴。HYN3 的最大收录数和这两项奖励均为零，浏览器展示的近期兄弟块不参与分叉权重。研究配置的奖励辅助函数现在以宽整数计算比例，对零分母返回零，超出 `u64` 的估值饱和。启用可支付叔块仍需完整工作见证、矿工授权、分支内跨块去重及版本化发行规则。[历史 Geth 实现](https://github.com/ethereum/go-ethereum/blob/v1.10.26/consensus/ethash/consensus.go) · [Hyphen 验证和奖励计算](../crates/hyphen-consensus/src/validator.rs)
+**近期兄弟块与发行。** HYN3 浏览器要求本节点曾验证该块、与同一正高度的规范块同父、工作承诺不同，并且距当前链顶少于 16 个高度。高度 13 的保留历史有两个旁支块，其中一个符合条件。规范分支按已验证累计工作选择。HYN3 的叔块最大收录数、收录奖励和旁支奖励均为零。研究配置的奖励辅助函数以宽整数计算比例，对零分母返回零，超出 `u64` 的估值饱和。启用可支付叔块需完整工作见证、矿工授权、分支内跨块去重及版本化发行规则。[兄弟块定义及与 Ethash 的差异](Consensus-Neural-Work.md) · [验证和奖励计算](../crates/hyphen-consensus/src/validator.rs)
+
+## 浏览器、钱包与同高重组
+
+同一 HYN3 创世下，归档 `combined.archive` 的 SHA-256 为 `ce09405eae9a71947315ee57647c95e44d4642bcf734b3d717ff11c6e6fa9cc0`。其高度 31 链顶为 `e8cb8e56edf747b9e67642beb63cb2c3bd6d31465cba2dbd79ad092d795a0813`。任务 `c4a57b6ce563a8f86bb771810fc57e2cb91cfc48b11b423d01117c868152f0db` 在高度 12 发布、14 提交、31 最终化，公开报价为 1 个原子单位。应用页列出六份合约，包括 DeFi、NFT、C、C++、Wasm 汇编和一个 Rust 合约。另一个高度 13 的节点在两页均返回零条。Block Stack 的 14 个规范块含创世，另有 2 个旁支块；逐条比对的 15 条画布连线均匹配完整父哈希。[浏览器 API](../crates/hyphen-explorer/src/lib.rs) · [归档重放](../crates/hyphen-consensus/src/replay.rs)
+
+将 `combined.archive` 的前 19 块重放到空目录，保持该节点的应用页打开，再接入重放 `market-to-compute.archive` 的节点。两链同为高度 19，累计工作分别为 263 和 573。节点实际撤下并接纳各 19 块；应用页自动从六份合约更新为空。两类列表携带旧链顶均得到 HTTP 200，携带当前链顶均得到 204。另在高度 13 和 31 的静止历史上，浏览器测量脚本恢复一个过期页码，以实际 HTTP 请求核对回退后的内容。四组列表均回到第一页，同链顶的刷新保留原 DOM 元素。[列表路由](../crates/hyphen-explorer/src/app.js) · [Chrome 验收脚本](../scripts/measure-explorer.mjs)
+
+在最终二进制上再次触发同一重组，保持打开的 AetherCompute 页自动将同一任务从 `submitted` 更新为 `finalized`。另一浏览器仅将客户端分页大小从 20 调为 2，以六份实际部署进入第三页。重组后通过正常刷新回到第一页并显示空状态。HTTP 内容、链顶与节点分叉选择均来自真实节点。另逐个打开高度 31 的六个合约详情，并与原归档记录核对六个部署地址、部署高度及全部 19 笔交易的位置。
+
+高度 31 浏览器展示的 DeFi 和 NFT 合约代码分别为 5,638 和 6,246 字节。工具链重建及重开测试使用当前源码的 5,898 和 6,509 字节产物。C、C++、Wasm 汇编在两组记录中的大小分别为 706、708、451 字节。
+
+Chrome 157.0.8103.79 在同一高度 13 上收到 120 次角度输入，旧版绘制 120 次并赋值 240 次画布尺寸，新版绘制 1 次、尺寸赋值 0 次。新版在 500 ms 空闲和隐藏窗口内均绘制 0 次，恢复后重新绘制。启用和禁用动效、详情往返、快速导航以及宽度 390 和 1280 的布局均通过。禁用往返缓存后，GC 后使用的 JS 堆从 702,208 变为 691,388 字节，单份画布像素估算均为 1,283,508 字节。另以全新配置启动 headless Chrome 各三次，初始 Block Stack 静置四秒后采样，均计入 11 个 Chrome 进程。进程树私有字节中位数从 351,088,640 变为 353,533,952，工作集总和中位数从 633,335,808 变为 636,952,576 字节。工作集总和包含跨进程共享页。浏览器整体的内存下降尚无实测依据。[浏览器测量](../scripts/measure-explorer.mjs)
+
+Windows 钱包使用 Flutter 3.50.0 release、相同原生 runner 和空的测试凭据存储。以 `bacc4436c680b8ceb0b5a43471a27f5cd19b541a` 为基线，与本地修改各启动三个新进程；路由稳定后每页计数五秒。欢迎页及节点模式页原各产生 300–301 帧，新版六个采样窗口均为 0 帧。设备像素比为 1 时，Flutter 已解码图片缓存从 11,614,464 降至 57,600 字节。欢迎页 RSS 中位数从 141,271,040 变为 141,848,576 字节，节点模式页从 144,969,728 变为 142,581,760 字节。两页的进程内存变化方向不同。11 项 Flutter 测试全部通过，含原生 FFI、交互后空闲和列表数据对象重建后奖励金额的双向 Hero 过渡。原始逐次记录见同目录 `wallet-final-rss.log`。
 
 ## 主要算法的成本与覆盖范围
 
@@ -96,8 +154,18 @@ cargo run --release --locked --offline -p hyphen-vm --example block_cost
 
 8 份已有归档高度分别为 14、23、7、19、31、15、11、10。加上高度 13 的新兑付归档，九份归档共重放 143 条创世后记录，含共享祖先的重复记录。已有归档的 SHA-256、链顶和累计工作见本机 `target/audit-local/replayed.csv` 与 `reference.jsonl`。新归档的 SHA-256 为 `8080aecd4b168a1fe0c530d29bbe41e7e0b087db849fd0d8b7e2e380ce75de0e`，其目录内的 `reference.jsonl` 记录独立验算结果。原始测量见 `target/audit-local/` 中的 `accelerator-windows.txt`、`cpu-windows.csv`、`range.csv` 和 `vm.csv`。矿工可执行文件 SHA-256 为 `6da2db9703dd57a38fb8f28d504fa4729157a60963f8e7658bfb38efe8dea919`，CUDA DLL 为 `197e188e9eb70b21654dc6938a2ff15bde72b77bb4d7fa3920053fe816d9d728`。独立矿工的锁文件指向共享库提交 `8bb9f0f4c43f1fba8a20bbcb1a0e93b907ccccb7`，主仓测试使用当前工作区源码。
 
-最终源码的 `cargo test --release --locked --offline --workspace --all-targets` 共 447 项通过、2 项默认忽略。另行运行两项忽略测试时，五个实际编译的合约样本通过部署、执行及节点重开检查，公共根 DNS 递归解析测试因 TCP 连接超时失败。合约工具链集成使用 `archived_contract_devnet_v1()`，HYN3 的验证另见上面的开发网归档。Alice 通过项目脚本重建，产物为 10,637 字节，BLAKE3 为 `3f9d8305f8203c28402bc2a4f07b4fae3f85758ed63d16195c965edf2e390187`，四项 VM 集成测试通过。复核 Alice 时使用项目脚本或从合约目录构建，以载入 VM 要求的内存链接配置。独立矿工默认 25 项通过，另行运行的原生 CUDA 测试通过。工作区和矿工格式检查、release Clippy `-D warnings` 均通过。[Alice 构建](../scripts/build-alice-contract.ps1) · [合约工具链验收](../scripts/test-contract-toolchains.ps1)
+集成构建在独立矿工的源码副本上只覆盖 `hyphen-neural` 的来源，保留其余 Git 依赖的提交。本机该副本的 `Cargo.lock` 的 SHA-256 为 `c437caeaf427b0c233b343c929bed652308415041a7f1bd7d463fb3dec938ddf`。从主仓根目录可用本轮保存的配置和锁文件重建并检查集成矿工。
 
-最终重放所用节点的 SHA-256 为 `a03387e7459cec69fc980a8dcae1b306aca99693bbdd461a7f555f8112713ccd`。三分钟挖矿使用的节点早于最终钱包修正，该次节点 SHA-256 为 `6527dea3bae5abd35f995bbf4654eb61eda5b2ce572a3f53be6be898e23fadd5`。独立 Rust 验算与最终节点对九份归档逐一得出相同的链顶。
+```powershell
+$run = (Resolve-Path 'target/explorer-hyn3-eee7ddc8-bfc4-4bfd-90f8-e947316ed8c0').Path
+$cudaDir = (Resolve-Path 'target/hyn3-audit-nov/fresh-cuda').Path
+cargo build --release --locked --offline --config "$run/miner-local.toml" --manifest-path "$run/miner-source/Cargo.toml" --target-dir "$run/miner-build"
+if ($LASTEXITCODE) { throw 'Miner build failed' }
+& "$run/miner-build/release/hyphen-miner.exe" --accelerator-dir $cudaDir accelerator-check --batch 8192 --offset 0 --timings
+```
+
+设置 `HYPHEN_REQUIRE_ALICE_WASM=1` 后，`cargo test --release --locked --offline --workspace --all-targets` 共 448 项通过、2 项默认忽略。单独运行合约工具链脚本，在 `ChainConfig::neural_devnet()` 和 `archived_contract_devnet_v1()` 分别部署并执行 DeFi、NFT、C、C++ 和 Wasm 汇编，重开磁盘库后核对链顶、状态根、存储及查询结果。另一个默认忽略项是公共根 DNS 递归解析，前次遇到 TCP 超时，本轮单跑通过。Alice 通过项目脚本重建，产物为 10,637 字节，BLAKE3 为 `3f9d8305f8203c28402bc2a4f07b4fae3f85758ed63d16195c965edf2e390187`，四项 VM 集成测试通过。独立矿工默认 25 项通过，新 CUDA DLL 的原生评分窗口测试通过。工作区和矿工通过 release Clippy `-D warnings`。[Alice 构建](../scripts/build-alice-contract.ps1) · [合约工具链验收](../scripts/test-contract-toolchains.ps1)
+
+最终重放所用节点的 SHA-256 为 `73ebea9c1a0f5942f9f7eb4977534823800b397f5b7644de8bc020d79d2076ed`。三分钟挖矿所用节点的 SHA-256 为 `6527dea3bae5abd35f995bbf4654eb61eda5b2ce572a3f53be6be898e23fadd5`，首次 70 秒新 CUDA 实矿使用 `5fa9820ff8ff2338de08b0599bb86aa633feab4e04bfab583237cd70e6d81449`。独立 Rust 验算与最终节点对九份归档逐一得出相同的链顶。当前工作区本机原始记录位于 `target/explorer-hyn3-eee7ddc8-bfc4-4bfd-90f8-e947316ed8c0/`，含 `candidate-archives.json`、`candidate-apps.json`、`candidate-render.json`、`candidate-memory.json`、`host-windows.csv`、`before-19.json` 和 `after-19.json`。
 
 独立 fuzz 工作区的四个解码目标通过 `cargo check --release --locked --offline --manifest-path crates/hyphen-fuzz/Cargo.toml --all-targets`。本次记录的是编译检查。`cargo-audit 0.23.0` 使用本地 RustSec 库 `074ea9a7` 和 `--no-fetch --no-yanked`，扫描主仓、fuzz、Alice、独立矿工、矿池和钱包的六份锁文件，报告已知漏洞数均为零。主仓有 `fxhash`、`instant` 和 `paste` 停止维护提示。逐算法的形式化验证、第三方密码学评审和真实资产生产验收仍待完成。

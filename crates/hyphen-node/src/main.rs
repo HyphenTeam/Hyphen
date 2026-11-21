@@ -26,6 +26,7 @@ use hyphen_transport::{
     SubmitBlockRequest, SubmitBlockResult, TP_DECLARE_JOB, TP_DECLARE_JOB_RESULT, TP_GET_TEMPLATE,
     TP_SUBMIT_BLOCK, TP_SUBMIT_RESULT, TP_SUBSCRIBE, TP_TEMPLATE, read_envelope, write_envelope,
 };
+use hyphen_wire::{DEFAULT_WIRE_BYTES, wire_config};
 
 #[derive(Parser, Debug)]
 #[command(name = "hyphen-node", about = "Hyphen blockchain full node")]
@@ -100,6 +101,16 @@ struct Cli {
 /// Fourteen days matches the outside bound a public mempool needs before an
 /// unfunded transaction is treated as abandoned rather than pending.
 const MEMPOOL_ENTRY_TTL_MS: u64 = 14 * 24 * 60 * 60 * 1_000;
+
+fn node_mempool() -> Mempool {
+    let config = MempoolConfig::default()
+        .with_minimum_fee(
+            hyphen_economics::MIN_RELAY_FEE,
+            hyphen_economics::MIN_RELAY_FEE_PER_BYTE,
+        )
+        .with_max_entry_age(MEMPOOL_ENTRY_TTL_MS);
+    Mempool::with_config(config)
+}
 
 fn unix_time_ms() -> u64 {
     std::time::SystemTime::now()
@@ -226,14 +237,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tip.height, tip.hash, tip.cumulative_difficulty
     );
 
-    let mempool = Arc::new(RwLock::new(Mempool::with_config(
-        MempoolConfig::new(10_000)
-            .with_minimum_fee(
-                hyphen_economics::MIN_RELAY_FEE,
-                hyphen_economics::MIN_RELAY_FEE_PER_BYTE,
-            )
-            .with_max_entry_age(MEMPOOL_ENTRY_TTL_MS),
-    )));
+    let mempool = Arc::new(RwLock::new(node_mempool()));
 
     {
         let prune_pool = Arc::clone(&mempool);
@@ -830,6 +834,28 @@ fn validate_template_request(
     Ok(())
 }
 
+// The v5 header (fixed hashes/keys and at most nine bytes per integer),
+// authorization (at most 256 bytes), and outer sequence lengths fit in 1 KiB.
+// A miner may replace header fields and supply full-width witness values.
+fn template_transaction_budget(cfg: &ChainConfig) -> usize {
+    let witnesses = if cfg.feature_enabled(hyphen_core::config::FEATURE_NEURAL_MEMORY_WORK) {
+        1
+    } else if cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+        hyphen_neural::PROFILE_SPEC.input_dim as usize
+    } else {
+        hyphen_pow::MAX_WITNESSES_PER_BLOCK as usize
+    };
+    cfg.max_block_size.saturating_sub(1024 + 9 * witnesses)
+}
+
+fn framed_blob_size(len: usize) -> usize {
+    // Vec<u8> uses a compact unsigned length followed by raw bytes.
+    let prefix = wire_config(16)
+        .serialized_size(&(len as u64))
+        .expect("u64 fits in 9 bytes");
+    len.saturating_add(prefix as usize)
+}
+
 fn build_template(
     blockchain: &Arc<Blockchain>,
     mempool: &Arc<RwLock<Mempool>>,
@@ -837,7 +863,8 @@ fn build_template(
 ) -> Result<BlockTemplate, Box<dyn std::error::Error + Send + Sync>> {
     let mut tx_blobs: Vec<Vec<u8>> = {
         let pool = mempool.read();
-        pool.get_block_candidate_blobs_reserved(cfg.max_block_size, cfg.max_block_size / 4)
+        let budget = template_transaction_budget(cfg);
+        pool.select_candidate_blobs(budget, budget / 4, framed_blob_size)
     };
     tx_blobs.sort_by_cached_key(|transaction| hyphen_crypto::blake3_hash(transaction));
 
@@ -1010,7 +1037,20 @@ fn handle_job_declaration(
     if req.coinbase_script.len() > 4 * 1024 {
         return reject("coinbase script exceeds 4 KiB".into());
     }
-    if req.custom_transactions.iter().map(Vec::len).sum::<usize>() > cfg.max_block_size {
+    if req
+        .custom_transactions
+        .iter()
+        .any(|tx| tx.len() > hyphen_wire::MAX_WIRE_COLLECTION_ITEMS)
+    {
+        return reject("transaction exceeds the block wire format's byte-vector limit".into());
+    }
+    if req
+        .custom_transactions
+        .iter()
+        .map(|tx| framed_blob_size(tx.len()))
+        .sum::<usize>()
+        > template_transaction_budget(cfg)
+    {
         return reject("transactions exceed block byte limit".into());
     }
     let base_template = match build_template(blockchain, mempool, cfg) {
@@ -1071,16 +1111,9 @@ fn handle_job_declaration(
         updated_header: header_data,
     }
 }
-const DEFAULT_WIRE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_WIRE_COLLECTION_ITEMS: usize = 1_000_000;
 
-fn wire_config(max_bytes: usize) -> rustbinary::CompactConfig {
-    rustbinary::options()
-        .with_limit(max_bytes as u64)
-        .with_collection_limit(max_bytes.min(MAX_WIRE_COLLECTION_ITEMS) as u64)
-        .reject_trailing_bytes()
-        .with_compact_format()
-}
+#[cfg(test)]
+mod payment_capacity;
 
 #[cfg(test)]
 mod template_tests {

@@ -273,6 +273,13 @@ impl<'a> BlockValidator<'a> {
     }
 
     pub fn validate_uncle_root(&self, block: &Block) -> Result<(), ValidationError> {
+        // Branch prevalidation also checks this commitment, before verifying PoW.
+        if !block.uncle_headers.is_empty()
+            && (!self.cfg.feature_enabled(FEATURE_UNCLES)
+                || block.uncle_headers.len() > self.cfg.max_uncles)
+        {
+            return Err(ValidationError::TooManyUncles);
+        }
         let computed = block.compute_uncle_root();
         if computed != block.header.uncle_root {
             return Err(ValidationError::UncleRootMismatch);

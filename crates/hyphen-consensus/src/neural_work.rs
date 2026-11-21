@@ -158,9 +158,13 @@ pub fn median_time_past(history: &[BlockHeader]) -> Option<u64> {
         return None;
     }
     let start = history.len().saturating_sub(WORK_MEDIAN_WINDOW);
-    let mut times: Vec<u64> = history[start..].iter().map(|h| h.timestamp).collect();
-    times.sort_unstable();
-    Some(times[times.len() / 2])
+    let mut times = [0; WORK_MEDIAN_WINDOW];
+    let recent = &mut times[..history.len() - start];
+    for (slot, header) in recent.iter_mut().zip(&history[start..]) {
+        *slot = header.timestamp;
+    }
+    let middle = recent.len() / 2;
+    Some(*recent.select_nth_unstable(middle).1)
 }
 
 /// Rejects a block whose timestamp does not advance past the median.
@@ -683,6 +687,40 @@ mod tests {
             expected_threshold(&history, &params),
             params.initial_threshold
         );
+    }
+
+    #[test]
+    fn hyn3_retarget_tracks_hashrate_changes_and_respects_the_ceiling() {
+        let params = neural_work_params(&hyphen_core::ChainConfig::neural_devnet());
+        let initial = params.initial_threshold;
+        let mut history = vec![header(0, 0, initial)];
+        // Deterministic mean solve times. The equilibrium threshold is
+        // inversely proportional to the trial rate at a fixed target time.
+        for equilibrium in [initial, initial / 8, initial, initial * 8] {
+            let mut interval = 0;
+            for _ in 0..2 * WORK_RETARGET_WINDOW {
+                let threshold = expected_threshold(&history, &params);
+                let parent = history.last().unwrap();
+                assert!(
+                    (parent.difficulty.div_ceil(4)..=parent.difficulty.saturating_mul(4))
+                        .contains(&threshold)
+                );
+                assert!(threshold <= params.max_threshold);
+                interval = (u128::from(WORK_TARGET_MS) * u128::from(equilibrium))
+                    .div_ceil(u128::from(threshold)) as u64;
+                history.push(header(
+                    parent.height + 1,
+                    parent.timestamp + interval,
+                    threshold,
+                ));
+            }
+            if equilibrium <= params.max_threshold {
+                assert!(interval.abs_diff(WORK_TARGET_MS) <= 2);
+            } else {
+                assert_eq!(history.last().unwrap().difficulty, params.max_threshold);
+                assert_eq!(interval, 2 * WORK_TARGET_MS);
+            }
+        }
     }
 
     /// Retargeting must compound from the parent's threshold, not from the

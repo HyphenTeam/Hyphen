@@ -591,13 +591,23 @@ impl Mempool {
         max_size: usize,
         protocol_reserve: usize,
     ) -> Vec<Vec<u8>> {
+        self.select_candidate_blobs(max_size, protocol_reserve, |size| size)
+    }
+
+    /// Select in relay priority order, charging the caller's encoded cost per blob.
+    pub fn select_candidate_blobs(
+        &self,
+        max_size: usize,
+        protocol_reserve: usize,
+        encoded_size: impl Fn(usize) -> usize,
+    ) -> Vec<Vec<u8>> {
         let reserve = protocol_reserve.min(max_size);
         let mut result = Vec::new();
         let mut included_protocol = BTreeSet::new();
         let mut total_size = 0usize;
 
         for (hash, entry) in &self.protocol_entries {
-            let next = total_size.saturating_add(entry.payload.len());
+            let next = total_size.saturating_add(encoded_size(entry.payload.len()));
             if next > reserve {
                 continue;
             }
@@ -610,7 +620,7 @@ impl Mempool {
             let Some(entry) = self.entries.get(tx_hash) else {
                 continue;
             };
-            let next = total_size.saturating_add(entry.serialised_size);
+            let next = total_size.saturating_add(encoded_size(entry.serialised_size));
             if next > max_size {
                 continue;
             }
@@ -622,7 +632,7 @@ impl Mempool {
             if included_protocol.contains(hash) {
                 continue;
             }
-            let next = total_size.saturating_add(entry.payload.len());
+            let next = total_size.saturating_add(encoded_size(entry.payload.len()));
             if next > max_size {
                 continue;
             }

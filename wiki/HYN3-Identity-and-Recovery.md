@@ -34,7 +34,9 @@ The HYN3 sync protocol is `/hyphen/48594e33/sync/2`. Peers use magic-scoped disc
 
 Keep binary RPC and Template Provider on loopback or a trusted private link. For remote wallet or mining deployments, use an authenticated encrypted tunnel for any plaintext hop. Pool envelopes and share receipts authenticate messages. A proxy alone supplies routing. After reconnecting, verify the expected chain, request a fresh parent job, and scan from a matching canonical anchor. For a transfer whose acknowledgement was lost, retain its signed bytes and hash and check canonical inclusion before rebroadcast. Offline recipients retain their own signed invoice and validate the settlement after synchronization. [Peer operations](Operations-Peer-Network.md) · [Offline settlement](Offline-Payments.md)
 
-## Three-dimensional block stack
+## Block stack
+
+The default **Parent chain** layout draws canonical blocks in one vertical column and retained branches in adjacent columns. Click a point or choose its full hash in the selector. Switch to **Hash coordinates** to rotate the grid. The tab preserves its selected block, page, layout and angle across a reload.
 
 Let `b` be the first raw byte of the 32-byte block hash. The coordinate cell is `(x, y, z) = (b >> 4, b & 15, height)`. Every height has a 16 × 16 plane. The API encodes `z` as a decimal string to preserve the complete `u64` space in JavaScript. The HYN3 genesis occupies `(7, 1, 0)`. Equal planar coordinates are possible, including among siblings at the same height. The full block hash identifies each block in the selector.
 
@@ -44,4 +46,4 @@ The query `GET /api/blocks?branches=1&page=0&limit=20` returns up to eight extra
 
 ## 中文操作要点
 
-HYN3 使用区块授权 v2。矿工签署完成后的区块头、链身份和两把奖励公钥，钱包据此核验首奖。新钱包恢复时必须保留首词 `hy3-`、末词 `-hy3` 和创建时的密码。旧钱包用原助记词和原密码恢复，并用已知收款地址核对结果。历史余额和离线凭证应在原链上核验。浏览器以高度为纵轴、区块哈希首字节的高低四位为平面坐标，连线依据完整父哈希。重新打开页面也可查看节点保留的已验证分支和暂存块体。
+HYN3 使用区块授权 v2。矿工签署完成后的区块头、链身份和两把奖励公钥，钱包据此核验首奖。新钱包恢复时必须保留首词 `hy3-`、末词 `-hy3` 和创建时的密码。旧钱包用原助记词和原密码恢复，并用已知收款地址核对结果。历史余额和离线凭证应在原链上核验。浏览器默认按高度显示规范链和旁支，两种布局均通过完整父哈希连线。切换到哈希坐标后可旋转视图。重新打开页面也可查看节点保留的已验证分支和暂存块体。

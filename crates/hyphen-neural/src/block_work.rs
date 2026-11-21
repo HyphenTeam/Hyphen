@@ -37,8 +37,12 @@ pub fn low_word(hash: &blake3::Hash) -> u64 {
 /// gate digest) separates the traversal for each candidate. The 32-byte fill
 /// inputs and 64-byte read inputs cannot alias within keyed BLAKE3.
 pub fn memory_digest(gate: blake3::Hash) -> blake3::Hash {
+    memory_digest_with_cells(gate, &mut Vec::with_capacity(MEMORY_CELLS))
+}
+
+fn memory_digest_with_cells(gate: blake3::Hash, cells: &mut Vec<blake3::Hash>) -> blake3::Hash {
+    cells.clear();
     let key = gate.as_bytes();
-    let mut cells = Vec::with_capacity(MEMORY_CELLS);
     let mut state = blake3::keyed_hash(key, b"Hyphen/neural-memory/v3\0");
     for _ in 0..MEMORY_CELLS {
         cells.push(state);
@@ -61,12 +65,24 @@ pub fn memory_digest(gate: blake3::Hash) -> blake3::Hash {
 /// Mining fast path. Validators recompute `score` via `verify_nonce`.
 pub fn qualifies(work: &WorkDescriptor, nonce: u64, score: u64) -> Result<bool, NeuralError> {
     let gate = gate_digest(&work.chain_seed, nonce, score);
-    Ok(low_word(&gate) < NEURAL_GATE && low_word(&memory_digest(gate)) < work.threshold)
+    if low_word(&gate) >= NEURAL_GATE {
+        return Ok(false);
+    }
+    // One allocation per active mining thread, first touched by a finalist.
+    thread_local! {
+        static CELLS: std::cell::RefCell<Vec<blake3::Hash>> =
+            std::cell::RefCell::new(Vec::with_capacity(MEMORY_CELLS));
+    }
+    Ok(
+        CELLS.with_borrow_mut(|cells| low_word(&memory_digest_with_cells(gate, cells)))
+            < work.threshold,
+    )
 }
 
 /// Verify a wire nonce from the public descriptor alone.
 pub fn verify_nonce(work: &WorkDescriptor, nonce: u64) -> Result<bool, NeuralError> {
     let mut weights = [0; PROFILE_SPEC.weight_count()];
     work.derive_weights(&mut weights)?;
-    qualifies(work, nonce, nonce_score(work, &weights, nonce)?)
+    let gate = gate_digest(&work.chain_seed, nonce, nonce_score(work, &weights, nonce)?);
+    Ok(low_word(&gate) < NEURAL_GATE && low_word(&memory_digest(gate)) < work.threshold)
 }

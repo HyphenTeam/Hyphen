@@ -13,13 +13,11 @@
       --amber:#f1bd57;--coral:#ff765f;--danger:#ff5964;--mono:"Cascadia Code","SFMono-Regular",Consolas,monospace
     }
     html{background:var(--ink);color:var(--text);font-family:Inter,"Segoe UI",sans-serif;letter-spacing:0}
-    body{margin:0;min-width:320px;min-height:100vh;background:var(--ink)}
+    body{margin:0;min-width:320px;min-height:100vh;background:radial-gradient(ellipse at 15% 20%,#18544f92,transparent 43%),radial-gradient(ellipse at 80% 4%,#344a655e,transparent 55%),radial-gradient(ellipse at 70% 80%,#38335268,transparent 52%),var(--ink)}
     a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
     button,input{font:inherit;letter-spacing:0}button{cursor:pointer}
     .shell{position:relative;min-height:100vh;display:grid;grid-template-rows:auto 1fr auto}
-    .aurora-sky{position:fixed;inset:0;overflow:hidden;pointer-events:none}
     :root{--flow:cubic-bezier(.22,.78,.18,1);--passage:320ms}
-    .aurora-field{position:absolute;inset:-12%;background:radial-gradient(ellipse at 15% 20%,#18544f92,transparent 43%),radial-gradient(ellipse at 80% 4%,#344a655e,transparent 55%),radial-gradient(ellipse at 70% 80%,#38335268,transparent 52%);transition:transform 640ms var(--flow)}
     .topline{height:3px;background:linear-gradient(95deg,#286367,#83ebc2 38%,#51b7ce 62%,#746a9b)}
     header{border-bottom:1px solid var(--line);background:#0d1011;position:sticky;top:0;z-index:20}
     .header-main{height:68px;max-width:1500px;margin:auto;padding:0 24px;display:flex;align-items:center;gap:26px}
@@ -37,7 +35,7 @@
     nav.tabs a{display:flex;align-items:center;color:var(--muted);font:700 11px var(--mono);border-bottom:2px solid transparent}
     nav.tabs a:hover{text-decoration:none;color:var(--text)}nav.tabs a.active{color:var(--cyan)}
     .tab-indicator{position:absolute;left:0;bottom:0;width:1px;height:2px;background:var(--cyan);transform-origin:left;transform:scaleX(0);transition:transform var(--passage) var(--flow);pointer-events:none}
-    #content{view-transition-name:observatory}
+    .changing-view #content{view-transition-name:observatory}
     :root{view-transition-name:none}
     ::view-transition-group(chain-object),::view-transition-group(observatory){animation-duration:var(--passage);animation-timing-function:var(--flow)}
     ::view-transition-old(observatory){animation:depart 155ms ease-out both}
@@ -46,7 +44,7 @@
     @keyframes arrive{from{opacity:0;transform:translateY(9px)}}
     main td a[href^="#/"]{display:inline-block}
     .metrics,.stack-layout,.detail-grid article,.object-list,.data-table{border-radius:10px;overflow:clip}
-    @media(prefers-reduced-motion:reduce){.aurora-field,.tab-indicator{transition:none}.loading:before{animation:none!important}::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation-duration:0s}}
+    @media(prefers-reduced-motion:reduce){.tab-indicator{transition:none}.loading:before{animation:none!important}::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation-duration:0s}}
     main{width:100%;max-width:1500px;margin:0 auto;padding:24px;min-height:620px}
     .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);background:var(--surface)}
     .metric{min-width:0;padding:17px 18px;border-right:1px solid var(--line)}.metric:last-child{border-right:0}
@@ -81,11 +79,17 @@
     .stack-tools{border-left:1px solid var(--line);padding:18px;display:grid;grid-template-columns:minmax(0,1fr);align-content:center;gap:15px;font:12px var(--mono)}
     .stack-tools label{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;color:var(--muted)}.stack-tools select,.stack-pager button{font:inherit;background:var(--raised);color:var(--text);border:1px solid var(--line);padding:7px}.stack-tools input{accent-color:var(--cyan);width:100%;margin:0}.stack-tools output{overflow-wrap:anywhere;color:var(--cyan)}
     .stack-tools code{overflow-wrap:anywhere}.stack-tools select{max-width:100%}.stack-pager{display:flex;gap:8px;flex-wrap:wrap}.stack-pager button:disabled{opacity:.4}.tabs{overflow-x:auto}.tabs a{white-space:nowrap}
+    .stack-layout [hidden]{display:none}.empty{font:14px/1.5 var(--mono);padding:20px 14px;border:1px solid var(--line);border-radius:10px}
+    .chain-scroll{align-self:stretch;min-width:0;overflow:auto;max-height:460px;scrollbar-color:#47625f #111719;background:radial-gradient(ellipse at top left,#182b2c 0,transparent 68%),#0d1214;display:grid;align-items:safe center}
+    .chain-graph{--card:148px;--gap:38px;--half-row:67px;display:grid;grid-auto-columns:calc(var(--card) + var(--gap));grid-auto-rows:calc(2 * var(--half-row));padding:16px 0 16px 22px;width:max-content;isolation:isolate}
+    .chain-block,.chain-edge{--rail:#548e86;--accent:#9de2cd}.chain-graph [data-status="detached"]{--rail:#a87890;--accent:#e8afc9}.chain-graph [data-status="staged"]{--rail:#727b8b;--accent:#bdc5d3}
+    .chain-block{align-self:center;position:relative;z-index:1;display:grid;justify-items:start;align-content:center;gap:6px;width:var(--card);height:104px;padding:12px 14px;text-align:left;color:var(--text);border:1px solid #344747;border-top:3px solid var(--rail);border-radius:8px;background:linear-gradient(135deg,#1d2a2c,#151d1f);box-shadow:0 4px 10px #0003}
+    .chain-block strong{font:600 21px/1 var(--mono);letter-spacing:-1px}.chain-block code{font:12px var(--mono);color:var(--accent)}.chain-block small{font:11px/1.3 var(--mono);color:#a9b7b8}.chain-block:hover,.chain-block:focus-visible{border-color:var(--accent)}.chain-block[aria-pressed="true"]{border-color:#dfb871;background:linear-gradient(135deg,#322e24,#211f1a)}.chain-block[aria-pressed="true"] strong{color:#f6d798}
+    .chain-edge{margin:var(--half-row) 0 var(--half-row) var(--card);position:relative;color:var(--rail);pointer-events:none;border-top:2px solid}.chain-edge.rises,.chain-edge.falls{border:0}.chain-edge:is(.rises,.falls)::before,.chain-edge:is(.rises,.falls)::after{content:"";position:absolute;width:50%;box-sizing:border-box;left:0}.chain-edge.rises::before{inset-block:0;border-right:2px solid;border-bottom:2px solid;border-radius:0 0 8px 0}.chain-edge.rises::after{left:50%;top:0;border-top:2px solid}.chain-edge.falls::before{inset-block:0;border-right:2px solid;border-top:2px solid;border-radius:0 8px 0 0}.chain-edge.falls::after{left:50%;bottom:0;border-bottom:2px solid}
     @media(max-width:700px){.stack-layout{grid-template-columns:minmax(0,1fr)}.stack-tools{border-left:0;border-top:1px solid var(--line)}}
   </style>
 </head>
 <body>
-  <div class="aurora-sky" aria-hidden="true"><div class="aurora-field"></div></div>
   <div class="topline"></div>
   <div class="shell">
     <header>

@@ -11,7 +11,7 @@ const [chrome, baseline, updated, applications] = process.argv.slice(2);
 if (!updated) throw Error('Usage: node measure-explorer.mjs CHROME BASELINE_URL UPDATED_URL [APPLICATION_HISTORY_URL]');
 const profile = await mkdtemp(join(tmpdir(), 'hyphen-render-'));
 const proc = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', '--no-first-run',
-  '--disable-extensions', `--user-data-dir=${profile}`, '--window-size=1280,800', 'about:blank'],
+  '--disable-extensions', '--disable-features=BackForwardCache', `--user-data-dir=${profile}`, '--window-size=1280,800', 'about:blank'],
 { stdio: ['ignore', 'ignore', 'pipe'] });
 const closed = once(proc, 'close');
 try {
@@ -90,6 +90,9 @@ try {
     await send('Page.navigate', {url: new URL('/#/stack', url).href});
     await until(`location.origin === ${JSON.stringify(new URL(url).origin)} && document.querySelector('.stack-tools code')?.textContent.length === 64`);
     await delay(300);
+    if (label === 'updated') {
+      await evaluate(`(() => { const layout=document.querySelector('.stack-layout-choice'); window.initialLayout=layout.value; layout.value='grid'; layout.dispatchEvent(new Event('change')); return new Promise(resolve=>requestAnimationFrame(()=>resolve(true))); })()`);
+    }
     results[label] = await evaluate(`(async () => {
       const before = {...measure}, slider = document.querySelector('.stack-tools input');
       const start = performance.now();
@@ -103,7 +106,35 @@ try {
         reallocations, dispatchMs, idleDraws:measure.draws-idle};
     })()`);
     assert.equal(results[label].idleDraws, 0);
+    await send('HeapProfiler.collectGarbage');
+    results[label].heap = await send('Runtime.getHeapUsage');
+    results[label].canvasBytes = await evaluate(`document.querySelector('canvas').width * document.querySelector('canvas').height * 4`);
   }
+  const geometry = await evaluate(`(async () => {
+    const data = await (await fetch('/api/blocks?branches=1&limit=20')).json();
+    const layout = document.querySelector('.stack-layout-choice');
+    layout.value=window.initialLayout; layout.dispatchEvent(new Event('change'));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const blocks = data.blocks.concat(data.forks.blocks);
+    const cards = new Map(Array.from(document.querySelectorAll('.chain-block'), c=>[c.dataset.hash,c]));
+    const expected = blocks.filter(b=>cards.has(b.prev_hash));
+    const edges = Array.from(document.querySelectorAll('.chain-edge'));
+    const exact = edges.length === expected.length && expected.every(b=>{
+      const edge = edges.find(e=>e.dataset.child===b.hash && e.dataset.parent===b.prev_hash);
+      if (!edge) return false;
+      const box=edge.getBoundingClientRect(), child=cards.get(b.hash).getBoundingClientRect(), parent=cards.get(b.prev_hash).getBoundingClientRect();
+      const centers=[child.y+child.height/2,parent.y+parent.height/2];
+      return Math.abs(box.left-child.right)<1 && Math.abs(box.right-parent.left)<1 &&
+        Math.abs(box.top-Math.min(...centers))<2 && Math.abs(box.bottom-Math.max(...centers))<=2;
+    });
+    const selectable = blocks.every(b=>{const c=cards.get(b.hash); if (!c) return false; c.click();
+      return c.getAttribute('aria-pressed')==='true' && document.querySelector('.stack-tools code').textContent===b.hash;});
+    return {layout:layout.value, edges:edges.length, exact, selectable, nodes:cards.size, expectedNodes:blocks.length};
+  })()`);
+  assert.equal(geometry.layout, 'chain'); assert.equal(geometry.nodes, geometry.expectedNodes);
+  assert.ok(geometry.selectable && geometry.exact && geometry.edges > 0, JSON.stringify(geometry));
+  results.chainGeometry = geometry;
+  await evaluate(`(() => { const layout=document.querySelector('.stack-layout-choice'); layout.value='grid'; layout.dispatchEvent(new Event('change')); return new Promise(resolve=>requestAnimationFrame(()=>resolve(true))); })()`);
   assert.equal(results.baseline.tip, results.updated.tip);
   assert.equal(results.baseline.options, results.updated.options);
   assert.equal(results.updated.draws, 1);
@@ -165,10 +196,20 @@ try {
       const panel=document.querySelector('.stack-tools'), bounds=panel.getBoundingClientRect();
       return bounds.right <= innerWidth && panel.scrollWidth <= panel.clientWidth &&
         Array.from(panel.querySelectorAll('select, input, code, output, button, a')).every(el => {
-          const r=el.getBoundingClientRect(); return r.left >= bounds.left && r.right <= bounds.right;
+          const r=el.getBoundingClientRect(); return !el.getClientRects().length || (r.left >= bounds.left && r.right <= bounds.right);
         });
     })()`);
     assert.ok(fits, 'Stack controls exceed the panel at width ' + width);
+    assert.ok(await evaluate(`(() => {
+      const layout=document.querySelector('.stack-layout-choice'); layout.value='chain'; layout.dispatchEvent(new Event('change'));
+      const region=document.querySelector('.chain-scroll'), cards=[...region.querySelectorAll('button')];
+      return region.scrollWidth>region.clientWidth && document.documentElement.scrollWidth<=innerWidth && cards.every(card=>{
+        document.querySelector('.stack-tools select').value=card.dataset.hash;
+        document.querySelector('.stack-tools select').dispatchEvent(new Event('change'));
+        const box=card.getBoundingClientRect(), frame=region.getBoundingClientRect();
+        return box.width>=120 && box.left>=frame.left-1 && box.right<=frame.left+region.clientWidth+1;
+      });
+    })()`), 'Block selection must reveal its card at width ' + width);
     results.controlWidths.push(width);
   }
   await send('Emulation.clearDeviceMetricsOverride');
@@ -191,6 +232,23 @@ try {
       const forward = await evaluate('window.measuredPassage');
       assert.ok(forward.animated && forward.old.tag === 'A' && forward.next.tag === 'H1');
       assert.equal(forward.old.text, objectText);
+      if (prefix === '/science/task/' || prefix === '/app/') {
+        const object = await (await fetch(new URL('/api' + hash.slice(1), applications))).json();
+        const fields = await evaluate(`Object.fromEntries([...document.querySelectorAll('main article:first-of-type dt')].map(dt=>[dt.textContent,dt.nextElementSibling.textContent]))`);
+        if (prefix === '/science/task/') {
+          const status = await evaluate(`document.querySelector('main .status').textContent`);
+          assert.equal(status, object.status);
+          assert.equal(fields['Task ID'], object.task_id);
+          assert.equal(fields.Published, '#' + object.published_height);
+          if (object.finalized_height != null) assert.equal(fields.Finalized, '#' + object.finalized_height);
+          assert.equal(fields["Publisher's declared reward"], object.reward + ' HPN');
+        } else {
+          assert.equal(fields.Contract, object.address);
+          assert.equal(fields['Code hash'], object.code_hash);
+          assert.equal(fields.Deployer, object.deployer);
+          assert.equal(fields.Deployed, '#' + object.deployed_height);
+        }
+      }
       if (prefix === '/tx/') {
         const transactionId = hash.slice(('#' + prefix).length);
         assert.match(transactionId, /^[0-9a-f]{64}$/);
@@ -207,6 +265,35 @@ try {
       pairs.push({list, detail:hash, heading:forward.next.text});
     }
     results.listDetailRoundTrips = pairs;
+    results.canonicalLists = [];
+    for (const [origin, populated] of [[updated, false], [applications, true]]) {
+      for (const [path, endpoint, items] of [['/apps', '/api/apps', 'contracts'], ['/science', '/api/science/tasks', 'tasks']]) {
+        await send('Page.navigate', {url:new URL('/#' + path, origin).href});
+        const heading = path === '/apps' ? 'On-chain applications' : 'Verifiable scientific work';
+        await until(`location.origin === ${JSON.stringify(new URL(origin).origin)} && location.hash === ${JSON.stringify('#' + path)} && document.querySelector('h1')?.textContent === ${JSON.stringify(heading)} && document.querySelector('[data-tip]') && document.querySelector('main').getAttribute('aria-busy') === 'false'`);
+        const observed = await evaluate(`(async () => {
+          const url = ${JSON.stringify(endpoint)};
+          const body = await (await fetch(url + '?limit=20')).json();
+          const tag = document.querySelector('[data-tip]');
+          const checked = await fetch(url + '?limit=20&known_tip=' + tag.dataset.tip);
+          await route(false);
+          return {height:body.chain.height, tip:tag.dataset.tip, matches:tag.dataset.tip === body.chain.tip_hash,
+            total:body.total, entries:body[${JSON.stringify(items)}].length, rows:document.querySelectorAll('main tbody tr').length,
+            status:checked.status, preserved:tag === document.querySelector('[data-tip]')};
+        })()`);
+        assert.ok(observed.matches && observed.preserved, JSON.stringify({path, origin, observed}));
+        assert.equal(observed.status, 204);
+        assert.equal(observed.total > 0, populated);
+        assert.equal(observed.rows, observed.entries);
+        // Restore a stale page offset as can happen when a reorg shortens the list.
+        const pageVariable = path === '/apps' ? 'appsPage' : 'sciencePage';
+        const restored = await evaluate(`(async () => { ${pageVariable} = Math.ceil(${observed.total} / PAGE_SIZE) + 1;
+          await route(false); return {page:${pageVariable}, rows:document.querySelectorAll('main tbody tr').length}; })()`);
+        assert.equal(restored.page, Math.max(0, Math.ceil(observed.total / 20) - 1));
+        assert.equal(restored.rows, observed.rows);
+        results.canonicalLists.push({path, ...observed, restoredPage:restored.page});
+      }
+    }
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({...results, chrome:(await send('Browser.getVersion')).product,

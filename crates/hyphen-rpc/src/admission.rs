@@ -21,6 +21,11 @@ pub fn admit_transaction(
     bytes: Vec<u8>,
     now_ms: u64,
 ) -> Result<Hash256, AdmissionError> {
+    if bytes.len() > hyphen_wire::MAX_WIRE_COLLECTION_ITEMS {
+        return Err(AdmissionError::Rejected(
+            "transaction exceeds the block wire format's byte-vector limit".into(),
+        ));
+    }
     let height = chain
         .tip()
         .map_err(|e| AdmissionError::State(e.to_string()))?

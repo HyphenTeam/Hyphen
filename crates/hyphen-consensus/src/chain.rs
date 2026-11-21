@@ -89,6 +89,7 @@ pub struct Blockchain {
     pub reorg: ReorgCoordinator,
     compute_verifier: Arc<dyn ProofVerifier>,
     transition: Mutex<()>,
+    difficulty_headers: Mutex<Vec<BlockHeader>>,
     reorg_visibility: RwLock<()>,
     peer_candidate: sled::Tree,
 }
@@ -254,6 +255,7 @@ impl Blockchain {
             reorg,
             compute_verifier,
             transition: Mutex::new(()),
+            difficulty_headers: Mutex::new(Vec::new()),
             reorg_visibility: RwLock::new(()),
             peer_candidate,
         };
@@ -582,30 +584,40 @@ impl Blockchain {
         Ok(hyphen_crypto::blake3_hash(hash.as_bytes()))
     }
 
-    /// Headers of up to `count` most recent canonical blocks, oldest first.
-    fn recent_headers(&self, count: usize) -> Result<Vec<BlockHeader>, CoreError> {
-        let tip = self.tip()?;
-        let count = count.max(1) as u64;
-        let start = tip.height.saturating_sub(count - 1);
-        let mut headers = Vec::with_capacity((tip.height - start + 1) as usize);
-        for height in start..=tip.height {
-            headers.push(
-                self.blocks
-                    .get_block_by_height(height)
-                    .map_err(|error| CoreError::Storage(error.to_string()))?
-                    .header,
-            );
+    fn difficulty_history(&self) -> Result<Vec<BlockHeader>, CoreError> {
+        let mut cached = self.difficulty_headers.lock();
+        let mut hash = self.tip()?.hash;
+        let cached_tip = cached.last().map(BlockHeader::hash);
+        let window = self.difficulty_window();
+        let mut suffix = Vec::new();
+        // Walk a single parent-linked history even if a reorg replaces the tip.
+        // A normal extension reads just the new block body, regardless of its size.
+        while Some(hash) != cached_tip {
+            let header = self
+                .blocks
+                .get_block_by_hash(&hash)
+                .map_err(|error| CoreError::Storage(error.to_string()))?
+                .header;
+            let genesis = header.height == 0;
+            hash = header.prev_hash;
+            suffix.push(header);
+            if genesis || suffix.len() == window {
+                cached.clear();
+                break;
+            }
         }
-        Ok(headers)
+        let discard = (cached.len() + suffix.len()).saturating_sub(window);
+        cached.drain(..discard);
+        cached.extend(suffix.into_iter().rev());
+        Ok(cached.clone())
     }
 
-    fn difficulty_history(&self) -> Result<Vec<BlockHeader>, CoreError> {
-        let count = if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+    fn difficulty_window(&self) -> usize {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
             crate::neural_work::WORK_RETARGET_WINDOW as usize + 1
         } else {
-            self.cfg.difficulty_window as usize
-        };
-        self.recent_headers(count)
+            (self.cfg.difficulty_window as usize).max(1)
+        }
     }
 
     fn difficulty_from_history(&self, history: &[BlockHeader]) -> u64 {
@@ -652,7 +664,6 @@ impl Blockchain {
         &self,
         block: &Block,
         parent_commitment: &Hash256,
-        required: u64,
         history: &[BlockHeader],
     ) -> Result<(), CoreError> {
         if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
@@ -665,6 +676,13 @@ impl Blockchain {
             .map_err(|error| CoreError::Validation(format!("neural work rejected: {error:?}")));
         }
 
+        let required = ordinary_difficulty(history, &self.cfg);
+        if block.header.difficulty != required {
+            return Err(CoreError::Validation(format!(
+                "difficulty mismatch: expected {required}, got {}",
+                block.header.difficulty
+            )));
+        }
         verify_witnesses(&block.pow_witnesses, self.cfg.pouw_chain_length, required)
             .map_err(|error| CoreError::Validation(format!("proof of work rejected: {error}")))?;
 
@@ -873,11 +891,10 @@ impl Blockchain {
         if encoded_size > self.cfg.max_block_size.min(crate::DEFAULT_WIRE_BYTES) as u64 {
             return Err(CoreError::BlockTooLarge);
         }
-        let parent_header = self
-            .blocks
-            .get_block_by_height(tip.height)
-            .map_err(|error| CoreError::Storage(error.to_string()))?
-            .header;
+        let history = self.difficulty_history()?;
+        let parent_header = history
+            .last()
+            .ok_or_else(|| CoreError::Storage("missing canonical parent".into()))?;
         if parent_header.hash() != tip.hash {
             return Err(CoreError::Storage(
                 "stored parent differs from canonical tip".into(),
@@ -922,15 +939,6 @@ impl Blockchain {
             })
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
-        let history = self.difficulty_history()?;
-        let expected_difficulty = self.difficulty_from_history(&history);
-        if block.header.difficulty != expected_difficulty {
-            return Err(CoreError::Validation(format!(
-                "difficulty mismatch: expected {}, got {}",
-                expected_difficulty, block.header.difficulty
-            )));
-        }
-
         let epoch_seed = self.epoch_seed_for_height(block.header.height)?;
         if block.header.epoch_seed != epoch_seed {
             return Err(CoreError::Validation(format!(
@@ -938,7 +946,7 @@ impl Blockchain {
                 block.header.epoch_seed
             )));
         }
-        self.validate_witnesses(block, &parent_commitment, expected_difficulty, &history)?;
+        self.validate_witnesses(block, &parent_commitment, &history)?;
 
         let expected_reward =
             hyphen_economics::emission::lcd_base_reward(block.header.height, &self.cfg);
@@ -1028,18 +1036,18 @@ impl Blockchain {
             .height
             .checked_add(1)
             .ok_or_else(|| CoreError::Validation("chain height exhausted".into()))?;
-        let parent = self
-            .blocks
-            .get_block_by_hash(&tip.hash)
-            .map_err(|e| CoreError::Storage(e.to_string()))?
-            .header;
+        let mut history = self.difficulty_history()?;
+        let difficulty = self.difficulty_from_history(&history);
+        let parent = history
+            .pop()
+            .ok_or_else(|| CoreError::Storage("missing canonical parent".into()))?;
         let mut selected = Vec::with_capacity(blobs.len());
         let (total_fee, state) =
             self.validate_transaction_blobs_for_height_locked(blobs, height, Some(&mut selected))?;
         let template = CandidateTemplate {
             height,
             parent,
-            difficulty: self.next_difficulty()?,
+            difficulty,
             epoch_seed: self.epoch_seed_for_height(height)?,
             commitment_root: self.commitment_tree.read().root(),
             nullifier_root: self
@@ -1355,9 +1363,7 @@ impl Blockchain {
             ));
         }
         let mut history = Vec::new();
-        let window = (crate::neural_work::WORK_RETARGET_WINDOW as usize + 1)
-            .max(self.cfg.difficulty_window as usize)
-            .max(1);
+        let window = self.difficulty_window();
         for height in base.saturating_sub(window as u64 - 1)..=base {
             history.push(
                 self.blocks
@@ -2107,6 +2113,14 @@ mod tests {
             chain.accept_block(block).unwrap();
         }
         let detached = chain.canonical_output(0).unwrap();
+        let expected_headers = |branch: &[Block]| {
+            std::iter::once(&genesis)
+                .chain(branch)
+                .skip((branch.len() + 1).saturating_sub(cfg.difficulty_window as usize))
+                .map(|b| b.header.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(chain.difficulty_history().unwrap(), expected_headers(&old));
         assert_eq!(detached.block_hash, old[0].hash());
         assert!(chain.canonical_output(2).is_err());
         for block in &new {
@@ -2123,6 +2137,7 @@ mod tests {
         );
         let tip = chain.tip().unwrap();
         assert_eq!(tip.hash, new[2].hash());
+        assert_eq!(chain.difficulty_history().unwrap(), expected_headers(&new));
         assert_eq!(tip.height, 3);
         assert_eq!(tip.cumulative_difficulty, 6);
         assert_eq!(tip.total_outputs, 3);
@@ -2138,7 +2153,11 @@ mod tests {
         }
         drop(chain);
         db.drop_tree("branch_positions_v1").unwrap();
-        let upgraded = Blockchain::open_db(db, cfg).unwrap();
+        let upgraded = Blockchain::open_db(db, cfg.clone()).unwrap();
+        assert_eq!(
+            upgraded.difficulty_history().unwrap(),
+            expected_headers(&new)
+        );
         assert_eq!(upgraded.branch_blocks.at_height(1, 8).unwrap(), positions);
     }
 
@@ -2837,11 +2856,24 @@ mod tests {
     fn compiled_contract_toolchains() {
         let directory =
             std::path::PathBuf::from(std::env::var_os("HYPHEN_CONTRACT_TOOLCHAINS").unwrap());
-        let cfg = ChainConfig::archived_contract_devnet_v1();
-        let db = sled::Config::new().temporary(true).open().unwrap();
-        let chain = Blockchain::open_db(db.clone(), cfg.clone()).unwrap();
+        for cfg in [
+            ChainConfig::neural_devnet(),
+            ChainConfig::archived_contract_devnet_v1(),
+        ] {
+            exercise_contract_toolchains(&directory, cfg);
+        }
+    }
+
+    fn exercise_contract_toolchains(directory: &std::path::Path, cfg: ChainConfig) {
+        let db = tempfile::tempdir().unwrap();
+        let path = db.path().to_str().unwrap();
+        let chain = Blockchain::open(path, cfg.clone()).unwrap();
         let genesis = build_genesis_block(&cfg);
-        let mut block = child(&cfg, &genesis, 77, 1);
+        let mut block = if cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            neural_child(&chain, &cfg, &genesis, 77)
+        } else {
+            child(&cfg, &genesis, 77, 1)
+        };
         let mut rows = Vec::new();
         for (i, language) in ["c", "cpp", "s", "limit-orders", "collection"]
             .into_iter()
@@ -2928,7 +2960,7 @@ mod tests {
                     .encode()
                     .unwrap(),
             );
-            rows.push((address, key, expected));
+            rows.push((address, key, expected, query));
         }
         block.header.tx_root = block.compute_tx_root();
         block.header.commitment_root = chain.commitment_tree.read().root();
@@ -2937,10 +2969,19 @@ mod tests {
         authorize_block(&cfg, &mut block, 77);
         chain.accept_block(&block).unwrap();
         drop(chain);
-        let chain = Blockchain::open_db(db, cfg).unwrap();
+        let chain = Blockchain::open(path, cfg).unwrap();
         assert_eq!(chain.state_root().unwrap(), block.header.state_root);
-        for (address, key, expected) in rows {
+        for (address, key, expected, query) in rows {
             assert_eq!(chain.vm_storage(address, &key).unwrap(), expected);
+            let (tip, snapshot) = chain.vm_query_snapshot(address).unwrap();
+            assert_eq!(tip, block.hash());
+            assert_eq!(
+                snapshot
+                    .unwrap()
+                    .query(query.function, query.args, query.gas_limit)
+                    .unwrap(),
+                expected
+            );
         }
     }
 

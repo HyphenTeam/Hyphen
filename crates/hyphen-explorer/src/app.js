@@ -11,7 +11,7 @@ let sciencePage = 0;
 let appsPage = 0;
 let refreshTimer = null;
 let stackPage = 0;
-const stackView = { angle: '35', hash: null };
+const stackView = { angle: '35', hash: null, layout: 'chain' };
 // Keep the tab's last public block selection across reloads without writing on every input.
 const stackStorageKey = 'hyphen.explorer.stack.v1';
 try {
@@ -21,17 +21,21 @@ try {
     stackPage = saved.page;
     stackView.hash = saved.hash;
     stackView.angle = String(saved.angle);
+    if (saved.layout === 'grid') stackView.layout = 'grid';
   }
 } catch { /* Unavailable session storage or an obsolete tab record. */ }
 window.addEventListener('pagehide', () => {
   if (!stackView.hash) return;
   try {
-    sessionStorage.setItem(stackStorageKey, JSON.stringify({ page: stackPage, hash: stackView.hash, angle: Number(stackView.angle) }));
+    sessionStorage.setItem(stackStorageKey, JSON.stringify({ ...stackView, page: stackPage, angle: Number(stackView.angle) }));
   } catch { /* The current view remains usable with storage disabled. */ }
 });
 let activeRequest;
 let disposeView;
 let currentView;
+let previousStack;
+let displayedListUrl;
+let previousTask;
 
 async function api(path, signal) {
   const response = await fetch(path, { signal, headers: { Accept: 'application/json' } });
@@ -65,6 +69,8 @@ function wasmRender(view, payload) {
 function showError(error) {
   disposeView?.();
   disposeView = undefined;
+  previousStack = undefined;
+  displayedListUrl = previousTask = undefined;
   const panel = document.createElement('div');
   panel.className = 'error';
   panel.setAttribute('role', 'alert');
@@ -84,7 +90,7 @@ async function route(animate = true) {
   const path = routePath();
   const section = path === '/stack' ? 'stack' : path.startsWith('/science') ? 'science'
     : path === '/apps' || path.startsWith('/app/') ? 'apps' : 'home';
-  aurora.select(section);
+  if (animate || currentView !== path) aurora.select(section);
   content.setAttribute('aria-busy', 'true');
   const id = encodeURIComponent(path.split('/').at(-1));
   const pages = {
@@ -94,19 +100,42 @@ async function route(animate = true) {
   const detail = [[ '/science/task/', 2, '/api/science/task/' ], [ '/block/', 3, '/api/block/' ],
     [ '/tx/', 4, '/api/tx/' ], [ '/app/', 6, '/api/app/' ]].find(([prefix]) => path.startsWith(prefix));
   try {
-    let html, stack;
+    let html, stack, stackBody, taskBody;
     if (path === '/') {
       const [info, blocks] = await Promise.all(['/api/info', `/api/blocks?page=${blockPage}&limit=${PAGE_SIZE}`]
         .map(async url => (await api(url, signal)).text()));
       // Preserve the server's integer tokens until Rust deserializes the view.
       html = wasmRender(0, `{"info":${info},"blocks":${blocks}}`);
     } else if (path === '/stack') {
-      stack = await (await api(`/api/blocks?page=${stackPage}&limit=${PAGE_SIZE}&branches=1`, signal)).json();
+      stackBody = await (await api(`/api/blocks?page=${stackPage}&limit=${PAGE_SIZE}&branches=1`, signal)).text();
+      if (stackBody === previousStack && currentView === path) return;
+      stack = JSON.parse(stackBody);
+      if (!signal.aborted && !stack.blocks.length && stackPage > 0) {
+        stackPage = Math.floor(stack.total_height / PAGE_SIZE);
+        return route(false);
+      }
     } else {
       const entry = pages[path] || (detail && [detail[1], detail[2] + id]);
       if (!entry) throw new Error('Unknown explorer route');
-      const payload = await api(entry[1], signal);
-      html = wasmRender(entry[0], await payload.text());
+      const tip = !animate && displayedListUrl === entry[1] && content.querySelector('[data-tip]')?.dataset.tip;
+      const payload = await api(entry[1] + (tip ? `&known_tip=${encodeURIComponent(tip)}` : ''), signal);
+      if (payload.status === 204) return;
+      const body = await payload.text();
+      if (signal.aborted) return;
+      if (entry[0] === 2) {
+        if (currentView === path && previousTask === body) return;
+        taskBody = body;
+      }
+      if (pages[path] && (path === '/apps' ? appsPage : sciencePage) > 0) {
+        const { total, offset, limit } = JSON.parse(body);
+        if (offset >= total) {
+          const page = Math.max(0, Math.ceil(total / limit) - 1);
+          if (path === '/apps') appsPage = page;
+          else sciencePage = page;
+          return route();
+        }
+      }
+      html = wasmRender(entry[0], body);
     }
     if (signal.aborted) return;
     await aurora.replace(() => {
@@ -116,13 +145,18 @@ async function route(animate = true) {
       if (stack) disposeView = renderBlockStack(content, stack.blocks, stackPage, stack.forks, stackView);
       else content.innerHTML = html;
       currentView = path;
+      previousStack = stackBody;
+      previousTask = taskBody;
+      displayedListUrl = pages[path]?.[1];
     }, animate && currentView !== undefined, currentView, path);
   } catch (error) {
     if (!signal.aborted) showError(error);
   } finally {
     if (!signal.aborted) {
       content.setAttribute('aria-busy', 'false');
-      if (path === '/' && !document.hidden) refreshTimer = setTimeout(() => route(false), 15000);
+      if (!document.hidden && (path === '/' || pages[path] || path === '/stack' || path.startsWith('/science/task/'))) {
+        refreshTimer = setTimeout(() => route(false), 15000);
+      }
     }
   }
 }
@@ -166,7 +200,7 @@ document.getElementById('searchForm').addEventListener('submit', async event => 
 
 document.addEventListener('visibilitychange', () => {
   clearTimeout(refreshTimer);
-  if (!document.hidden && routePath() === '/') route(false);
+  if (!document.hidden) route(false);
 });
 
 window.addEventListener('hashchange', () => route().catch(showError));
