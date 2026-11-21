@@ -1,4 +1,4 @@
-# Hyphen: Verifiable Mathematical Work for a Private Settlement Chain
+# Hyphen neural proof of work and private settlement
 
 Status: research base chain. No mainnet has been launched, no independent
 consensus, cryptographic or circuit audit has been performed, and nothing in
@@ -9,12 +9,7 @@ below is labelled with what the code actually establishes today.
 
 ## 0. Summary
 
-Hyphen is a Rust base chain that replaces digest grinding with a **search for
-number-theoretic witnesses**, and separates that workload from a private
-settlement layer built on CLSAG ring signatures, Pedersen commitments and
-recoverable state expiry.
-
-Cunningham origins are independently verifiable and consumable once per canonical branch. Stored and publicly disclosed origins can contribute to a competing branch. Cumulative weight measures accepted origin count. The protocol supplies no lower bound on search performed after a parent appeared. Network-specific acceptance rules are frozen in the [consensus profile table](Consensus-Profiles.md).
+Hyphen is a Rust research blockchain for private payments and Wasm applications. On `neural-devnet`, miners evaluate a fixed-point neural network for each nonce. When the BLAKE3 gate passes, they compute the final digest using a 1 MiB scratchpad. Nodes independently verify both thresholds.
 
 Everything else in this document is engineering: how the state transitions
 atomically, how difficulty is controlled without floating point, how keys and
@@ -39,16 +34,13 @@ forty lines of byte shuffling. The dependency graph is 267 crates; it dropped by
 Unsupported proof systems are rejected according to the active [profile rules](Consensus-Profiles.md).
 Section 11 records the implementation status and open validation requirements for each research mechanism.
 
-**Keep the useful output.** A proof of work should leave something behind. The
-witness set is a deduplicated, independently checkable dataset of prime chains
-that any observer can export and verify; it is the chain's scientific output,
-not an internal counter.
+Application compute tasks carry their own signed descriptions and results. The block work score determines mining eligibility.
 
 ## 2. System overview
 
 | Layer | Implementation | Status |
 | --- | --- | --- |
-| Consensus | Witness index, work commitment and difficulty | [Profile rules](Consensus-Profiles.md) |
+| Consensus | Neural score, BLAKE3 scratchpad and threshold-based fork weight | [Consensus](Consensus-Neural-Work.md) |
 | State | Atomic multi-root transition with undo journal, reorg coordinator, H-WES expiry | Active |
 | Privacy | Stealth addresses, CLSAG rings, Pedersen commitments, Bulletproof-style range proofs | Active |
 | Disclosure | H-SAC one-output opening with scoped Schnorr ownership proof | Research, inactive |
@@ -62,19 +54,7 @@ not an internal counter.
 
 ### 3.1 Block validation
 
-The node validates height, parent hash, epoch seed, work commitment and the required difficulty against the parent state. The encoded list, commitment preimage, feature gates and state versions are specified in the [profile table and transition rules](Consensus-Profiles.md).
-
-### 3.2 Cunningham witnesses
-
-Primecoin pioneered prime-chain proof of work and constrains its origin by divisibility by the block-header hash. Hyphen accepts mathematically valid origins found before the parent existed. Each branch maintains a consumed-origin index. Overlapping windows can have distinct origins, and detached origins can be claimed on another branch. This changes both storage costs and the assumptions required for fork security. [Primecoin proof verification](https://github.com/primecoin/primecoin/blob/8acbee471c69a39bdb04ac2a941edb7112fb5dfa/src/prime.cpp#L385-L419)
-
-### 3.3 Difficulty
-
-Header difficulty must equal the count derived from the parent history. In a paired search trace, finding 512 C4 origins took 3,012,715 candidate tests. Submitting a previously stored copy consumed all 512 with zero new tests. The integer controller and its fast-span guard are specified separately from the search experiment. [Consensus rules](Consensus-Profiles.md) · [Methods and measurements](Witness-Inventory-Measurements.md)
-
-### 3.4 Reorganization and time
-
-Nodes evaluate a candidate with respect to its common ancestor. Only a fully valid, strictly heavier branch replaces the canonical tip. The origin index changes atomically with each attach and detach. Following work commitments alone cannot establish non-membership. Future-time admission depends on the observing clock. See the [state, client and time rules](Consensus-Profiles.md).
+Full nodes derive the nonce challenge from the parent, height and miner key. They verify the two gates, timestamp, branch-specific threshold, miner authorization and state transition. Branch adoption requires strictly greater validated cumulative weight. [Consensus rules](Consensus-Neural-Work.md)
 
 ## 4. State model
 
@@ -174,15 +154,12 @@ core.
 Stated plainly, because a reader who discovers these later has been misled:
 
 1. **No audit, no mainnet.** `mainnet` here is a research profile.
-2. Inventory concentration and marginal fork-construction costs remain open security parameters.
-3. **PoUW v3 does not justify SNARK, useful-dataset or energy-efficiency
-   claims.** The witness set is real mathematical data with a measured
-   structural verification asymmetry, and that is the whole claim.
-4. **Research mechanisms are inactive on devnet.** H-WES shielded recovery,
+2. Independent measurements of optimized solvers, dedicated hardware, memory–time tradeoffs and energy per verified block are pending.
+3. **Research mechanisms outside HYN3.** H-WES shielded recovery,
    H-BFM DAG set agreement, H-FOC' live pacemaker and beacon, and the H-SAC
    compliance circuit are unimplemented beyond the reference models.
-5. Settlement activation and verifier selection follow the [profile table](Consensus-Profiles.md).
-6. **Cross-repository coordination is mandatory.** Miner, Pool and Wallet pin
+4. See the profile table for the active settlement verifier. [HYN3 profile](Consensus-Profiles.md)
+5. **Cross-repository coordination is mandatory.** Miner, Pool and Wallet pin
    chain identity and block version; a consensus change requires updating all
    three before any joint test can pass.
 
@@ -192,15 +169,13 @@ The release priority is a quantified fork-security model, reproducible consensus
 
 <!-- hyphen-bilingual-chinese -->
 
-# Hyphen：可验证数学工作量与隐私结算链
+# Hyphen 神经工作量证明与隐私结算
 
 状态：研究型主链。尚未启动主网，也没有经过独立的共识、密码学或电路审计；本文任何内容都不构成对真实资产安全的声明。下面每个机制都标注了代码今天真正建立的东西。
 
 ## 0. 摘要
 
-Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞，并把该工作量与建立在 CLSAG 环签名、Pedersen 承诺和可恢复状态过期之上的隐私结算层分离。
-
-有效的 Cunningham 起点可以被每条规范分支各认领一次，发现时间不受父块约束。已经囤积或公开的答案可用于竞争分支。累计权重给出了已认领数量，无法单独给出父块出现后新增搜索成本的下界。各网络的生效条件见[共识规则表](Consensus-Profiles.md)。
+Hyphen 是以 Rust 实现的隐私支付与 Wasm 应用研究链。`neural-devnet` 的矿工搜索由 nonce 派生的定点神经网络输入，初筛通过后执行 BLAKE3 scratchpad，节点独立复算两个门槛。
 
 其余内容都是工程：状态如何原子迁移、难度如何在不使用浮点的前提下控制、密钥与地址如何派生，以及还有什么尚未证明。
 
@@ -214,13 +189,13 @@ Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞
 
 第 11 节列出各项研究机制的实现状态和仍需完成的验证。
 
-**留下有用的产出。** 工作量证明应当留下东西。见证集是一份去重、可独立核验的素数链数据集，任何观察者都能导出并验证；它是链的科学产出，而不是内部计数器。
+应用计算任务单独签名和结算；区块的神经评分用于判定出块资格。
 
 ## 2. 系统总览
 
 | 层 | 实现 | 状态 |
 | --- | --- | --- |
-| 共识 | 见证索引、承诺、难度与区块格式 | [按 profile 查看](Consensus-Profiles.md) |
+| 共识 | 定点神经评分、内存门槛和累计权重 | [规范](Consensus-Neural-Work.md) |
 | 状态 | 带 undo journal 的多根原子迁移、reorg 协调器、H-WES 过期 | 生效 |
 | 隐私 | 隐身地址、CLSAG 环签名、Pedersen 承诺、Bulletproof 型范围证明 | 生效 |
 | 披露 | H-SAC 单输出 opening + 受限 Schnorr 所有权证明 | 研究，未激活 |
@@ -234,19 +209,7 @@ Hyphen 是一条 Rust 基础链，它用**数论见证搜索**取代摘要碰撞
 
 ### 3.1 区块与 epoch
 
-节点从父状态重算高度、父哈希、epoch seed 和所需见证数。各 profile 的区块格式、状态版本、字段编码及激活条件见[共识规范](Consensus-Profiles.md)。
-
-### 3.2 数论见证
-
-Primecoin 要求素数链 origin 能被区块头哈希整除。Hyphen 的数学有效性只依赖链长和起点，分支状态决定该起点还能否认领。较长链的重叠窗口可以分别计权。重组释放分离区块的起点，公开见证可跨分支复用。[Primecoin 验证源码](https://github.com/primecoin/primecoin/blob/8acbee471c69a39bdb04ac2a941edb7112fb5dfa/src/prime.cpp#L385-L419)
-
-### 3.3 难度与权重
-
-区块头申报难度必须等于节点按父状态推导的难度。在配对搜索实验中，找到 512 个 C4 起点需要检查 3,012,715 个候选。使用已存清单时，同样的 512 个起点所需新增搜索为零。[难度规则](Consensus-Profiles.md) · [实验与原始数据](Witness-Inventory-Measurements.md)
-
-### 3.4 重组与时间
-
-节点按共同祖先状态逐块验证更重候选。每次连接或撤销同时更新规范链尖与见证索引。仅跟踪工作承诺的轻客户端无法验证起点唯一性。本地观察时间影响未来块的接收时间。[客户端及重放规则](Consensus-Profiles.md)
+全节点重算神经分数、BLAKE3 scratchpad、阈值、时间与状态转移，并检查奖励授权。重组时仅接纳验证通过且累计权重严格更大的分支。[计算与选链规则](Consensus-Neural-Work.md)
 
 ## 4. 状态模型
 
@@ -301,10 +264,9 @@ R(h)     = R_lcd(h) · μ(h)
 直说，因为读者若在之后才发现这些，就是被误导了：
 
 1. **没有审计，没有主网。** 这里的 `mainnet` 是研究 profile。
-2. 见证库存及分支复用带来的经济优势仍需量化。
-3. **PoUW v3 不支持 SNARK、有用数据集或能效声明。** 见证集是带结构性验证不对称性的真实数学数据，这就是全部主张。
-4. **研究机制在 devnet 上未激活。** H-WES 屏蔽恢复、H-BFM DAG 集合一致性、H-FOC' 在线 pacemaker 与 beacon、H-SAC 合规电路都只有参考模型之外的实现尚缺。
-5. 电路激活情况见[共识规则表](Consensus-Profiles.md)。
-6. **跨仓库协同是强制的。** Miner、Pool、Wallet 各自固定链身份与区块版本；任何共识变更都必须同步更新三者，否则联合测试无法通过。
+2. 专用硬件优势、替代求解器成本及每焦耳评分需要独立测量。
+3. H-WES 屏蔽恢复、H-BFM DAG 集合一致性、H-FOC' 在线 pacemaker 与 beacon、H-SAC 合规电路仍处于研究阶段。
+4. HYN3 从创世启用内联 Alice 任务验证器。[共识规则表](Consensus-Profiles.md)
+5. 矿工、矿池和钱包分别核对链身份与区块版本，共识变更需要跨仓库联测。
 
 发布前优先验证分叉权重的安全模型、共识与金额守恒向量、故障恢复，并接受独立审查。

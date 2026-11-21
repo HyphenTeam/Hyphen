@@ -4,9 +4,7 @@ This is the operator runbook for a single full node under `systemd`. It covers
 the "local devnet" and "private multi-node" stages of
 [Incentivized testnet readiness](Operations-Incentivized-Testnet.md). The requirements for a public testnet remain open. Balances on these development networks have no monetary value.
 
-Every `hyphen-node` command below was executed against a binary built from this
-tree on Linux (Ubuntu 24.04, Rust 1.97.1). The unit file passes
-`systemd-analyze verify`; the `systemctl` steps themselves need a real host.
+The earlier deployment was exercised on Ubuntu 24.04. The HYN3 identity and local acceptance results below were checked on Windows. Section 6 gives the systemd checks for a Linux host. [Acceptance results](Operations-Verification.md)
 
 ## 1. Host requirements
 
@@ -44,16 +42,16 @@ have no place on a node.
 Record the identity before you install anything:
 
 ```bash
-./target/release/hyphen-node --network devnet --print-chain-identity
+./target/release/hyphen-node --network neural-devnet --print-chain-identity
 ```
 
 Expected for the current devnet profile:
 
 ```text
-network=hyphen-devnet-v2
-network_magic=48594456
-consensus_params_hash=521f6cdc47f4424c1ea7b9f4d6770cf114f620cdff62958060f8c6953cb69de8
-genesis_hash=5f7c144f0ef27880259b2429e46ef175685da679916fcc6b80c45f457465e32d
+network=hyphen-neural-devnet-v3
+network_magic=48594e33
+consensus_params_hash=4f3b68f56eb14d9d022d2f6b970811b3d8d53f5a3f6db07f70763cd7e5c17d49
+genesis_hash=710ad7eb105d56901495cf9c31f07f749cb812ddf3848f978e2bd133b7ebc926
 ```
 
 If those lines differ from what your peers publish, you built a different
@@ -72,7 +70,7 @@ sudo install -o root -g hyphen -m 0640 deploy/systemd/node.env.example /etc/hyph
 sudo install -o root -g root   -m 0644 deploy/systemd/hyphen-node.service /etc/systemd/system/hyphen-node.service
 ```
 
-`/var/lib/hyphen/data` holds the sled database; `/var/lib/hyphen/data/p2p_identity.key`
+`/var/lib/hyphen/neural-v3` holds the sled database; `/var/lib/hyphen/neural-v3/p2p_identity.key`
 is the node's libp2p key and is created with mode `0600`. That key is the
 node's network identity: losing or leaking it changes who your peers think you
 are.
@@ -85,15 +83,8 @@ Edit `/etc/hyphen/node.env`:
 sudoedit /etc/hyphen/node.env
 ```
 
-- `HYPHEN_NETWORK` — `devnet`, `testnet` or `mainnet`.
-- `HYPHEN_P2P_PORT` — must match the firewall rule in §5. Network defaults:
-  mainnet `18334`, testnet `38334`, devnet `48334`.
-- `HYPHEN_RPC_PORT` — mainnet `18333`, testnet `38333`, devnet `48333`.
-- `HYPHEN_BOOT_NODES` — comma-separated multiaddrs, each ending in
-  `/p2p/<peer-id>`. An address without a peer id is rejected at startup
-  because it cannot be authenticated. Empty is valid on devnet/testnet;
-  **mainnet refuses to start without at least one** (a first seed node uses
-  `--allow-isolated-mainnet` manually instead).
+- Set `HYPHEN_NETWORK=neural-devnet`. P2P defaults to port 48334 and binary RPC to 48333.
+- `HYPHEN_BOOT_NODES` accepts comma-separated multiaddrs ending in `/p2p/<peer-id>`. Leave it empty for a local seed node.
 - `HYPHEN_DB_CACHE_MB` — page cache for the storage engine. `sled` would
   otherwise reserve 1 GiB on its own. Default 64, floor 16.
 
@@ -180,8 +171,8 @@ curl -s http://127.0.0.1:8080/api/info     # chain tip and supply
 ```
 
 ```json
-{"height":0,"tip_hash":"…","cumulative_difficulty":"0","network":"hyphen-devnet-v2",
- "block_time_target_secs":30,"current_reward":"…","total_supply":"…","difficulty":1,"…"}
+{"height":0,"tip_hash":"710ad7eb105d56901495cf9c31f07f749cb812ddf3848f978e2bd133b7ebc926",
+ "network":"hyphen-neural-devnet-v3","block_time_target_secs":30}
 ```
 
 `height` and `tip_hash` are the two fields to alert on. There is no Prometheus
@@ -298,16 +289,16 @@ against the chain identity on the receiving side:
 
 ```bash
 sudo systemctl stop hyphen-node
-sudo /opt/hyphen/bin/hyphen-node --network devnet \
-  --data-dir /var/lib/hyphen/data \
+sudo /opt/hyphen/bin/hyphen-node --network neural-devnet \
+  --data-dir /var/lib/hyphen/neural-v3 \
   --export-history /var/backups/hyphen.chain
 sudo systemctl start hyphen-node
 
 # verify every historical transition in a temporary database
-sudo /opt/hyphen/bin/hyphen-node --network devnet --verify-history /var/backups/hyphen.chain
+sudo /opt/hyphen/bin/hyphen-node --network neural-devnet --verify-history /var/backups/hyphen.chain
 
 # or rebuild a fresh data directory from it
-sudo /opt/hyphen/bin/hyphen-node --network devnet \
+sudo /opt/hyphen/bin/hyphen-node --network neural-devnet \
   --data-dir /var/lib/hyphen/restore \
   --replay-history /var/backups/hyphen.chain
 ```
@@ -340,7 +331,6 @@ What actually matters in the journal:
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `mainnet requires --boot-nodes` | set `HYPHEN_BOOT_NODES`; only a first seed node may run isolated |
 | `boot node '…' is missing /p2p/<peer-id>` | add the peer id; unauthenticated addresses are refused |
 | `consensus parameters differ from genesis` | data directory from another network or profile — use a fresh one |
 | `Address already in use` | another process holds the port; check `ss -lntp` |
@@ -367,7 +357,7 @@ What actually matters in the journal:
 
 本指南介绍如何使用 `systemd` 部署和维护全节点，适用于本地开发网和私有多节点网络。公开激励测试网的启动条件尚未满足，这些开发网上的余额不具备货币价值。[激励测试网启动条件](Operations-Incentivized-Testnet.md)
 
-以下 `hyphen-node` 命令都在本仓库构建出的二进制上、在 Linux 上实际执行过（Ubuntu 24.04，Rust 1.97.1）。单元文件通过 `systemd-analyze verify`；`systemctl` 那几步需要在真实主机上执行。
+早期部署曾在 Ubuntu 24.04 上验证。本次 HYN3 身份核对和本地验收使用 Windows。Linux 主机的 systemd 检查见第 6 节。[验收记录](Operations-Verification.md)
 
 ## 1. 主机要求
 
@@ -400,16 +390,16 @@ cargo build --release --locked -p hyphen-node
 安装之前先记录链身份：
 
 ```bash
-./target/release/hyphen-node --network devnet --print-chain-identity
+./target/release/hyphen-node --network neural-devnet --print-chain-identity
 ```
 
 当前 devnet 配置应为：
 
 ```text
-network=hyphen-devnet-v2
-network_magic=48594456
-consensus_params_hash=521f6cdc47f4424c1ea7b9f4d6770cf114f620cdff62958060f8c6953cb69de8
-genesis_hash=5f7c144f0ef27880259b2429e46ef175685da679916fcc6b80c45f457465e32d
+network=hyphen-neural-devnet-v3
+network_magic=48594e33
+consensus_params_hash=4f3b68f56eb14d9d022d2f6b970811b3d8d53f5a3f6db07f70763cd7e5c17d49
+genesis_hash=710ad7eb105d56901495cf9c31f07f749cb812ddf3848f978e2bd133b7ebc926
 ```
 
 如果这几行与你的 peer 公布的不一致，你构建的是另一条链——到此为止。
@@ -427,7 +417,7 @@ sudo install -o root -g hyphen -m 0640 deploy/systemd/node.env.example /etc/hyph
 sudo install -o root -g root   -m 0644 deploy/systemd/hyphen-node.service /etc/systemd/system/hyphen-node.service
 ```
 
-`/var/lib/hyphen/data` 存放 sled 数据库；`/var/lib/hyphen/data/p2p_identity.key` 是节点的 libp2p 私钥，创建权限为 `0600`。这把钥匙就是节点在网络里的身份：丢失或泄露，等于换人或被人冒名。
+`/var/lib/hyphen/neural-v3` 存放 sled 数据库；`/var/lib/hyphen/neural-v3/p2p_identity.key` 是节点的 libp2p 私钥，创建权限为 `0600`。这把钥匙就是节点在网络里的身份：丢失或泄露，等于换人或被人冒名。
 
 ## 4. 配置
 
@@ -437,10 +427,8 @@ sudo install -o root -g root   -m 0644 deploy/systemd/hyphen-node.service /etc/s
 sudoedit /etc/hyphen/node.env
 ```
 
-- `HYPHEN_NETWORK`——`devnet`、`testnet` 或 `mainnet`。
-- `HYPHEN_P2P_PORT`——必须与第 5 节的防火墙规则一致。各网络默认值：mainnet `18334`、testnet `38334`、devnet `48334`。
-- `HYPHEN_RPC_PORT`——mainnet `18333`、testnet `38333`、devnet `48333`。
-- `HYPHEN_BOOT_NODES`——逗号分隔的 multiaddr，每个都以 `/p2p/<peer-id>` 结尾。没有 peer id 的地址会在启动时被拒绝，因为它无法被认证。devnet/testnet 可以为空；**mainnet 没有至少一个 boot node 就拒绝启动**（首个种子节点改为手工加 `--allow-isolated-mainnet`）。
+- 设置 `HYPHEN_NETWORK=neural-devnet`。P2P 默认监听 48334，二进制 RPC 默认监听 48333。
+- `HYPHEN_BOOT_NODES` 接受逗号分隔的 multiaddr，每个地址以 `/p2p/<peer-id>` 结尾。本地种子节点可留空。
 - `HYPHEN_DB_CACHE_MB`——存储引擎页缓存。`sled` 自己的默认值是 1 GiB。默认 64，下限 16。
 
 单元文件还给了服务一个内存上限（`MemoryMax=1600M`），位置就在
@@ -516,8 +504,8 @@ curl -s http://127.0.0.1:8080/api/info     # 链尖与供应量
 ```
 
 ```json
-{"height":0,"tip_hash":"…","cumulative_difficulty":"0","network":"hyphen-devnet-v2",
- "block_time_target_secs":30,"current_reward":"…","total_supply":"…","difficulty":1,"…"}
+{"height":0,"tip_hash":"710ad7eb105d56901495cf9c31f07f749cb812ddf3848f978e2bd133b7ebc926",
+ "network":"hyphen-neural-devnet-v3","block_time_target_secs":30}
 ```
 
 要报警的是 `height` 与 `tip_hash` 两个字段。本版本没有 Prometheus 端点；需要历史数据就用自己的检查器抓 `/api/info`。
@@ -616,16 +604,16 @@ sudo systemctl start hyphen-node
 
 ```bash
 sudo systemctl stop hyphen-node
-sudo /opt/hyphen/bin/hyphen-node --network devnet \
-  --data-dir /var/lib/hyphen/data \
+sudo /opt/hyphen/bin/hyphen-node --network neural-devnet \
+  --data-dir /var/lib/hyphen/neural-v3 \
   --export-history /var/backups/hyphen.chain
 sudo systemctl start hyphen-node
 
 # 在临时数据库中验证全部历史状态转移
-sudo /opt/hyphen/bin/hyphen-node --network devnet --verify-history /var/backups/hyphen.chain
+sudo /opt/hyphen/bin/hyphen-node --network neural-devnet --verify-history /var/backups/hyphen.chain
 
 # 或用它重建一个全新数据目录
-sudo /opt/hyphen/bin/hyphen-node --network devnet \
+sudo /opt/hyphen/bin/hyphen-node --network neural-devnet \
   --data-dir /var/lib/hyphen/restore \
   --replay-history /var/backups/hyphen.chain
 ```
@@ -656,7 +644,6 @@ journalctl -u hyphen-node -g 'Connected to|Disconnected from|Processed sync batc
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| `mainnet requires --boot-nodes` | 设置 `HYPHEN_BOOT_NODES`；只有首个种子节点可以孤立运行 |
 | `boot node '…' is missing /p2p/<peer-id>` | 补上 peer id；未认证地址一律拒绝 |
 | `consensus parameters differ from genesis` | 数据目录属于别的网络或配置档——换新目录 |
 | `Address already in use` | 端口被占用；`ss -lntp` 查看 |

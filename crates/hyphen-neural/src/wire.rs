@@ -135,7 +135,8 @@ pub fn decode_status(request: &[u8]) -> Result<u64, NeuralError> {
 /// its input buffer without a second copy. `width` comes from the descriptor,
 /// which makes the accepted length exact.
 pub fn decode_submit(request: &[u8], width: usize) -> Result<(u64, &[u8]), NeuralError> {
-    let expected = SUBMISSION_HEADER_BYTES + width * 8;
+    let width = u16::try_from(width).map_err(|_| NeuralError::InvalidSolution)?;
+    let expected = SUBMISSION_HEADER_BYTES + usize::from(width) * 8;
     if request.len() != expected {
         return Err(NeuralError::InvalidEncoding);
     }
@@ -147,7 +148,7 @@ pub fn decode_submit(request: &[u8], width: usize) -> Result<(u64, &[u8]), Neura
             .try_into()
             .map_err(|_| NeuralError::InvalidEncoding)?,
     );
-    let declared = u16::from_le_bytes([request[9], request[10]]) as usize;
+    let declared = u16::from_le_bytes([request[9], request[10]]);
     if declared != width {
         return Err(NeuralError::InvalidSolution);
     }
@@ -236,6 +237,10 @@ mod tests {
         decode_values_into(values, &mut decoded).unwrap();
         assert_eq!(decoded, solution);
         assert!(decode_submit(&bytes[..length], 3).is_err());
+        assert_eq!(
+            decode_submit(&[], usize::MAX),
+            Err(NeuralError::InvalidSolution)
+        );
     }
 
     #[test]

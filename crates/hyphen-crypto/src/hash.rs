@@ -76,6 +76,24 @@ pub fn blake3_keyed(key: &[u8; 32], data: &[u8]) -> Hash256 {
     Hash256(*blake3::keyed_hash(key, data).as_bytes())
 }
 
+/// Start the VM and AetherCompute transcript with its big-endian domain length.
+pub fn framed_hasher(domain: &[u8]) -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(domain.len() as u64).to_be_bytes());
+    hasher.update(domain);
+    hasher
+}
+
+/// Prefix every field with its eight-byte big-endian length, including empty fields.
+pub fn framed_hash(domain: &[u8], fields: &[&[u8]]) -> Hash256 {
+    let mut hasher = framed_hasher(domain);
+    for field in fields {
+        hasher.update(&(field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
+    Hash256(hasher.finalize().into())
+}
+
 // Domain-separated scalar: blake3 XOF -> 64-byte output, reduced mod l
 pub fn hash_to_scalar(domain: &[u8], data: &[u8]) -> curve25519_dalek::Scalar {
     let mut h = blake3::Hasher::new();

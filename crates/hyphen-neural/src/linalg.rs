@@ -1,6 +1,6 @@
 //! Dense linear algebra for the Levenberg–Marquardt step.
 //!
-//! The systems are tiny (`input_dim <= 32`), so a plain Gaussian elimination
+//! The systems are tiny (`input_dim <= 16`), so a plain Gaussian elimination
 //! with partial pivoting is both faster and easier to audit than anything
 //! clever. Values are Q32.32 held in `i128`, so intermediate products do not
 //! lose precision even though the interface stays fixed-point.
@@ -12,7 +12,7 @@ use crate::fixed::FRAC_BITS;
 /// `rhs` is overwritten with the solution. Returns `false` for a singular or
 /// ill-conditioned system, which the caller answers by increasing damping.
 pub fn solve(matrix: &mut [i128], rhs: &mut [i128], n: usize) -> bool {
-    if n == 0 || matrix.len() < n * n || rhs.len() < n {
+    if n == 0 || matrix.len() / n < n || rhs.len() < n {
         return false;
     }
     for column in 0..n {
@@ -67,7 +67,10 @@ pub fn solve(matrix: &mut [i128], rhs: &mut [i128], n: usize) -> bool {
 
 /// Q32.32 multiplication in `i128`.
 pub fn scale_mul(left: i128, right: i128) -> i128 {
-    (left.saturating_mul(right)) >> FRAC_BITS
+    if let Some(product) = left.checked_mul(right) {
+        return product >> FRAC_BITS;
+    }
+    clamp_wide((num_bigint::BigInt::from(left) * right) >> FRAC_BITS)
 }
 
 /// Q32.32 division in `i128`, truncated toward zero.
@@ -75,7 +78,21 @@ pub fn scale_div(left: i128, right: i128) -> i128 {
     if right == 0 {
         return 0;
     }
-    (left << FRAC_BITS) / right
+    if let Some(numerator) = left.checked_mul(1 << FRAC_BITS) {
+        return numerator.saturating_div(right);
+    }
+    clamp_wide((num_bigint::BigInt::from(left) << FRAC_BITS) / right)
+}
+
+#[cold]
+fn clamp_wide(value: num_bigint::BigInt) -> i128 {
+    i128::try_from(&value).unwrap_or_else(|_| {
+        if value.sign() == num_bigint::Sign::Minus {
+            i128::MIN
+        } else {
+            i128::MAX
+        }
+    })
 }
 
 /// Converts a Q32.32 `i64` into the `i128` working type.
@@ -125,6 +142,17 @@ mod tests {
         let mut rhs = [ONE];
         assert!(!solve(&mut matrix, &mut rhs, 0));
         assert!(!solve(&mut [ONE], &mut [ONE], 2));
+        assert!(!solve(&mut [ONE], &mut [ONE], usize::MAX));
+    }
+
+    #[test]
+    fn scaling_saturates_after_rescaling() {
+        for x in [i128::MIN, i128::MIN + 1, i128::MAX] {
+            assert_eq!(scale_mul(x, ONE), x);
+            assert_eq!(scale_div(x, ONE), x);
+        }
+        assert_eq!(scale_mul(i128::MAX, -2 * ONE), i128::MIN);
+        assert_eq!(scale_div(i128::MIN >> FRAC_BITS, -1), i128::MAX);
     }
 
     #[test]

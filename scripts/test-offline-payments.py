@@ -79,7 +79,7 @@ def main():
     def cmd(*args, **opts): return run(offline, *args, **opts)
     def pay(*args, **opts): return run(wallet, *args, **opts)
     def history(db, mode, archive):
-        return run(node, '--network', 'offline-devnet', '--data-dir', db, mode, archive)
+        return run(node, '--network', 'neural-devnet', '--data-dir', db, mode, archive)
 
     funding, fee = 10_000_000, 1_000_000
     net = funding - fee
@@ -93,7 +93,7 @@ def main():
     with ExitStack() as stack:
         def launch(binary, label, *args):
             log = stack.enter_context((work / (label + '.log')).open('wb'))
-            p = subprocess.Popen([binary, '--network', 'offline-devnet', *args], cwd=work, stdout=log, stderr=log)
+            p = subprocess.Popen([binary, '--network', 'neural-devnet', *args], cwd=work, stdout=log, stderr=log)
             stack.callback(STOP, p)
             return p
         def start_mining(label, n):
@@ -288,6 +288,9 @@ def main():
         assert verified == live_receipt
         assert 'transaction='+signed in verified and f'net_atomic={net}' in verified
         assert confirm('node') == verified
+        settled_tip = re.search(r'\btip=([0-9a-f]{64})', verified)[1]
+        assert confirm('node', 'last', 'last.request', payout, net, '--expect-tip', settled_tip) == verified
+        confirm('node', 'last', 'last.request', payout, net, '--expect-tip', '00'*32, reject='expected block hash')
         depth = int(re.search(r'\bconfirmations=(\d+)', verified)[1])
         confirm('node', 'last', 'last.request', payout, net, '--min-confirmations', depth+1,
                 reject='insufficient settlement confirmations')

@@ -1,37 +1,62 @@
 use std::{path::Path, process::Command};
 
 use hyphen_consensus::{CHAIN_ARCHIVE_VERSION, ChainArchive};
-use hyphen_core::{Block, BlockAuthorization, ChainConfig, build_genesis_block};
+use hyphen_core::{BlockAuthorization, ChainConfig, build_genesis_block};
 use hyphen_crypto::SecretKey;
 use hyphen_wire::{DEFAULT_WIRE_BYTES, wire_config};
 
 #[test]
 fn future_archive_has_distinct_historical_and_live_results() {
-    let cfg = ChainConfig::devnet();
-    let genesis = build_genesis_block(&cfg).hash();
-    let suites: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-vectors/consensus-transitions-v1.json"
-    ))
-    .unwrap();
-    let sample = suites["devnet"]["steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|step| step["name"] == "first claim")
-        .unwrap();
-    let bytes = hyphen_crypto::hex_decode(sample["bytes"][0].as_str().unwrap()).unwrap();
-    let mut block = Block::deserialise_limited(&bytes, cfg.max_block_size).unwrap();
+    let cfg = ChainConfig::neural_devnet();
+    let mut block = build_genesis_block(&cfg);
+    let genesis = block.hash();
+    let scratch = tempfile::tempdir().unwrap();
+    let chain =
+        hyphen_consensus::Blockchain::open(scratch.path().to_str().unwrap(), cfg.clone()).unwrap();
+    let template = chain.prepare_template(&mut Vec::new()).unwrap();
+    block.header.height = 1;
+    block.header.prev_hash = genesis;
+    block.header.difficulty = template.difficulty;
+    block.header.reward = hyphen_economics::emission::block_reward(1, &cfg);
+    block.header.commitment_root = template.commitment_root;
+    block.header.nullifier_root = template.nullifier_root;
+    block.header.state_root = template.state_root;
     let miner = SecretKey([97; 32]);
-    let keys = block.decode_authorization().unwrap();
+    let (_, _, keys) = hyphen_crypto::stealth::generate_keys();
+    block.header.extra_nonce =
+        hyphen_core::authorization::reward_commitment(&keys.view_public, &keys.spend_public);
     block.header.miner_pubkey = *miner.public_key().as_bytes();
+    let work = hyphen_neural::WorkDescriptor {
+        epoch: 1,
+        spec: hyphen_neural::PROFILE_SPEC,
+        threshold: template.difficulty,
+        chain_seed: *hyphen_core::neural_work_seed(&genesis, 1, &block.header.miner_pubkey)
+            .as_bytes(),
+    };
+    let mut weights = vec![0; work.spec.weight_count()];
+    work.derive_weights(&mut weights).unwrap();
+    let nonce = (0..1_000_000)
+        .find(|&n| {
+            let score = hyphen_neural::block_work::nonce_score(&work, &weights, n).unwrap();
+            hyphen_neural::block_work::qualifies(&work, n, score).unwrap()
+        })
+        .unwrap();
+    block.pow_witnesses = vec![nonce];
+    block.header.pow_commitment = hyphen_core::neural_work_commitment(
+        &genesis,
+        1,
+        template.difficulty,
+        &block.header.miner_pubkey,
+        &[nonce],
+    );
     block.header.timestamp = hyphen_core::timestamp::ntp_adjusted_timestamp_ms() + 86_400_000;
     let signature = BlockAuthorization::sign(
         &block.header,
         cfg.network_magic,
         cfg.consensus_params_hash(),
         genesis,
-        keys.reward_view_public,
-        keys.reward_spend_public,
+        keys.view_public,
+        keys.spend_public,
         &miner,
     )
     .unwrap();
@@ -51,7 +76,7 @@ fn future_archive_has_distinct_historical_and_live_results() {
     std::fs::write(&input, wire.serialize(&archive).unwrap()).unwrap();
     let run = |action: &str, file: &Path| {
         Command::new(env!("CARGO_BIN_EXE_hyphen-node"))
-            .args(["--network", "devnet", "--data-dir"])
+            .args(["--network", "neural-devnet", "--data-dir"])
             .arg(&db)
             .arg(action)
             .arg(file)

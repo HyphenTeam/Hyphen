@@ -1,8 +1,14 @@
-# 钱包资产与共识安全审查 · 2026-11-20
+# 钱包资产与共识安全审查 · 2026-11-21
 
-**发布判断仍限于无价值开发网。** `hyphen-contract-devnet-v1` 已从创世启用奖励收款键绑定、父支付状态承诺、手续费核对及合约资源预算。本地节点完成了签名付款、共享矿池奖励脱链和原分配恢复，以及 Rust、C、Wasm 汇编合约的签名部署、调用和查询。主网激活、发布网络历史重放、跨主机分区恢复和独立密码学与共识审计仍是上线条件。[开发网验收](Operations-Verification.md)
+HYN3 是当前开发网，历史 HYN2 的测试结果按创世哈希单独记录。跨主机分区恢复、专用硬件能效和独立密码学与共识审计仍待验证。[各版本验收记录](Operations-Verification.md)
 
-## 收款核验候选 · Receipt verification candidate
+2026-11-21 的 HYN3 审计给出了离线储备每条规范历史至多兑付一次的论证，核对了钱包回流授权、计算工作者的实际付款、Wasm 合约的资产守恒，以及重组对到账确认的影响。[算法审计、威胁模型与实测](HYN3-Algorithm-Audit.md)
+
+**旧版 Rust 子地址需要迁移。** 旧版 `MasterKey::derive_subaddress` 的子密钥缺少秘密输入保护。应将已公开主地址所对应的旧子地址视为有失款风险。主仓和独立钱包仓内检索只发现单元测试调用此方法；第三方调用情况未知。直接使用过这个 API 的集成应停止分发旧子地址，保留原种子与可信旧版本，在受控设备上将仍可花费的旧输出转到新版地址，并核对规范链上的到账。升级不会自动移动旧输出。普通主地址继续使用原有派生方法。[钱包派生实现与固定向量](../crates/hyphen-wallet/src/derivation.rs)
+
+新版子地址以 32 字节主种子作为 BLAKE3 密钥，并在输入中绑定 v2 域、账户和索引的 32 位小端编码，以及独立的 `view` 或 `spend` 用途。取 64 字节 XOF 输出约简为 Ristretto 标量。备份和外部集成应保存派生版本与路径；同一种子在同一旧路径上升级后将得到新的子地址。[资产安全审计](HYN3-Algorithm-Audit.md)
+
+## 早期 HYOF 收款核验候选 · Historical receipt candidate
 
 本地四仓候选 `target/hyof-receipt-rc2/` 的提交与默认 Windows Rust 测试结果如下。三份客户端清单与独立锁文件均引用同一主仓提交。各仓通过格式检查、严格 Clippy 和 Windows release 构建。
 
@@ -75,11 +81,7 @@ Flutter 新钱包容器采用 Argon2id（64 MiB、3 次迭代、1 路）和 XCha
 
 ## 科学工作量和研究功能
 
-本地候选矿工在 RTX A4000 Laptop GPU 上把三个窗口共 40,962 个神经评分逐项与 Rust 核对，包含计数器回绕。GPU 插件 SHA-256 为 `f5bfcded5f365450ecf153ac0d50e3260df1875ec21f990bf09c48e7c1bc2c37`。该次检查验证计算结果。先前两轮各四组的 70 秒实验记录了独立链的增长、份额与显卡板载传感器读数；整机耗电、长期电费和同条件 ASIC/FPGA 效率仍缺测量。[配置和测量数据](Research-Aether-Compute.md)
-
-普通工作量逐项检查 `u64` 范围内的第一类 Cunningham 素数链，要求见证严格递增、数量正确且在当前链上首次使用。父承诺、高度和见证列表共同进入工作承诺。该规则验证数学结果和链上单次使用。见证可以预计算，库存集中、专用硬件优势、见证供给与长期难度稳定性仍缺少公开对抗性数据。[数学谓词](../crates/hyphen-pow/src/vms.rs)
-
-神经开发网 `hyphen-neural-devnet-v1` 使用由父块、块高和矿工公钥派生的挑战、定点计算、阈值和整数调难。SOLO 结算一份完整有效解。本次验收验证了出块和奖励归属。验证者复算分数，可以确认候选解达标。寻找解的最优算法成本、分数分布、对专用硬件的敏感性和科研任务价值仍需独立证据。[神经工作量](../crates/hyphen-consensus/src/neural_work.rs)
+HYN3 绑定父块、高度和矿工身份，由 nonce 确定输入。CPU 和 CUDA 均可计算定点神经评分。节点复算初筛摘要，随后按顺序填充 32,768 个单元，再执行 32,768 次依赖当前状态的读取。参考实现使用 1 MiB，稀疏保存单元可以用重算换取更小的存储空间。[工作量规范与推导](Consensus-Neural-Work.md)
 
 `mainnet()` 和 `testnet()` 启用包含叔块、TERA、VRE、Wasm、AetherCompute 及 H-WES 在内的研究配置。两次开发网付款没有覆盖该组规则。AetherCompute 实现有界任务和结果状态机，正常节点使用 `NeuralWorkVerifier`。新增科学领域仍需具体可验证程序、输入输出和验证后端。H-WES 的公开状态转换已接入对应配置，隐私恢复仍缺电路。H-BFM、H-FOC、H-SAC 没有进入本次开发网验块判定。基于上一个 epoch 末块哈希的抽样种子存在发布选择偏差，委员会安全概率依赖的独立随机性尚未成立。[配置](../crates/hyphen-core/src/config.rs) · [科学任务](Research-Aether-Compute.md) · [密码学激活条件](Security-Cryptographic-Activation-Gates.md)
 
@@ -112,4 +114,4 @@ Flutter 新钱包容器采用 Argon2id（64 MiB、3 次迭代、1 路）和 XCha
 
 ## English release assessment
 
-Real-asset launch remains blocked. Contract-devnet binds the reward keys and validates parent payment roots and fees. Its VM enforces transaction, block and storage limits from genesis. Two local branch changes reversed and restored three miners' PPLNS allocations, the pool fee and the original payment. Signed Rust, C and Wasm assembly deployments and calls survived a node restart and returned the expected query bytes. On offline-devnet, local peers adopted a heavier history that switched the canonical payout to the competing holder. In a separate branch change the original funding transaction moved to another index. Its terminal holder refreshed the proof and settled the same two-hop voucher independently. The four local HYOF candidate bundles restore the exact commits listed above. Each reconstructed client's lockfile resolves the same shared-library commit. Public release, mainnet activation, uncle rules, multi-host partition recovery, independent economic and cryptographic review, hardware-backed signing and mobile offline acceptance remain open.
+The following observations refer to historical network identities. Contract-devnet binds the reward keys and validates parent payment roots and fees. Its VM enforces transaction, block and storage limits from genesis. Two local branch changes reversed and restored three miners' PPLNS allocations, the pool fee and the original payment. Signed Rust, C and Wasm assembly deployments and calls survived a node restart and returned the expected query bytes. On offline-devnet, local peers adopted a heavier history that switched the canonical payout to the competing holder. In a separate branch change the original funding transaction moved to another index. Its terminal holder refreshed the proof and settled the same two-hop voucher independently. The four local HYOF candidate bundles restore the exact commits listed above. Each reconstructed client's lockfile resolves the same shared-library commit. Public release, mainnet activation, uncle rules, multi-host partition recovery, independent economic and cryptographic review, hardware-backed signing and mobile offline acceptance remain open.

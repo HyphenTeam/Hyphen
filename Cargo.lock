@@ -1450,6 +1450,7 @@ dependencies = [
 name = "hyphen-consensus"
 version = "0.1.2"
 dependencies = [
+ "blake3",
  "curve25519-dalek 5.0.0",
  "hyphen-compute",
  "hyphen-core",
@@ -1463,6 +1464,8 @@ dependencies = [
  "hyphen-vm",
  "hyphen-wire",
  "parking_lot 0.13.0",
+ "rand",
+ "rand_chacha",
  "rustbinary",
  "serde",
  "serde_json",
@@ -1577,6 +1580,7 @@ version = "0.1.2"
 dependencies = [
  "blake3",
  "clap",
+ "num-bigint",
 ]
 
 [[package]]

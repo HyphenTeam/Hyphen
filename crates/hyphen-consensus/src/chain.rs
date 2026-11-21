@@ -210,6 +210,9 @@ impl Blockchain {
             PersistentCommitmentTree::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
         let branch_blocks =
             BranchBlockArchive::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
+        branch_blocks
+            .index_existing_branches(&blocks, cfg.max_block_size)
+            .map_err(|e| CoreError::Storage(e.to_string()))?;
         let reorg = ReorgCoordinator::open(&db).map_err(|e| CoreError::Storage(e.to_string()))?;
         let chain_namespace = Hash256::from_bytes(cfg.consensus_params_hash());
         let wes_namespace = hyphen_crypto::blake3_hash(
@@ -596,22 +599,28 @@ impl Blockchain {
         Ok(headers)
     }
 
-    pub fn next_difficulty(&self) -> Result<u64, CoreError> {
-        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
-            // The header field is an acceptance threshold in this profile, and
-            // the retarget window is the only thing that sets it.
-            let history =
-                self.recent_headers(crate::neural_work::WORK_RETARGET_WINDOW as usize + 1)?;
-            return Ok(crate::neural_work::expected_threshold(
-                &history,
-                &crate::neural_work::neural_work_params(&self.cfg),
-            ));
-        }
+    fn difficulty_history(&self) -> Result<Vec<BlockHeader>, CoreError> {
+        let count = if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            crate::neural_work::WORK_RETARGET_WINDOW as usize + 1
+        } else {
+            self.cfg.difficulty_window as usize
+        };
+        self.recent_headers(count)
+    }
 
-        Ok(ordinary_difficulty(
-            &self.recent_headers(self.cfg.difficulty_window as usize)?,
-            &self.cfg,
-        ))
+    fn difficulty_from_history(&self, history: &[BlockHeader]) -> u64 {
+        if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+            crate::neural_work::expected_threshold(
+                history,
+                &crate::neural_work::neural_work_params(&self.cfg),
+            )
+        } else {
+            ordinary_difficulty(history, &self.cfg)
+        }
+    }
+
+    pub fn next_difficulty(&self) -> Result<u64, CoreError> {
+        Ok(self.difficulty_from_history(&self.difficulty_history()?))
     }
 
     /// Fork-choice weight of one block under this profile.
@@ -644,14 +653,13 @@ impl Blockchain {
         block: &Block,
         parent_commitment: &Hash256,
         required: u64,
+        history: &[BlockHeader],
     ) -> Result<(), CoreError> {
         if self.cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
-            let history =
-                self.recent_headers(crate::neural_work::WORK_RETARGET_WINDOW as usize + 1)?;
             return crate::neural_work::verify(
                 block,
                 &block.header.prev_hash,
-                &history,
+                history,
                 &crate::neural_work::neural_work_params(&self.cfg),
             )
             .map_err(|error| CoreError::Validation(format!("neural work rejected: {error:?}")));
@@ -765,13 +773,17 @@ impl Blockchain {
             None
         };
 
-        let next_epoch_seed = if (block.header.height + 1).is_multiple_of(self.cfg.epoch_length) {
-            let next_epoch = (block.header.height + 1) / self.cfg.epoch_length;
-            let seed = hyphen_crypto::blake3_hash(hash.as_bytes());
-            Some((next_epoch, seed))
-        } else {
-            None
-        };
+        let next_epoch_seed = block
+            .header
+            .height
+            .checked_add(1)
+            .filter(|height| height.is_multiple_of(self.cfg.epoch_length))
+            .map(|height| {
+                (
+                    height / self.cfg.epoch_length,
+                    hyphen_crypto::blake3_hash(hash.as_bytes()),
+                )
+            });
         let total_outputs = prepared_tree.count();
 
         commit_block_update(
@@ -855,7 +867,12 @@ impl Blockchain {
 
     fn accept_block_locked(&self, block: &Block) -> Result<(), CoreError> {
         let tip = self.tip()?;
-
+        let encoded_size = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialized_size(block)
+            .map_err(|e| CoreError::Serialisation(e.to_string()))?;
+        if encoded_size > self.cfg.max_block_size.min(crate::DEFAULT_WIRE_BYTES) as u64 {
+            return Err(CoreError::BlockTooLarge);
+        }
         let parent_header = self
             .blocks
             .get_block_by_height(tip.height)
@@ -905,7 +922,8 @@ impl Blockchain {
             })
             .map_err(|e| CoreError::Validation(e.to_string()))?;
 
-        let expected_difficulty = self.next_difficulty()?;
+        let history = self.difficulty_history()?;
+        let expected_difficulty = self.difficulty_from_history(&history);
         if block.header.difficulty != expected_difficulty {
             return Err(CoreError::Validation(format!(
                 "difficulty mismatch: expected {}, got {}",
@@ -920,7 +938,7 @@ impl Blockchain {
                 block.header.epoch_seed
             )));
         }
-        self.validate_witnesses(block, &parent_commitment, expected_difficulty)?;
+        self.validate_witnesses(block, &parent_commitment, expected_difficulty, &history)?;
 
         let expected_reward =
             hyphen_economics::emission::lcd_base_reward(block.header.height, &self.cfg);
@@ -929,13 +947,6 @@ impl Blockchain {
                 "reward mismatch: expected {}, got {}",
                 expected_reward, block.header.reward
             )));
-        }
-
-        let block_bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-            .serialize(block)
-            .map_err(|e| CoreError::Serialisation(e.to_string()))?;
-        if block_bytes.len() > self.cfg.max_block_size {
-            return Err(CoreError::BlockTooLarge);
         }
 
         if self
@@ -1590,6 +1601,15 @@ impl ReorgBackend for BlockchainReorgBackend<'_> {
     }
 
     fn detach_tip(&mut self, expected: Hash256) -> Result<(), Self::Error> {
+        let block = self
+            .chain
+            .blocks
+            .get_block_by_hash(&expected)
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
+        self.chain
+            .branch_blocks
+            .index_position(&block)
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
         let mut commitments = self.chain.commitment_tree.write();
         let mut compute = self.chain.compute_state.write();
         let mut vm = self.chain.vm_state.write();
@@ -1677,7 +1697,7 @@ mod tests {
     use hyphen_vm::types::{ContractCall, DeployParams};
 
     fn test_config() -> ChainConfig {
-        let mut cfg = ChainConfig::devnet();
+        let mut cfg = ChainConfig::archived_devnet_v2();
         cfg.genesis_difficulty = 1;
         cfg.pouw_chain_length = 3;
         cfg.difficulty_window = 2;
@@ -1707,16 +1727,23 @@ mod tests {
     /// match", which tells an operator nothing.
     #[test]
     fn database_from_another_profile_is_rejected_with_the_identity_error() {
-        let db = sled::Config::new().temporary(true).open().unwrap();
-        let _devnet = Blockchain::open_db(db.clone(), ChainConfig::devnet()).unwrap();
-
-        let error = Blockchain::open_db(db, ChainConfig::testnet())
-            .err()
-            .expect("a second profile must be rejected");
-        assert!(
-            error.to_string().contains("consensus parameters differ"),
-            "unexpected error: {error}"
-        );
+        for previous in [
+            ChainConfig::archived_devnet_v2(),
+            ChainConfig::archived_neural_devnet_v1(),
+        ] {
+            let db = sled::Config::new().temporary(true).open().unwrap();
+            let previous_genesis = build_genesis_block(&previous).hash();
+            drop(Blockchain::open_db(db.clone(), previous.clone()).unwrap());
+            let error = Blockchain::open_db(db.clone(), ChainConfig::neural_devnet())
+                .err()
+                .expect("HYN3 must reject databases from earlier genesis blocks");
+            assert!(
+                error.to_string().contains("consensus parameters differ"),
+                "{error}"
+            );
+            let reopened = Blockchain::open_db(db, previous).unwrap();
+            assert_eq!(reopened.tip().unwrap().hash, previous_genesis);
+        }
     }
 
     /// Test-only mining. Each marker owns a disjoint residue class, so blocks
@@ -1836,7 +1863,7 @@ mod tests {
 
     #[test]
     fn future_block_can_be_resubmitted_at_exact_clock_boundary() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let chain = Blockchain::open_db(
             sled::Config::new().temporary(true).open().unwrap(),
             cfg.clone(),
@@ -1888,7 +1915,7 @@ mod tests {
     #[test]
     fn offline_conflicts_consume_one_reserve_through_reorg_and_reopen() {
         use hyphen_tx::offline::{Funding, Invoice, Reserve, Voucher, redeem, spent_image};
-        let cfg = ChainConfig::offline_devnet();
+        let cfg = ChainConfig::archived_offline_devnet_v1();
         let chain_id = build_genesis_block(&cfg).hash();
         let db = sled::Config::new().temporary(true).open().unwrap();
         let chain = Blockchain::open_db(db.clone(), cfg.clone()).unwrap();
@@ -2074,7 +2101,7 @@ mod tests {
     fn real_backend_revalidates_and_applies_strictly_heavier_branch() {
         let cfg = test_config();
         let db = sled::Config::new().temporary(true).open().unwrap();
-        let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
+        let chain = Blockchain::open_db(db.clone(), cfg.clone()).unwrap();
         let (genesis, old, new) = competing_branches(&cfg);
         for block in &old {
             chain.accept_block(block).unwrap();
@@ -2104,6 +2131,15 @@ mod tests {
         assert_eq!(replacement.tip.hash, tip.hash);
         assert_ne!(detached.transaction.hash(), replacement.transaction.hash());
         assert!(chain.reorg.pending().unwrap().is_none());
+        let positions = chain.branch_blocks.at_height(1, 8).unwrap();
+        assert_eq!(positions.len(), 2);
+        for hash in [old[0].hash(), new[0].hash()] {
+            assert!(positions.contains(&(hash, genesis.hash())));
+        }
+        drop(chain);
+        db.drop_tree("branch_positions_v1").unwrap();
+        let upgraded = Blockchain::open_db(db, cfg).unwrap();
+        assert_eq!(upgraded.branch_blocks.at_height(1, 8).unwrap(), positions);
     }
 
     #[test]
@@ -2434,7 +2470,7 @@ mod tests {
     }
 
     /// Builds a block that satisfies the neural work rule for `parent`.
-    fn neural_child(cfg: &ChainConfig, parent: &Block, marker: u8) -> Block {
+    fn neural_child(chain: &Blockchain, cfg: &ChainConfig, parent: &Block, marker: u8) -> Block {
         let params = crate::neural_work::neural_work_params(cfg);
         let miner = SecretKey([marker; 32]);
         let miner_pubkey = *miner.public_key().as_bytes();
@@ -2450,38 +2486,23 @@ mod tests {
         };
         let mut weights = vec![0_i64; params.spec.weight_count()];
         descriptor.derive_weights(&mut weights).unwrap();
-        let mut solution = vec![0_i64; params.spec.input_dim as usize];
-        let mut hidden = vec![0_i64; params.spec.hidden_dim as usize];
-        let mut output = vec![0_i64; params.spec.output_dim as usize];
-        let mut scratch = vec![0_i64; params.spec.input_dim as usize];
-        let outcome = hyphen_neural::search_work(
-            &descriptor,
-            &weights,
-            0,
-            1,
-            1_000_000,
-            &mut solution,
-            &mut hidden,
-            &mut output,
-            &mut scratch,
-        )
-        .unwrap();
-        assert!(outcome.found, "the compiled-in threshold must be reachable");
-
-        let witnesses: Vec<u64> = solution
-            .iter()
-            .copied()
-            .map(crate::neural_work::encode_component)
-            .collect();
+        let nonce = (0..1_000_000)
+            .find(|&n| {
+                let score =
+                    hyphen_neural::block_work::nonce_score(&descriptor, &weights, n).unwrap();
+                hyphen_neural::block_work::qualifies(&descriptor, n, score).unwrap()
+            })
+            .unwrap();
+        let witnesses = vec![nonce];
         let header = BlockHeader {
             version: FROZEN_BLOCK_VERSION,
             height,
             timestamp: parent.header.timestamp + 1,
             prev_hash: parent_hash,
             tx_root: Hash256::ZERO,
-            commitment_root: Hash256::ZERO,
-            nullifier_root: Hash256::ZERO,
-            state_root: Hash256::ZERO,
+            commitment_root: chain.commitment_tree.read().root(),
+            nullifier_root: chain.nullifiers.root_hash().unwrap(),
+            state_root: chain.state_root_after(&[], height).unwrap(),
             receipt_root: Hash256::ZERO,
             uncle_root: Hash256::ZERO,
             pow_commitment: crate::neural_work::work_commitment(
@@ -2519,7 +2540,7 @@ mod tests {
         let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
         let genesis = chain.blocks.get_block_by_height(0).unwrap();
 
-        let block = neural_child(&cfg, &genesis, 11);
+        let block = neural_child(&chain, &cfg, &genesis, 11);
         chain.accept_block(&block).unwrap();
 
         let tip = chain.tip().unwrap();
@@ -2540,7 +2561,7 @@ mod tests {
         let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
         let genesis = chain.blocks.get_block_by_height(0).unwrap();
 
-        let mut block = neural_child(&cfg, &genesis, 12);
+        let mut block = neural_child(&chain, &cfg, &genesis, 12);
         block.pow_witnesses = vec![3, 5, 11];
         let error = chain.accept_block(&block).unwrap_err();
         assert!(
@@ -2557,7 +2578,7 @@ mod tests {
         let chain = Blockchain::open_db(db, cfg.clone()).unwrap();
         let genesis = chain.blocks.get_block_by_height(0).unwrap();
 
-        let mut block = neural_child(&cfg, &genesis, 13);
+        let mut block = neural_child(&chain, &cfg, &genesis, 13);
         let thief = SecretKey([14; 32]);
         block.header.miner_pubkey = *thief.public_key().as_bytes();
         block.header.pow_commitment = crate::neural_work::work_commitment(
@@ -2627,7 +2648,10 @@ mod tests {
 
     #[test]
     fn fee_roots_and_reward_binding_at_genesis_follow_profile() {
-        for cfg in [ChainConfig::devnet(), ChainConfig::contract_devnet()] {
+        for cfg in [
+            ChainConfig::archived_devnet_v2(),
+            ChainConfig::archived_contract_devnet_v1(),
+        ] {
             let strict = cfg.feature_enabled(hyphen_core::config::FEATURE_ASSET_RULES_V1);
             for field in ["fee", "commitment", "nullifier", "reward"] {
                 let db = sled::Config::new().temporary(true).open().unwrap();
@@ -2757,7 +2781,7 @@ mod tests {
 
     #[test]
     fn template_keeps_only_successful_in_order_transitions() {
-        let cfg = ChainConfig::contract_devnet();
+        let cfg = ChainConfig::archived_contract_devnet_v1();
         let db = sled::Config::new().temporary(true).open().unwrap();
         let chain = Blockchain::open_db(db, cfg).unwrap();
         let key = SecretKey([14; 32]);
@@ -2809,33 +2833,74 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires Clang Wasm artifacts from scripts/test-contract-toolchains.ps1"]
+    #[ignore = "requires Rust and Clang Wasm artifacts from scripts/test-contract-toolchains.ps1"]
     fn compiled_contract_toolchains() {
         let directory =
             std::path::PathBuf::from(std::env::var_os("HYPHEN_CONTRACT_TOOLCHAINS").unwrap());
-        let cfg = ChainConfig::contract_devnet();
+        let cfg = ChainConfig::archived_contract_devnet_v1();
         let db = sled::Config::new().temporary(true).open().unwrap();
         let chain = Blockchain::open_db(db.clone(), cfg.clone()).unwrap();
         let genesis = build_genesis_block(&cfg);
         let mut block = child(&cfg, &genesis, 77, 1);
-        let mut addresses = Vec::new();
-        let input = b"contract ABI\0\xff";
-        for (i, language) in ["c", "s"].iter().enumerate() {
+        let mut rows = Vec::new();
+        for (i, language) in ["c", "cpp", "s", "limit-orders", "collection"]
+            .into_iter()
+            .enumerate()
+        {
             let code = std::fs::read(directory.join(format!("{language}.wasm"))).unwrap();
             let owner = SecretKey([i as u8 + 1; 32]);
             let public = *owner.public_key().as_bytes();
             let address = ContractAddress::from_deployer_and_nonce(&public, 0);
+            let (constructor_args, args, query_args, key, expected) = if language == "limit-orders"
+            {
+                assert_eq!(
+                    hyphen_vm::application::application_manifest(&code)
+                        .unwrap()
+                        .unwrap()
+                        .category,
+                    hyphen_vm::application::AppCategory::Defi
+                );
+                let supplies = [100u64.to_le_bytes(), 200u64.to_le_bytes()].concat();
+                let recipient = SecretKey([44; 32]).public_key();
+                let key = [&[0][..], recipient.as_bytes()].concat();
+                let query = [&[1][..], &key].concat();
+                let units = 25u64.to_le_bytes();
+                (
+                    supplies,
+                    [query.as_slice(), &units].concat(),
+                    query,
+                    key,
+                    units.to_vec(),
+                )
+            } else if language == "collection" {
+                let recipient = SecretKey([45; 32]).public_key();
+                let metadata = [0x91; 32];
+                let mint = [&[1][..], recipient.as_bytes(), &metadata].concat();
+                let key = 1u64.to_le_bytes().to_vec();
+                let query = [&[1][..], &key].concat();
+                let token = [
+                    recipient.as_bytes().as_slice(),
+                    &[0; 32],
+                    &metadata,
+                    &[0; 8],
+                ]
+                .concat();
+                (1u64.to_le_bytes().to_vec(), mint, query, key, token)
+            } else {
+                let value = b"contract ABI\0\xff".to_vec();
+                (vec![], value.clone(), vec![], b"key".to_vec(), value)
+            };
             let params = DeployParams {
                 deployer: public,
                 code,
-                constructor_args: vec![],
+                constructor_args,
                 nonce: 0,
                 gas_limit: 4_000_000,
             };
             let call = ContractCall {
                 caller: public,
                 contract: address,
-                args: input.to_vec(),
+                args,
                 function: "hyphen_execute".into(),
                 value: 0,
                 gas_limit: 100_000,
@@ -2845,12 +2910,12 @@ mod tests {
             assert!(engine.call(&contract, &call).unwrap().success);
             let query = ContractCall {
                 function: "hyphen_query".into(),
-                args: vec![],
+                args: query_args,
                 ..call.clone()
             };
             let result = engine.call(&contract, &query).unwrap();
             assert!(result.success && result.state_changes.is_empty());
-            assert_eq!(result.return_data, input);
+            assert_eq!(result.return_data, expected);
             block.transactions.push(
                 VmTransaction::Deploy(
                     SignedDeploy::sign(chain.chain_id(), params, &owner).unwrap(),
@@ -2863,7 +2928,7 @@ mod tests {
                     .encode()
                     .unwrap(),
             );
-            addresses.push(address);
+            rows.push((address, key, expected));
         }
         block.header.tx_root = block.compute_tx_root();
         block.header.commitment_root = chain.commitment_tree.read().root();
@@ -2874,8 +2939,8 @@ mod tests {
         drop(chain);
         let chain = Blockchain::open_db(db, cfg).unwrap();
         assert_eq!(chain.state_root().unwrap(), block.header.state_root);
-        for address in addresses {
-            assert_eq!(chain.vm_storage(address, b"key").unwrap(), input);
+        for (address, key, expected) in rows {
+            assert_eq!(chain.vm_storage(address, &key).unwrap(), expected);
         }
     }
 

@@ -1,25 +1,12 @@
 # Useful-Work Augmented PoW Research Boundary
 
-Status: the bounded AetherCompute lifecycle is active only in the testnet and
-mainnet research profiles. It does not alter PoW eligibility, chain weight,
-base issuance or transaction ordering. The default proof verifier rejects all
-result, fraud and custody proofs, and no token reward transfer is implemented.
+HYN3 verifies inline Alice application tasks independently of the neural block nonce. Every post-genesis block must pass its neural and BLAKE3 scratchpad thresholds. Application tasks contribute no additional fork weight. [Consensus](Consensus-Neural-Work.md)
 
-## Non-negotiable security rule
-
-Task-backed useful work may augment rewards, but it MUST NOT silently replace
-the block-level mathematical-work rule. A block remains eligible only after
-every claimed witness passes the chain predicate, is unclaimed, and the chained
-work commitment matches. If there
-are zero external tasks, this base rule and its measurable computation remain
-unchanged. This rule is itself a research prototype: the field is not
-externally useful data and the claim is not a succinct proof.
-
-For the first prototype, the safest accounting equation is:
+The proposed income model includes a requester-funded bounty once escrow is implemented. Transaction fees in the equation represent the miner's share after the fee burn.
 
 ```text
 miner_income = consensus_block_reward + transaction_fees + escrowed_task_bounty
-chain_weight  = verified_base_scientific_work_only
+chain_weight  = sum of accepted block weights
 ```
 
 Task proofs MUST NOT increase chain weight, lower base work, bypass the base work,
@@ -68,11 +55,7 @@ and economic analysis.
 5. A successful claim transfers only the requester's escrowed bounty. It does
    not modify block-work eligibility, block validity, chain weight, or base issuance.
 
-The repository now commits this lifecycle to the unified research-profile
-state root. Publication is usable, and the default verifier settles the Alice
-neural circuit by re-running one forward pass; every other circuit stays
-fail-closed until a versioned verifier backend and requester-funded escrow
-transfer are implemented and activated under a new reviewed chain profile.
+HYN3 commits signed task records to its state root. Its inline Alice verifier reconstructs the reference output, candidate output and signed accounting commitments. The publisher declares a reward in the signed task. Worker payment would require a funded escrow transition. [HYN3 application rules](Research-Aether-Compute.md)
 
 ## Required experiments
 
@@ -87,7 +70,7 @@ Before proposing activation, publish reproducible results for:
 - reward volatility when external demand is zero or concentrated;
 - censorship of task claims and expiry/reorg behavior;
 - proof-system bugs, parameter compromise, and emergency disable behavior; and
-- base scientific-work distribution with and without task-bounty income.
+- distribution of neural mining work with and without task-bounty income.
 
 ## Activation gate
 
@@ -110,18 +93,18 @@ research, never as "AI mining" or a current source of chain security.
 
 # 有用工作增强 PoW 的研究边界
 
-状态：有界 AetherCompute 生命周期仅在 testnet 和 mainnet 研究 profile 中启用。它不改变 PoW 区块资格、链权重、基础发行或交易排序。默认证明验证器拒绝所有结果、欺诈与保管证明，且未实现代币奖励转移。
+HYN3 从创世启用有界的 Alice 任务发布、提交与终结。节点复算任务结果，按规范分支保存状态。任务规格的奖励字段仅用于记录，代币托管与支付仍属于研究设计。[计算任务](Research-Aether-Compute.md)
 
 ## 不可妥协的安全规则
 
-任务支撑的有用工作可以增加收入，但绝不能静默替代区块级科学计算工作规则。节点完整复算声明迭代数的确定性 PDE 后区块才具备资格；外部任务为零时，该基础规则和可测计算量保持不变。这个基础规则本身仍是研究原型：每个完成计算的候选都具备资格，验证还会重复完整 PDE，因此不是简洁证明，也不代表外部科学价值。
+节点对每个子块的 nonce 重算神经分数和 BLAKE3 scratchpad 门槛。通过全部验块规则的区块按其阈值计入分支权重。即使没有外部任务，这两道门槛也同样适用。下面的收入等式描述未来启用任务托管赏金后的模型。[区块工作量](Consensus-Neural-Work.md)
 
 ```text
 miner_income = consensus_block_reward + transaction_fees + escrowed_task_bounty
-chain_weight  = verified_base_scientific_work_only
+chain_weight  = sum of accepted block weights
 ```
 
-任务证明不得增加链权重、降低基础迭代数、绕过基础工作或决定 fork choice。未来任何改变该边界的提议都属于新的共识设计，需要独立链 profile 和审计。
+矿工领取扣除销毁部分后的手续费。未来如要将任务证明计入分支权重，需要定义新的共识规则并接受审计。
 
 ## 明确排除
 
@@ -151,7 +134,7 @@ Hyphen 不得把通用 AI 训练或推理描述为挖矿。这类工作通常验
 4. 有界验证检查证明与结果 commitment。昂贵任务执行绝不在每个全节点中进行。
 5. 成功 claim 只转移请求方托管的 bounty，不改变区块工作资格、区块有效性、链权重或基础发行。
 
-仓库现已将该生命周期承诺到统一研究 profile 状态根。任务发布可用，默认验证器通过重跑一次前向传播结算 Alice 神经挑战电路；其余电路在实现版本化 verifier 后端和请求方出资的 escrow 转移，并通过新链 profile 审查激活前，结算保持 fail-closed。
+HYN3 将已签名的任务记录承诺到状态根。内置 Alice 验证器复算参考输出、提交输出及签名中的计算量承诺。发布者签署任务报价，工作者兑付还需要有资金支持的托管状态转换。[HYN3 应用规则](Research-Aether-Compute.md)
 
 ## 必需实验
 
@@ -165,7 +148,7 @@ Hyphen 不得把通用 AI 训练或推理描述为挖矿。这类工作通常验
 - 外部需求为零或集中时的奖励波动；
 - 任务 claim 审查及过期/reorg 行为；
 - 证明系统缺陷、参数泄露和紧急禁用；
-- 有无任务 bounty 收入时的基础科学计算工作分布。
+- 有无任务赏金时各矿工的神经工作量分布。
 
 ## 激活门槛
 

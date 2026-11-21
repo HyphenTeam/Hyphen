@@ -161,12 +161,12 @@ def main():
     (run / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     (run / 'devnet-miner.key').write_bytes(bytes([111]) * 32)
     results = []
-    for network in ('neural-devnet', 'devnet'):
-        for backend in ('cpu', 'cuda'):
-            data = measure(run, network, backend, args, gpu_uuid)
-            (run / f'{network}-{backend}' / 'result.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
-            results.append(data)
-            print(network, backend, data['node_height'], f"{data['mean_gpu_board_watts']:.2f} W", flush=True)
+    network = 'neural-devnet'
+    for backend in ('cpu', 'cuda'):
+        data = measure(run, network, backend, args, gpu_uuid)
+        (run / f'{network}-{backend}' / 'result.json').write_text(json.dumps(data, indent=2), encoding='utf-8')
+        results.append(data)
+        print(network, backend, data['node_height'], f"{data['mean_gpu_board_watts']:.2f} W", flush=True)
     (run / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
 
 

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
@@ -140,8 +140,8 @@ impl VmEngine {
         let updated_storage = std::mem::take(&mut host_env.storage.lock().unwrap().entries);
         let state_changes = state_changes(contract.address, base_storage, &updated_storage);
         self.storage.insert(contract.address, updated_storage);
-        let return_data = host_env.return_data.lock().unwrap().clone();
-        let logs = host_env.logs.lock().unwrap().clone();
+        let return_data = std::mem::take(&mut *host_env.return_data.lock().unwrap());
+        let logs = std::mem::take(&mut *host_env.logs.lock().unwrap());
 
         Ok((
             contract,
@@ -208,7 +208,7 @@ impl VmEngine {
                 (Vec::new(), Vec::new())
             } else {
                 self.storage.insert(contract.address, updated_storage);
-                (changes, host_env.logs.lock().unwrap().clone())
+                (changes, std::mem::take(&mut *host_env.logs.lock().unwrap()))
             }
         } else {
             (Vec::new(), Vec::new())
@@ -221,7 +221,7 @@ impl VmEngine {
         } else if let Err(error) = execution {
             error.to_string().into_bytes()
         } else {
-            host_env.return_data.lock().unwrap().clone()
+            std::mem::take(&mut *host_env.return_data.lock().unwrap())
         };
 
         Ok(ContractResult {
@@ -278,7 +278,13 @@ fn create_instance(
     store
         .set_fuel(gas_limit)
         .map_err(|e| VmError::Instantiation(e.to_string()))?;
-    let linker = host::build_linker(engine).map_err(VmError::Instantiation)?;
+    // Only function definitions are shared. Memory, storage, fuel and input
+    // belong to the new Store above for every deployment, call and query.
+    static LINKER: OnceLock<Result<wasmi::Linker<Arc<HostEnv>>, String>> = OnceLock::new();
+    let linker = LINKER
+        .get_or_init(|| host::build_linker(engine))
+        .as_ref()
+        .map_err(|error| VmError::Instantiation(error.clone()))?;
     let instance = linker
         .instantiate_and_start(&mut store, &module)
         .map_err(|e| VmError::Instantiation(e.to_string()))?;
@@ -320,19 +326,30 @@ fn state_changes(
     before: &HashMap<Vec<u8>, Vec<u8>>,
     after: &HashMap<Vec<u8>, Vec<u8>>,
 ) -> Vec<StateChange> {
-    let keys: BTreeSet<_> = before.keys().chain(after.keys()).collect();
-    keys.into_iter()
-        .filter_map(|key| {
-            let old_value = before.get(key);
-            let new_value = after.get(key);
-            (old_value != new_value).then(|| StateChange {
+    let mut changes = Vec::new();
+    for (key, old) in before {
+        let new = after.get(key);
+        if Some(old) != new {
+            changes.push(StateChange {
                 contract,
                 key: key.clone(),
-                old_value: old_value.cloned(),
-                new_value: new_value.cloned(),
-            })
-        })
-        .collect()
+                old_value: Some(old.clone()),
+                new_value: new.cloned(),
+            });
+        }
+    }
+    for (key, new) in after {
+        if !before.contains_key(key) {
+            changes.push(StateChange {
+                contract,
+                key: key.clone(),
+                old_value: None,
+                new_value: Some(new.clone()),
+            });
+        }
+    }
+    changes.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    changes
 }
 
 fn valid_export_name(name: &str) -> bool {

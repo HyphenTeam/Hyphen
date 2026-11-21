@@ -149,17 +149,31 @@ fn derive_one_time_key_with_scalar(
     let (big_a, big_b) = addr.recipient_points()?;
 
     // ss = Hs("Hyphen_ECDH" || r*A || idx)
-    let r_a = r * big_a;
-    let encoded_idx = output_index.to_le_bytes();
-    let ss = hash_to_scalar(
-        b"Hyphen_ECDH",
-        &[r_a.compress().as_bytes().as_slice(), &encoded_idx].concat(),
-    );
+    let ss = shared_scalar(r * big_a, output_index);
 
     // P = ss*G + B
     let p = ss * G + big_b;
 
     Ok((EphemeralKey(big_r.compress().to_bytes()), p, ss))
+}
+
+fn shared_scalar(point: RistrettoPoint, output_index: u64) -> Scalar {
+    let mut transcript = [0; 40];
+    transcript[..32].copy_from_slice(point.compress().as_bytes());
+    transcript[32..].copy_from_slice(&output_index.to_le_bytes());
+    hash_to_scalar(b"Hyphen_ECDH", &transcript)
+}
+
+/// Receiver's ECDH scalar for ownership checks, amount decryption and key recovery.
+pub fn receiver_shared_scalar(
+    view: &ViewKey,
+    ephemeral: &EphemeralKey,
+    output_index: u64,
+) -> Result<Scalar, StealthError> {
+    Ok(shared_scalar(
+        view.as_scalar() * decompress(&ephemeral.0)?,
+        output_index,
+    ))
 }
 
 // Receiver: recover one-time private key
@@ -169,19 +183,7 @@ pub fn recover_one_time_key(
     ephemeral: &EphemeralKey,
     output_index: u64,
 ) -> Result<(Scalar, RistrettoPoint), StealthError> {
-    let big_r = decompress(&ephemeral.0)?;
-    let a = view.as_scalar();
-    let b = spend.as_scalar();
-
-    let a_r = a * big_r;
-    let encoded_idx = output_index.to_le_bytes();
-    let ss = hash_to_scalar(
-        b"Hyphen_ECDH",
-        &[a_r.compress().as_bytes().as_slice(), &encoded_idx].concat(),
-    );
-
-    // p = ss + b
-    let p = ss + b;
+    let p = receiver_shared_scalar(view, ephemeral, output_index)? + spend.as_scalar();
     let big_p = p * G;
 
     Ok((p, big_p))
@@ -194,18 +196,8 @@ pub fn is_output_ours(
     output_index: u64,
     one_time_pk: &RistrettoPoint,
 ) -> Result<bool, StealthError> {
-    let big_r = decompress(&ephemeral.0)?;
-    let big_b = decompress(spend_public)?;
-    let a = view.as_scalar();
-
-    let a_r = a * big_r;
-    let encoded_idx = output_index.to_le_bytes();
-    let ss = hash_to_scalar(
-        b"Hyphen_ECDH",
-        &[a_r.compress().as_bytes().as_slice(), &encoded_idx].concat(),
-    );
-
-    let expected = ss * G + big_b;
+    let ss = receiver_shared_scalar(view, ephemeral, output_index)?;
+    let expected = ss * G + decompress(spend_public)?;
     Ok(&expected == one_time_pk)
 }
 

@@ -41,7 +41,7 @@ def main():
     with ExitStack() as stack:
         def launch(name, exe, *args):
             log = stack.enter_context((work / (name + '.log')).open('wb'))
-            proc = subprocess.Popen([exe, '--network', 'compute-devnet', *args], cwd=work, stdout=log, stderr=log)
+            proc = subprocess.Popen([exe, '--network', 'neural-devnet', *args], cwd=work, stdout=log, stderr=log)
             stack.callback(smoke['stop'], proc)
             return proc
 
@@ -51,14 +51,21 @@ def main():
         base = f'http://{bind(explorer)}/api'
         wait = smoke['wait_json']
         wait(base + '/info', [node])
-        server = launch('pool', pool_bin, '--node', bind(tp), '--bind', bind(pool), '--api-bind', bind(api),
-                        '--pool-state-dir', work / 'pool', '--payout-mode', 'solo')
-        wait(f'http://{bind(api)}/healthz', [node, server])
-        miner = launch('miner', miner_bin, '--pool', bind(pool), '--threads', '3', '--wallet-address', smoke['ADDRESS'])
-        processes = [node, server, miner]
+        def mine(label, observe):
+            with ExitStack() as mining:
+                server = launch('pool-' + label, pool_bin, '--node', bind(tp), '--bind', bind(pool),
+                                '--api-bind', bind(api), '--pool-state-dir', work / 'pool', '--payout-mode', 'solo')
+                mining.callback(smoke['stop'], server)
+                wait(f'http://{bind(api)}/healthz', [node, server])
+                miner = launch('miner-' + label, miner_bin, '--pool', bind(pool), '--threads', '3',
+                               '--wallet-address', smoke['ADDRESS'])
+                mining.callback(smoke['stop'], miner)
+                return observe([node, server, miner])
+
         def confirm(*args):
             tx = dict(line.split('=', 1) for line in cli(*args).splitlines())
-            location = wait(base + '/tx/' + tx['transaction'], processes)
+            location = mine(args[0], lambda running: wait(base + '/tx/' + tx['transaction'], running,
+                                                          timeout=600, interval=.05))
             assert location['tx_hash'] == tx['transaction'] and location['block_height'] > 0
             return {**tx, 'height': location['block_height']}
 
@@ -66,30 +73,36 @@ def main():
         task = publish['task']
         submitted = confirm('submit', task, 'proof', '--key-file', 'worker')
         record = json.loads(cli('show', task))
+        premature = subprocess.run([compute, '--rpc', bind(rpc), 'show', task, '--output', work / 'early.bin'],
+                                   capture_output=True, text=True)
+        assert premature.returncode and 'finalized task' in premature.stderr and not (work / 'early.bin').exists()
         deadline = record['status']['Submitted']['challenge_deadline']
         early = subprocess.run([compute, '--rpc', bind(rpc), 'finalize', task], capture_output=True, text=True)
         assert early.returncode and 'challenge period' in early.stderr.lower(), early
-        end = time.monotonic() + 900
-        while wait(base + '/info', processes)['height'] < deadline:
-            if time.monotonic() >= end:
-                raise TimeoutError(f'waiting for height {deadline}')
-            time.sleep(1)
+        def reach_deadline(running):
+            end = time.monotonic() + 900
+            while wait(base + '/info', running)['height'] < deadline:
+                if time.monotonic() >= end:
+                    raise TimeoutError(f'waiting for height {deadline}')
+                time.sleep(.1)
+        mine('challenge-window', reach_deadline)
         finalized = confirm('finalize', task)
         before = json.loads(cli('show', task))
-        for proc in reversed(processes):
-            smoke['stop'](proc)
+        smoke['stop'](node)
         reopened = launch('reopened', node_bin, *node_args)
         tip = wait(base + '/info', [reopened])
-        after = json.loads(cli('show', task))
+        after = json.loads(cli('show', task, '--output', 'rpc-solution.bin'))
+        assert (work / 'rpc-solution.bin').read_bytes() == solution
         assert after == before
         status = after['status']['Finalized']
         assert status['finalized_height'] == finalized['height'] > deadline
         assert bytes(status['result']['claim']['proof']) == desc + solution
         assert status['retain_until_height'] == finalized['height'] + after['task']['spec']['retention_blocks']
         smoke['stop'](reopened)
-        local = subprocess.run([compute, 'show', task, '--data-dir', work / 'node'], cwd=work,
+        local = subprocess.run([compute, 'show', task, '--data-dir', work / 'node', '--output', 'local-solution.bin'], cwd=work,
                                capture_output=True, check=True, text=True)
         assert json.loads(local.stdout) == after
+        assert (work / 'local-solution.bin').read_bytes() == solution
         checked = dict(item.split('=', 1) for item in local.stderr.strip().split())
         assert checked['tip_hash'] == tip['tip_hash'] and int(checked['tip_height']) == tip['height']
         evidence = dict(publish=publish, submit=submitted, finalize=finalized, tip=tip['tip_hash'],

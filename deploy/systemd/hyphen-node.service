@@ -18,7 +18,7 @@ Type=simple
 User=hyphen
 Group=hyphen
 
-Environment=HYPHEN_NETWORK=devnet
+Environment=HYPHEN_NETWORK=neural-devnet
 Environment=HYPHEN_P2P_PORT=48334
 Environment=HYPHEN_RPC_PORT=48333
 Environment=HYPHEN_BOOT_NODES=
@@ -42,7 +42,7 @@ ExecStartPre=/opt/hyphen/bin/hyphen-node --network ${HYPHEN_NETWORK} --print-cha
 # yet (see wiki/Operations-Incentivized-Testnet.md).
 ExecStart=/opt/hyphen/bin/hyphen-node \
     --network ${HYPHEN_NETWORK} \
-    --data-dir /var/lib/hyphen/data \
+    --data-dir /var/lib/hyphen/neural-v3 \
     --listen /ip4/0.0.0.0/tcp/${HYPHEN_P2P_PORT} \
     --rpc-bind 127.0.0.1:${HYPHEN_RPC_PORT} \
     --template-bind 127.0.0.1:3350 \
@@ -61,7 +61,7 @@ LimitNOFILE=65536
 
 # Hard memory ceiling for this service.
 #
-# The node needs well under 200 MiB at the devnet witness ceiling with a 64 MiB
+# The node needs well under 200 MiB in the measured local configuration with a 64 MiB
 # storage cache, so this is a runaway guard rather than a budget: without it an
 # unbounded allocation makes the kernel pick an OOM victim at random, and that
 # victim is often cloudflared, which then looks like a tunnel outage. With it,

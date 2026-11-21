@@ -16,7 +16,7 @@ use hyphen_crypto::{
 use hyphen_rpc::messages::*;
 use hyphen_tx::{
     Transaction,
-    offline::{Funding, Invoice, Reserve, SPENT_PREFIX, Voucher, redeem, spent_image},
+    offline::{Funding, Invoice, Reserve, SPENT_PREFIX, Voucher, redeem_with_receipt, spent_image},
 };
 use hyphen_wallet::HyphenAddress;
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ const CHECKPOINT_MAGIC: &[u8; 8] = b"HYOFCK01";
 
 #[derive(Parser)]
 #[command(
-    about = "Conditional offline payments on hyphen-offline-devnet-v1. Wallet commands read a raw 64-byte BIP39 seed from stdin."
+    about = "Conditional offline payments on hyphen-neural-devnet-v3. Wallet commands read a raw 64-byte BIP39 seed from stdin."
 )]
 struct Cli {
     #[arg(long, default_value_t = 0)]
@@ -132,7 +132,7 @@ enum Command {
         #[command(flatten)]
         order: confirmation::Order,
     },
-    /// Reconcile a retained order with your own running, synchronized HYOF node.
+    /// Reconcile a retained order with your running, synchronized HYN3 node.
     ConfirmOnline {
         #[arg(long, default_value = "127.0.0.1:48333")]
         rpc: SocketAddr,
@@ -226,11 +226,11 @@ fn wallet_key(chain: Hash256, account: u32) -> Result<SecretKey> {
 
 fn db(dir: &Path) -> Result<Blockchain> {
     if !dir.join("conf").is_file() {
-        return Err("expected an existing stopped HYOF node database".into());
+        return Err("expected an existing stopped HYN3 node database".into());
     }
     Ok(Blockchain::open(
         dir.to_str().ok_or("invalid database path")?,
-        ChainConfig::offline_devnet(),
+        ChainConfig::neural_devnet(),
     )?)
 }
 
@@ -336,7 +336,7 @@ fn checked(
 ) -> Result<Packet> {
     let packet: Packet = load(packet)?;
     let funding = &packet.voucher.funding;
-    check_relay_fee(&funding.reserve, &ChainConfig::offline_devnet())?;
+    check_relay_fee(&funding.reserve, &ChainConfig::neural_devnet())?;
     if funding.reserve.chain != chain
         || funding.reserve.net()? != net
         || packet.proof.leaf_index != funding.index
@@ -460,6 +460,190 @@ fn funded(db: &Blockchain, reserve: Reserve, index: u64) -> Result<Packet> {
 
 const SPEND: &[u8] = b"Hyphen/offline/wallet-spend/v1";
 
+// A reserve can return to a previous holder. Check every outgoing instruction
+// this wallet remembers, including the original funder's first delegation.
+struct ReceiptHistory {
+    owner: PublicKey,
+    receipt_key: Hash256,
+    departures: Vec<(Hash256, Invoice)>,
+}
+
+impl ReceiptHistory {
+    fn new(voucher: &Voucher, owner: PublicKey) -> Self {
+        Self {
+            owner,
+            receipt_key: blake3_hash_many(&[
+                b"Hyphen/offline/receipt/v1",
+                owner.as_bytes(),
+                voucher.funding.id().as_ref(),
+            ]),
+            departures: Vec::new(),
+        }
+    }
+
+    fn visit(&mut self) -> impl FnMut(Hash256, PublicKey, &Invoice) + '_ {
+        |source, signer, invoice| {
+            if signer == self.owner {
+                self.departures.push((source, invoice.clone()));
+            }
+        }
+    }
+
+    /// Called only after the entire history and its terminal owner have been authenticated.
+    fn accept(self, journal: &Journal, head: Hash256) -> Result<bool> {
+        let previous = journal.get(self.receipt_key.as_ref())?;
+        let mut follows_previous = previous.is_none();
+        for (source, departure) in self.departures {
+            let slot = blake3_hash_many(&[SPEND, self.owner.as_bytes(), source.as_ref()]);
+            if let Some(decision) = journal.get(slot.as_ref())? {
+                if decision != blake3_hash(&encoded(&departure)?).as_ref() {
+                    return Err(
+                        "return transfer differs from this wallet's recorded payment".into(),
+                    );
+                }
+                follows_previous |= previous.as_deref() == Some(source.as_ref());
+            }
+        }
+        if previous.as_deref() == Some(head.as_ref()) {
+            return Ok(false);
+        }
+        if !follows_previous {
+            return Err("receipt conflicts with the wallet's previous receipt".into());
+        }
+        journal.set(self.receipt_key.as_ref(), head.as_ref())?;
+        Ok(true)
+    }
+}
+
+fn accept_receipt(
+    journal: &Journal,
+    voucher: &Voucher,
+    chain: Hash256,
+    owner: PublicKey,
+) -> Result<(Hash256, bool)> {
+    let mut history = ReceiptHistory::new(voucher, owner);
+    let (head, holder) = voucher.verify_history(chain, history.visit())?;
+    if holder != owner {
+        return Err("receipt belongs to a different holder".into());
+    }
+    Ok((head, history.accept(journal, head)?))
+}
+
+fn authorize_transfer(
+    journal: &Journal,
+    mut voucher: Voucher,
+    chain: Hash256,
+    key: &SecretKey,
+    invoice: Invoice,
+) -> Result<Voucher> {
+    let decision = blake3_hash(&encoded(&invoice)?);
+    let mut history = ReceiptHistory::new(&voucher, key.public_key());
+    let head = voucher.transfer_with_receipt(chain, key, invoice, history.visit())?;
+    history.accept(journal, head)?;
+    record(journal, SPEND, key.public_key(), head, decision)?;
+    Ok(voucher)
+}
+
+fn authorize_redemption(
+    journal: &Journal,
+    voucher: Voucher,
+    chain: Hash256,
+    key: &SecretKey,
+    destination: StealthAddress,
+) -> Result<Transaction> {
+    let mut history = ReceiptHistory::new(&voucher, key.public_key());
+    let (head, tx) = redeem_with_receipt(voucher, chain, key, destination, history.visit())?;
+    let decision = blake3_hash_many(&[
+        b"Hyphen/offline/wallet-redemption/v1",
+        head.as_ref(),
+        &destination.view_public,
+        &destination.spend_public,
+    ]);
+    history.accept(journal, head)?;
+    record(journal, SPEND, key.public_key(), head, decision)?;
+    Ok(tx)
+}
+
+#[cfg(test)]
+#[test]
+fn returning_funds_must_follow_the_wallets_recorded_first_transfer() {
+    let directory = tempfile::tempdir().unwrap();
+    let wallet = Journal::open(directory.path()).unwrap();
+    let owner = SecretKey([1; 32]);
+    let payee = SecretKey([2; 32]);
+    let chain = ChainIdentity::of(&ChainConfig::neural_devnet()).genesis_hash;
+    let reserve = Reserve {
+        chain,
+        owner: owner.public_key(),
+        nonce: [9; 32],
+        amount: 10_000_000,
+        fee: 1_000_000,
+    };
+    let (ephemeral, _, _) =
+        hyphen_crypto::stealth::derive_one_time_key(&reserve.address().unwrap(), 0).unwrap();
+    let funding = Funding {
+        reserve,
+        index: 0,
+        ordinal: 0,
+        ephemeral: ephemeral.0,
+    };
+    let first = funding.id();
+    let outgoing = Invoice::new(first, &payee, [3; 32]);
+    record(
+        &wallet,
+        SPEND,
+        owner.public_key(),
+        first,
+        blake3_hash(&encoded(&outgoing).unwrap()),
+    )
+    .unwrap();
+
+    let returned = |invoice| {
+        let mut voucher = Voucher {
+            funding: funding.clone(),
+            transfers: vec![],
+        };
+        assert_eq!(
+            voucher
+                .transfer_with_receipt(chain, &owner, invoice, |_, _, _| {})
+                .unwrap(),
+            first
+        );
+        let (head, _) = voucher.holder(chain).unwrap();
+        voucher
+            .transfer(chain, &payee, Invoice::new(head, &owner, [4; 32]))
+            .unwrap();
+        voucher
+    };
+    let competing = returned(Invoice::new(first, &payee, [5; 32]));
+    assert!(accept_receipt(&wallet, &competing, chain, owner.public_key()).is_err());
+    let competing_head = competing.holder(chain).unwrap().0;
+    let next = Invoice::new(competing_head, &payee, [6; 32]);
+    assert!(
+        authorize_transfer(&wallet, competing.clone(), chain, &owner, next)
+            .unwrap_err()
+            .to_string()
+            .contains("recorded payment")
+    );
+    let destination = competing.funding.reserve.address().unwrap();
+    assert!(
+        authorize_redemption(&wallet, competing, chain, &owner, destination)
+            .unwrap_err()
+            .to_string()
+            .contains("recorded payment")
+    );
+    let valid = returned(outgoing);
+    let (head, _) = valid.holder(chain).unwrap();
+    assert_eq!(
+        accept_receipt(&wallet, &valid, chain, owner.public_key()).unwrap(),
+        (head, true)
+    );
+    assert_eq!(
+        accept_receipt(&wallet, &valid, chain, owner.public_key()).unwrap(),
+        (head, false)
+    );
+}
+
 #[cfg(test)]
 #[test]
 fn independently_signed_offers_require_locally_verified_funding() {
@@ -467,7 +651,7 @@ fn independently_signed_offers_require_locally_verified_funding() {
     let node = dir.path().join("node");
     let snapshot = dir.path().join("checkpoint");
     let wallet = dir.path().join("receiver");
-    let cfg = ChainConfig::offline_devnet();
+    let cfg = ChainConfig::neural_devnet();
     let chain = ChainIdentity::of(&cfg).genesis_hash;
     drop(Blockchain::open(node.to_str().unwrap(), cfg).unwrap());
     checkpoint(&node, &snapshot, &wallet).unwrap();
@@ -521,7 +705,7 @@ fn independently_signed_offers_require_locally_verified_funding() {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cfg = ChainConfig::offline_devnet();
+    let cfg = ChainConfig::neural_devnet();
     let chain = ChainIdentity::of(&cfg).genesis_hash;
     let key = || wallet_key(chain, cli.account);
     match cli.command {
@@ -744,10 +928,7 @@ fn main() -> Result<()> {
                 return Err("request differs from expected recipient".into());
             }
             let key = key()?;
-            let (head, _) = packet.voucher.holder(chain)?;
-            let decision = blake3_hash(&encoded(&invoice)?);
-            packet.voucher.transfer(chain, &key, invoice)?;
-            record(&journal, SPEND, key.public_key(), head, decision)?;
+            packet.voucher = authorize_transfer(&journal, packet.voucher, chain, &key, invoice)?;
             save(&out, &encoded(&packet)?)?;
         }
         Command::Accept {
@@ -769,36 +950,7 @@ fn main() -> Result<()> {
             if saved.recipient != owner || encoded(&saved)? != encoded(&delivery.invoice)? {
                 return Err("delivery differs from this wallet's retained request".into());
             }
-            let receipt_key = blake3_hash_many(&[
-                b"Hyphen/offline/receipt/v1",
-                owner.as_bytes(),
-                packet.voucher.funding.id().as_ref(),
-            ]);
-            let previous = journal.get(receipt_key.as_ref())?;
-            let mut prior_departure = None;
-            let (head, _) = packet
-                .voucher
-                .verify_history(chain, |source, signer, invoice| {
-                    if signer == owner && Some(source.as_ref()) == previous.as_deref() {
-                        prior_departure = Some((source, invoice.clone()));
-                    }
-                })?;
-            let first = previous.as_deref() != Some(head.as_ref());
-            if first {
-                if previous.is_some() {
-                    let (source, departure) = prior_departure
-                        .ok_or("receipt conflicts with the wallet's previous receipt")?;
-                    let spend_key = blake3_hash_many(&[SPEND, owner.as_bytes(), source.as_ref()]);
-                    if journal.get(spend_key.as_ref())?.as_deref()
-                        != Some(blake3_hash(&encoded(&departure)?).as_ref())
-                    {
-                        return Err(
-                            "return transfer differs from this wallet's recorded payment".into(),
-                        );
-                    }
-                }
-                journal.set(receipt_key.as_ref(), head.as_ref())?;
-            }
+            let (head, first) = accept_receipt(&journal, &packet.voucher, chain, owner)?;
             println!("conditional_receipt={head} net_atomic={net_amount} new={first}");
         }
         Command::Redeem {
@@ -819,8 +971,8 @@ fn main() -> Result<()> {
                 return Err("expected devnet payout address".into());
             }
             let key = key()?;
-            let (head, _) = packet.voucher.holder(chain)?;
-            let tx = redeem(
+            let tx = authorize_redemption(
+                &journal,
                 packet.voucher,
                 chain,
                 &key,
@@ -830,23 +982,12 @@ fn main() -> Result<()> {
                 },
             )?;
             let hash = tx.hash();
-            let decision = blake3_hash_many(&[
-                b"Hyphen/offline/wallet-redemption/v1",
-                head.as_ref(),
-                &addr.view_public,
-                &addr.spend_public,
-            ]);
-            record(&journal, SPEND, key.public_key(), head, decision)?;
             save(&out, &tx.serialise())?;
             println!("signed_transaction={hash}");
         }
         Command::Submit { transaction, rpc } => {
             let bytes = common::read_bytes(&transaction, PACKET_LIMIT)?;
-            if Transaction::deserialise_limited(&bytes)?.version
-                != hyphen_tx::offline::CLAIM_VERSION
-            {
-                return Err("expected signed redemption".into());
-            }
+            hyphen_tx::offline::decode_claim(&bytes)?;
             let hash = blake3_hash(&bytes);
             let mut stream = connect(rpc, &cfg)?;
             let result: SubmitTransactionResponse = common::request(

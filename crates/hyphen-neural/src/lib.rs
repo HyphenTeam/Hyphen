@@ -1,11 +1,11 @@
-//! Deterministic neural proof-of-work challenge.
+//! Deterministic fixed-point neural evaluation for block work and compute tasks.
 //!
 //! Alice is a two-layer perceptron whose weights are derived from a public chain
 //! seed; the task is to invert it. The contract publishes `A` and one target
 //! `y* = A(x*)` and accepts any `x` with `A(x)` inside a published tolerance of
-//! `y*`. Verification is a single `O(input_dim * hidden_dim)` forward pass, while
-//! finding `x` requires searching a non-convex integer landscape, which is the
-//! asymmetry the mechanism depends on.
+//! `y*`. The descriptor derives `x*` from the public seed. Verification evaluates
+//! both the reference input and the candidate. HYN3 block admission instead
+//! derives an input from a nonce and checks the neural gate and scratchpad.
 //!
 //! # Why the numbers are integers
 //!
@@ -15,14 +15,6 @@
 //! operation has one rounding rule, and the activation is a rational
 //! approximation with a fixed evaluation order. A solution accepted on one host
 //! is accepted on all of them, bit for bit.
-//!
-//! # Why the challenge is an inverse problem
-//!
-//! Publishing Alice's weights is unavoidable — the contract must verify with
-//! them, so they are public. A task phrased as "learn Alice's weights from her
-//! outputs" is therefore solved by copying the weights. The inverse formulation
-//! keeps the public function and withholds only the preimage, so the only way to
-//! answer is to search.
 //!
 //! # Layout
 //!
@@ -35,9 +27,8 @@
 //! - [`wire`] — the fixed-width contract encoding.
 //! - [`mod@solve`] — the deterministic Levenberg–Marquardt prover (`std` only).
 //!
-//! The crate is `no_std` with no allocator by default so the same code compiles
-//! into the Alice contract. `std` only adds the prover, the CLI and `Vec`
-//! conveniences.
+//! Disable the default `std` feature to build the allocation-free Alice verifier
+//! for Wasm. The host build also provides the solver, CLI and block scratchpad.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]

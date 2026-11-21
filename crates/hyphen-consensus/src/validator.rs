@@ -90,7 +90,7 @@ impl<'a> BlockValidator<'a> {
                 .cfg
                 .feature_enabled(hyphen_core::config::FEATURE_OFFLINE_CLAIMS)
         {
-            hyphen_core::wire_config(hyphen_tx::offline::MAX_CLAIM_BYTES).deserialize(bytes)
+            hyphen_tx::offline::decode_claim(bytes)
         } else {
             Transaction::deserialise_limited(bytes)
         };
@@ -665,20 +665,64 @@ impl<'a> BlockValidator<'a> {
         if depth > max_depth || depth == 0 {
             return 0;
         }
-        let numerator = (max_depth + 1 - depth) * self.cfg.uncle_reward_numerator;
-        let denominator = max_depth * self.cfg.uncle_reward_denominator;
-        base_reward * numerator / denominator
+        scaled_reward(
+            base_reward,
+            self.cfg.uncle_reward_numerator,
+            self.cfg.uncle_reward_denominator,
+            max_depth - depth + 1,
+            max_depth,
+        )
     }
 
     pub fn nephew_reward(&self, base_reward: u64, uncle_count: usize) -> u64 {
-        base_reward * self.cfg.nephew_reward_numerator * uncle_count as u64
-            / self.cfg.nephew_reward_denominator
+        scaled_reward(
+            base_reward,
+            self.cfg.nephew_reward_numerator,
+            self.cfg.nephew_reward_denominator,
+            uncle_count as u64,
+            1,
+        )
     }
+}
+
+// floor(base * numerator * units / (total_units * denominator)). Split at
+// total_units so a representable reward needs no 192-bit intermediate.
+fn scaled_reward(base: u64, numerator: u64, denominator: u64, units: u64, total_units: u64) -> u64 {
+    if denominator == 0 || total_units == 0 {
+        return 0;
+    }
+    let total = u128::from(total_units);
+    let units = u128::from(units);
+    let product = u128::from(base) * u128::from(numerator);
+    let fraction = (product % total) * units / total;
+    // Any overflowing sum still exceeds u64::MAX after division by a u64.
+    let scaled = (product / total)
+        .saturating_mul(units)
+        .saturating_add(fraction);
+    u64::try_from(scaled / u128::from(denominator)).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_reward_estimates_preserve_fractional_units_and_large_subsidies() {
+        let mut cfg = ChainConfig::testnet();
+        let validator = BlockValidator::new(&cfg);
+        assert_eq!(
+            validator.uncle_reward(5, 6, u64::MAX),
+            ((u128::from(u64::MAX) * 7) / 8) as u64
+        );
+        assert_eq!(validator.nephew_reward(u64::MAX, 2), u64::MAX / 16);
+        cfg.max_uncle_depth = u64::MAX;
+        cfg.uncle_reward_numerator = u64::MAX;
+        cfg.uncle_reward_denominator = u64::MAX;
+        let validator = BlockValidator::new(&cfg);
+        assert_eq!(validator.uncle_reward(1, 2, u64::MAX), u64::MAX);
+        assert_eq!(validator.uncle_reward(0, u64::MAX, u64::MAX), 1);
+        assert_eq!(scaled_reward(u64::MAX, u64::MAX, 1, u64::MAX, 1), u64::MAX);
+    }
 
     #[test]
     fn checks_input_signature_count_before_ring_resolution() {
@@ -699,7 +743,7 @@ mod tests {
             temporal_nonce: [0; 32],
             causal_binding: [0; 32],
         });
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let validator = BlockValidator::new(&cfg);
         for count in [0, 2] {
             tx.prunable.clsag_signatures.resize(
@@ -787,7 +831,7 @@ mod tests {
 
     #[test]
     fn receipt_root_must_be_the_empty_root() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let validator = BlockValidator::new(&cfg);
         let mut block = hyphen_core::build_genesis_block(&cfg);
 

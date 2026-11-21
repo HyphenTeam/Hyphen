@@ -243,8 +243,13 @@ pub enum SyncResponse {
 
 impl SyncRequest {
     pub fn validate(&self) -> Result<(), NetworkDecodeError> {
-        if let Self::GetBlocks { count, .. } = self
-            && (*count == 0 || *count > MAX_SYNC_BLOCK_COUNT)
+        if let Self::GetBlocks {
+            start_height,
+            count,
+        } = self
+            && (*count == 0
+                || *count > MAX_SYNC_BLOCK_COUNT
+                || start_height.checked_add(u64::from(*count) - 1).is_none())
         {
             return Err(NetworkDecodeError::InvalidSyncRequest);
         }
@@ -439,6 +444,22 @@ mod tests {
 
     #[test]
     fn sync_request_limits_reject_zero_excessive_and_overflow_prone_ranges() {
+        assert!(
+            SyncRequest::GetBlocks {
+                start_height: u64::MAX,
+                count: 1
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            SyncRequest::GetBlocks {
+                start_height: u64::MAX,
+                count: 2
+            }
+            .validate()
+            .is_err()
+        );
         assert!(
             SyncRequest::GetBlocks {
                 start_height: 0,

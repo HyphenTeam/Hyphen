@@ -30,13 +30,14 @@ use hyphen_transport::{
 #[derive(Parser, Debug)]
 #[command(name = "hyphen-node", about = "Hyphen blockchain full node")]
 struct Cli {
-    #[arg(long, default_value = "hyphen_data")]
-    data_dir: String,
+    /// Defaults to hyphen_data/neural-v3 on neural-devnet and hyphen_data otherwise.
+    #[arg(long)]
+    data_dir: Option<String>,
 
     #[arg(
         long,
-        value_parser = ["mainnet", "testnet", "devnet", "neural-devnet", "contract-devnet", "compute-devnet", "offline-devnet"],
-        default_value = "devnet"
+        value_parser = ["neural-devnet", "testnet", "mainnet"],
+        default_value = "neural-devnet"
     )]
     network: String,
 
@@ -126,16 +127,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    let cfg = match cli.network.as_str() {
-        "mainnet" => ChainConfig::mainnet(),
-        "testnet" => ChainConfig::testnet(),
-        "devnet" => ChainConfig::devnet(),
-        "neural-devnet" => ChainConfig::neural_devnet(),
-        "contract-devnet" => ChainConfig::contract_devnet(),
-        "compute-devnet" => ChainConfig::compute_devnet(),
-        "offline-devnet" => ChainConfig::offline_devnet(),
+    let (cfg, default_data_dir) = match cli.network.as_str() {
+        "neural-devnet" => (ChainConfig::neural_devnet(), "hyphen_data/neural-v3"),
+        "testnet" => (ChainConfig::testnet(), "hyphen_data"),
+        "mainnet" => (ChainConfig::mainnet(), "hyphen_data"),
         _ => unreachable!("clap validates network"),
     };
+    let data_dir = cli.data_dir.as_deref().unwrap_or(default_data_dir);
     if cli.print_chain_identity {
         println!("network={}", cfg.network_name);
         println!(
@@ -154,6 +152,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+
     if cli.network == "mainnet"
         && cli.boot_nodes.trim().is_empty()
         && !cli.allow_isolated_mainnet
@@ -161,14 +160,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         && cli.replay_history.is_none()
         && cli.verify_history.is_none()
     {
-        return Err(
-            "mainnet requires --boot-nodes; use --allow-isolated-mainnet only for the first seed node"
-                .into(),
-        );
+        return Err("mainnet requires --boot-nodes; use --allow-isolated-mainnet only for the first seed node".into());
     }
 
     if let Some(path) = &cli.verify_history {
-        let archive = read_chain_archive(path)?;
+        let archive = ChainArchive::read(path)?;
         let report = verify_historical_archive(&cfg, &archive)?;
         println!(
             "verified_blocks={} final_height={} final_hash={}",
@@ -188,7 +184,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let blockchain = Arc::new(
         Blockchain::open_with_cache(
-            &cli.data_dir,
+            data_dir,
             cfg.clone(),
             cli.db_cache_mb.saturating_mul(1024 * 1024),
         )
@@ -209,7 +205,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(path) = &cli.replay_history {
-        let archive = read_chain_archive(path)?;
+        let archive = ChainArchive::read(path)?;
         let replay_report = replay_archive(&blockchain, &archive)?;
         println!(
             "verified_blocks={} replayed_blocks={} final_height={} final_hash={} observation_ms={}",
@@ -267,7 +263,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let identity_path = cli
         .identity_file
         .clone()
-        .unwrap_or_else(|| PathBuf::from(&cli.data_dir).join("p2p_identity.key"));
+        .unwrap_or_else(|| PathBuf::from(data_dir).join("p2p_identity.key"));
     let p2p_identity = load_or_create_p2p_identity(&identity_path)?;
 
     let mut network = hyphen_network::HyphenNetwork::new(
@@ -352,6 +348,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(result) = peers.validation.join_next(), if !peers.validation.is_empty() => {
                 peers.on_validated(result, &blockchain, &mempool, &mut network);
             }
+            Some(result) = peers.admissions.join_next(), if !peers.admissions.is_empty() => {
+                match result {
+                    Ok(admission) => peers.on_admission(admission, &mut network),
+                    Err(error) => error!(%error, "Peer transaction validation task failed"),
+                }
+            }
             Some(result) = peers.responses.join_next(), if !peers.responses.is_empty() => {
                 match result {
                     Ok((channel, response)) => { let _ = network.swarm.behaviour_mut().request_response.send_response(channel, response); }
@@ -403,6 +405,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     while peers.validation.join_next().await.is_some() {}
+    while peers.admissions.join_next().await.is_some() {}
     if let Err(error) = blockchain.db.flush() {
         error!("Failed to flush the database during shutdown: {error}");
     }
@@ -431,18 +434,6 @@ async fn shutdown_signal() {
     {
         let _ = signal::ctrl_c().await;
     }
-}
-
-fn read_chain_archive(path: &Path) -> Result<ChainArchive, Box<dyn std::error::Error>> {
-    const LIMIT: usize = 512 * 1024 * 1024;
-    let file = std::fs::File::open(path)?;
-    let mut encoded = Vec::new();
-    if file.metadata()?.len() > LIMIT as u64
-        || file.take(LIMIT as u64 + 1).read_to_end(&mut encoded)? > LIMIT
-    {
-        return Err("chain archive exceeds the 512 MiB CLI limit".into());
-    }
-    Ok(wire_config(LIMIT).deserialize(&encoded)?)
 }
 
 /// Parses `--boot-nodes` into validated multiaddrs.
@@ -848,7 +839,7 @@ fn build_template(
         let pool = mempool.read();
         pool.get_block_candidate_blobs_reserved(cfg.max_block_size, cfg.max_block_size / 4)
     };
-    tx_blobs.sort_unstable_by_key(|transaction| hyphen_crypto::blake3_hash(transaction));
+    tx_blobs.sort_by_cached_key(|transaction| hyphen_crypto::blake3_hash(transaction));
 
     let hyphen_consensus::chain::CandidateTemplate {
         height: next_height,
@@ -871,7 +862,7 @@ fn build_template(
     let header = hyphen_core::BlockHeader {
         version: hyphen_core::FROZEN_BLOCK_VERSION,
         height: next_height,
-        timestamp: ntp_adjusted_timestamp_ms(),
+        timestamp: template_timestamp(&parent, ntp_adjusted_timestamp_ms(), cfg)?,
         prev_hash: parent_hash,
         tx_root,
         commitment_root,
@@ -916,6 +907,27 @@ fn build_template(
         consensus_params_hash: cfg.consensus_params_hash().to_vec(),
         genesis_hash: build_genesis_block(cfg).hash().as_bytes().to_vec(),
     })
+}
+
+fn template_timestamp(
+    parent: &hyphen_core::BlockHeader,
+    now: u64,
+    cfg: &ChainConfig,
+) -> Result<u64, hyphen_core::error::CoreError> {
+    use hyphen_core::error::CoreError;
+    if parent.height == 0 && !cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
+        return Ok(now);
+    }
+    let timestamp = now.max(
+        parent
+            .timestamp
+            .checked_add(1)
+            .ok_or(CoreError::FutureTimestamp)?,
+    );
+    if timestamp > now.saturating_add(cfg.timestamp_future_limit_ms) {
+        return Err(CoreError::FutureTimestamp);
+    }
+    Ok(timestamp)
 }
 
 fn handle_block_submission(
@@ -1068,4 +1080,98 @@ fn wire_config(max_bytes: usize) -> rustbinary::CompactConfig {
         .with_collection_limit(max_bytes.min(MAX_WIRE_COLLECTION_ITEMS) as u64)
         .reject_trailing_bytes()
         .with_compact_format()
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    #[test]
+    fn submission_accepts_a_template_above_a_clock_ahead_parent() {
+        use hyphen_core::{Block, BlockAuthorization, BlockHeader};
+        use hyphen_crypto::{SecretKey, SpendKey, ViewKey};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ChainConfig::archived_devnet_v2();
+        let chain = Arc::new(Blockchain::open(dir.path().to_str().unwrap(), cfg.clone()).unwrap());
+        let pool = Arc::new(RwLock::new(Mempool::new(16)));
+        let (events, _) = tokio::sync::watch::channel(None);
+        let miner = SecretKey([97; 32]);
+        let view = ViewKey([98; 32]).public_point().compress().to_bytes();
+        let spend = SpendKey([99; 32]).public_point().compress().to_bytes();
+        let genesis = build_genesis_block(&cfg);
+        let mut parent_work = genesis.header.pow_commitment;
+        let ahead = ntp_adjusted_timestamp_ms() + cfg.timestamp_future_limit_ms / 2;
+        let mut offset = 3;
+        for height in 1..=2 {
+            let template = build_template(&chain, &pool, &cfg).unwrap();
+            let wire = wire_config(cfg.max_block_size);
+            let mut header: BlockHeader = wire.deserialize(&template.header_data).unwrap();
+            if height == 1 {
+                header.timestamp = ahead;
+            } else {
+                assert_eq!(header.timestamp, ahead + 1);
+            }
+            let witnesses = hyphen_pow::search(&hyphen_pow::SearchParams {
+                length: cfg.pouw_chain_length,
+                offset,
+                stride: 2,
+                count: header.difficulty,
+                max_candidates: 20_000_000,
+                is_claimed: &|_| false,
+            })
+            .unwrap()
+            .witnesses;
+            assert_eq!(witnesses.len() as u64, header.difficulty);
+            offset = witnesses.last().unwrap() + 2;
+            header.pow_commitment =
+                hyphen_pow::vms::witness_commitment(&parent_work, height, &witnesses);
+            parent_work = header.pow_commitment;
+            header.miner_pubkey = *miner.public_key().as_bytes();
+            header.extra_nonce = hyphen_core::authorization::reward_commitment(&view, &spend);
+            let authorization = BlockAuthorization::sign(
+                &header,
+                cfg.network_magic,
+                cfg.consensus_params_hash(),
+                genesis.hash(),
+                view,
+                spend,
+                &miner,
+            )
+            .unwrap();
+            let block = Block {
+                header,
+                pow_witnesses: witnesses,
+                transactions: template.transactions,
+                uncle_headers: vec![],
+                block_authorization: wire.serialize(&authorization).unwrap(),
+            };
+            let result =
+                handle_block_submission(&wire.serialize(&block).unwrap(), &chain, &pool, &events);
+            assert!(result.accepted, "{}", result.error);
+            assert_eq!(chain.tip().unwrap().hash, block.hash());
+        }
+    }
+
+    #[test]
+    fn timestamp_advances_within_the_arrival_window() {
+        let cfg = ChainConfig::archived_devnet_v2();
+        let mut parent = build_genesis_block(&cfg).header;
+        let now = parent.timestamp - 1;
+        assert_eq!(template_timestamp(&parent, now, &cfg).unwrap(), now);
+        assert_eq!(
+            template_timestamp(&parent, now, &ChainConfig::archived_neural_devnet_v1()).unwrap(),
+            parent.timestamp + 1
+        );
+        parent.height = 1;
+        parent.timestamp = now + cfg.timestamp_future_limit_ms - 1;
+        assert_eq!(
+            template_timestamp(&parent, now, &cfg).unwrap(),
+            now + cfg.timestamp_future_limit_ms
+        );
+        parent.timestamp += 1;
+        assert!(template_timestamp(&parent, now, &cfg).is_err());
+        parent.timestamp = u64::MAX;
+        assert!(template_timestamp(&parent, u64::MAX, &cfg).is_err());
+    }
 }

@@ -82,21 +82,21 @@ impl MasterKey {
         }
     }
 
+    /// Derive v2 subaddress keys from the wallet seed and fixed-width path.
+    /// Legacy subaddresses require their original key material for recovery.
     pub fn derive_subaddress(&self, account: u32, index: u32) -> DerivedKeys {
-        let base = self.derive();
-        let mut idx_data = Vec::with_capacity(8);
-        idx_data.extend_from_slice(&account.to_le_bytes());
-        idx_data.extend_from_slice(&index.to_le_bytes());
-        let sub_scalar = hash_to_scalar(b"Hyphen_ICD_sub", &idx_data);
-        let sub_point = sub_scalar * *TWIST_GEN;
-        let sub_spend = hash_to_scalar(
-            b"Hyphen_ICD_sub_spend",
-            (base.spend_secret * G + sub_point).compress().as_bytes(),
-        );
-        let sub_view = hash_to_scalar(
-            b"Hyphen_ICD_sub_view",
-            (base.view_secret * G + sub_point).compress().as_bytes(),
-        );
+        let derive = |role: &[u8]| {
+            let mut h = blake3::Hasher::new_keyed(&self.seed);
+            h.update(b"Hyphen/wallet/subaddress/v2\0");
+            h.update(&account.to_le_bytes());
+            h.update(&index.to_le_bytes());
+            h.update(role);
+            let mut wide = zeroize::Zeroizing::new([0; 64]);
+            h.finalize_xof().fill(wide.as_mut());
+            Scalar::from_bytes_mod_order_wide(&wide)
+        };
+        let sub_view = derive(b"view");
+        let sub_spend = derive(b"spend");
         DerivedKeys {
             view_secret: sub_view,
             spend_secret: sub_spend,
@@ -133,5 +133,23 @@ mod tests {
         let b = mk.derive_subaddress(0, 1);
         assert_ne!(a.spend_public, b.spend_public);
         assert_ne!(a.view_public, b.view_public);
+    }
+
+    #[test]
+    fn v2_subaddress_recovery_matches_public_vector() {
+        let path = (0x0102_0304, 0x0506_0708);
+        let key = MasterKey::from_seed([0xab; 32]);
+        let child = key.derive_subaddress(path.0, path.1);
+        assert_eq!(
+            hyphen_crypto::hex_encode(child.view_public.compress().as_bytes()),
+            "a651f158c5e30aed3f1c05c18f8d8eaf800add7d941581e05a99de036728176f"
+        );
+        assert_eq!(
+            hyphen_crypto::hex_encode(child.spend_public.compress().as_bytes()),
+            "3c956f24a14362237a22f4411dfd50c2be9db553a1586d49617bc13503f5c262"
+        );
+        let other = MasterKey::from_seed([0xac; 32]).derive_subaddress(path.0, path.1);
+        assert_ne!(child.spend_secret, other.spend_secret);
+        assert_ne!(child.view_secret, other.view_secret);
     }
 }

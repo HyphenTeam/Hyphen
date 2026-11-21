@@ -14,7 +14,7 @@ use hyphen_wallet::{AuditVerificationContext, SelectiveDisclosure, verify_disclo
     about = "Verify a scoped single-output disclosure against a local synchronized node database"
 )]
 struct Cli {
-    #[arg(long, value_parser = ["mainnet", "testnet", "devnet", "contract-devnet", "neural-devnet", "compute-devnet"])]
+    #[arg(long, value_parser = ["neural-devnet", "testnet", "mainnet"], default_value = "neural-devnet")]
     network: String,
     #[arg(long)]
     data_dir: String,
@@ -41,12 +41,9 @@ fn hex32(text: &str) -> Result<[u8; 32], String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let cfg = match cli.network.as_str() {
-        "mainnet" => ChainConfig::mainnet(),
-        "testnet" => ChainConfig::testnet(),
-        "devnet" => ChainConfig::devnet(),
         "neural-devnet" => ChainConfig::neural_devnet(),
-        "contract-devnet" => ChainConfig::contract_devnet(),
-        "compute-devnet" => ChainConfig::compute_devnet(),
+        "testnet" => ChainConfig::testnet(),
+        "mainnet" => ChainConfig::mainnet(),
         _ => unreachable!("clap validates network"),
     };
     if !std::path::Path::new(&cli.data_dir).join("conf").is_file() {

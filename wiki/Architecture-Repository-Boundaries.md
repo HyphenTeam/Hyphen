@@ -29,7 +29,7 @@ No successful build or test in an independent project proves base-chain
 correctness. No successful base-chain test proves an independent project is
 compatible.
 
-The three clients currently pin the shared Rust libraries at public revision `951ea013f0b61115632f463cea22850cd972df83` (chain identity v6). Each has its own lockfile. Base-chain changes in a local working tree reach a client when its dependency revision is updated.
+The three clients pin the HYN3 shared Rust libraries at `98d5857e21c5634596bcdf9f7e96e6e8a9cb44c1` in their manifests and lockfiles. A fresh build needs access to that Git revision. [HYN3 identity](../test-vectors/chain-identity-neural-v3.json)
 
 ## Contract workspace
 
@@ -104,7 +104,7 @@ clean checkout of the Hyphen base-chain repository.
 
 独立项目构建或测试成功不能证明基础链正确；基础链测试成功也不能证明独立项目兼容。
 
-三个独立项目通过公开 Git revision 使用共享协议 crate。钱包、矿工和矿池均固定到 `951ea013f0b61115632f463cea22850cd972df83`（链身份 v6），各自维护锁文件。升级时固定新的公开 revision，并重新执行跨项目向量和兼容性测试。
+钱包、矿工和矿池的清单与锁文件均固定到 HYN3 共享协议提交 `98d5857e21c5634596bcdf9f7e96e6e8a9cb44c1`。全新构建需要能取得该 Git 提交。[HYN3 链身份](../test-vectors/chain-identity-neural-v3.json)
 
 ## 协议变更顺序
 

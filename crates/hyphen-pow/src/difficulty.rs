@@ -43,10 +43,10 @@ pub fn next_difficulty(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConf
 /// Frozen integer LWMA used by devnet. Behaviour is unchanged since it was
 /// pinned: only the meaning of the returned magnitude changed, not its algebra.
 pub fn next_difficulty_lwma(timestamps: &[u64], difficulties: &[u64], cfg: &ChainConfig) -> u64 {
-    let prev = match difficulties.last() {
-        Some(&value) => value,
-        None => return cfg.genesis_difficulty,
-    };
+    if timestamps.len() < 2 || timestamps.len() != difficulties.len() {
+        return cfg.genesis_difficulty;
+    }
+    let prev = difficulties[difficulties.len() - 1];
     bounded(lwma_base(timestamps, difficulties, cfg), prev, cfg)
 }
 
@@ -199,22 +199,25 @@ fn dampen_change(proposed: u64, prev: u64, times: &[i128]) -> u64 {
 /// The textbook estimator is `ac1 = n*S1 / ((n-1)*V)`, significant when
 /// `ac1 < -2/sqrt(n)`. Both the significance test and the strength use integer
 /// arithmetic only: the test squares both sides instead of taking a square
-/// root, and `isqrt` supplies the threshold.
+/// root. The V2 strength threshold uses its historical capped integer root.
 fn manipulation_strength_bps(times: &[i128]) -> i128 {
     let n = times.len() as i128;
     if n < 6 {
         return 0;
     }
     let mean = times.iter().sum::<i128>() / n;
-    let centred: Vec<i128> = times.iter().map(|time| time - mean).collect();
-    let variance: i128 = centred.iter().map(|c| c.saturating_mul(*c)).sum();
+    let mut variance = 0;
+    let mut cross = 0;
+    let mut previous = 0;
+    for &time in times {
+        let centered = time - mean;
+        variance += centered.saturating_mul(centered);
+        cross += centered.saturating_mul(previous);
+        previous = centered;
+    }
     if variance < n {
         return 0;
     }
-    let cross: i128 = centred
-        .windows(2)
-        .map(|pair| pair[0].saturating_mul(pair[1]))
-        .sum();
     if cross >= 0 {
         return 0;
     }
@@ -235,7 +238,7 @@ fn manipulation_strength_bps(times: &[i128]) -> i128 {
 
     let magnitude =
         n.saturating_mul(-cross).saturating_mul(BPS) / (n - 1).saturating_mul(variance).max(1);
-    let threshold = 2 * BPS / isqrt(n as u64).max(1) as i128;
+    let threshold = 2 * BPS / v2_window_root(n as u64).max(1) as i128;
     (magnitude - threshold).clamp(0, BPS)
 }
 
@@ -273,19 +276,11 @@ fn scale(prev: u64, ratio_bps: i128) -> u64 {
     u64::try_from(scaled.max(1)).unwrap_or(u64::MAX)
 }
 
-/// Integer square root by Newton iteration. Deterministic and dependency-free.
-fn isqrt(value: u64) -> u64 {
-    if value < 2 {
-        return value;
-    }
-    let mut x = 1u64 << ((64 - value.leading_zeros()) / 2);
-    loop {
-        let next = (x + value / x) / 2;
-        if next >= x {
-            return x;
-        }
-        x = next;
-    }
+/// The original V2 Newton loop stopped at its initial guess if the first
+/// update was larger. Keep that cap so existing research histories replay.
+fn v2_window_root(value: u64) -> u64 {
+    let initial = 1u64 << ((64 - value.leading_zeros()) / 2);
+    value.isqrt().min(initial)
 }
 
 //
@@ -516,7 +511,7 @@ mod tests {
     /// retarget failure.
     #[test]
     fn devnet_ramps_from_genesis_difficulty_by_at_most_one_clamp_step() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let mut difficulties = vec![cfg.genesis_difficulty; 2];
         // Blocks found in one millisecond, far below the 30 s target.
         let mut timestamps = vec![0u64, 1];
@@ -552,7 +547,7 @@ mod tests {
 
     #[test]
     fn frozen_lwma_clamps_timestamp_reversal_attack() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let previous = 9_000u64;
         let timestamps = vec![0, 30_000, 60_000, 1_000, 2_000, 3_000];
         let difficulties = vec![previous; timestamps.len()];
@@ -634,13 +629,30 @@ mod tests {
     }
 
     #[test]
-    fn integer_square_root_is_exact() {
-        for value in [0u64, 1, 2, 3, 4, 8, 9, 10, 15, 16, 17, 1_000_000, u64::MAX] {
-            let root = isqrt(value) as u128;
-            let value = value as u128;
-            assert!(root * root <= value);
-            assert!((root + 1) * (root + 1) > value);
+    fn research_window_root_preserves_v2_rounding() {
+        for (window, expected) in [
+            (0, 0),
+            (9, 3),
+            (25, 4),
+            (30, 4),
+            (60, 7),
+            (u64::MAX, u32::MAX as u64),
+        ] {
+            assert_eq!(v2_window_root(window), expected);
         }
+    }
+
+    #[test]
+    fn direct_lwma_entry_rejects_incomplete_history() {
+        let cfg = ChainConfig::testnet();
+        assert_eq!(
+            next_difficulty_lwma(&[], &[1], &cfg),
+            cfg.genesis_difficulty
+        );
+        assert_eq!(
+            next_difficulty_lwma(&[1, 2, 3], &[1], &cfg),
+            cfg.genesis_difficulty
+        );
     }
 
     #[test]

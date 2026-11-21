@@ -7,6 +7,7 @@ use hyphen_consensus::Blockchain;
 use hyphen_crypto::Hash256;
 use hyphen_mempool::Mempool;
 use hyphen_network::{HyphenNetwork, SyncResponse};
+use hyphen_rpc::admission::{AdmissionError, admit_transaction};
 use libp2p::{gossipsub, identify, request_response};
 use parking_lot::RwLock;
 use std::{
@@ -78,6 +79,7 @@ fn revalidate_after_reorg(chain: &Blockchain, pool: &RwLock<Mempool>) {
 #[derive(Default)]
 pub(super) struct PeerSync {
     pub(super) validation: tokio::task::JoinSet<ValidatedBatch>,
+    pub(super) admissions: tokio::task::JoinSet<PeerAdmission>,
     pub(super) policy: PeerPolicy,
     waiting: VecDeque<(libp2p::PeerId, u64)>,
     pub(super) responses: tokio::task::JoinSet<(
@@ -87,6 +89,12 @@ pub(super) struct PeerSync {
     serving: HashSet<request_response::InboundRequestId>,
     fork_probe: Option<libp2p::PeerId>,
     fork: Option<PeerBranch>,
+}
+
+pub(super) struct PeerAdmission {
+    author: libp2p::PeerId,
+    source: libp2p::PeerId,
+    result: Result<Hash256, AdmissionError>,
 }
 
 struct PeerBranch {
@@ -100,6 +108,22 @@ struct PeerBranch {
 }
 
 impl PeerSync {
+    pub(super) fn on_admission(&mut self, admission: PeerAdmission, network: &mut HyphenNetwork) {
+        let PeerAdmission {
+            author,
+            source,
+            result,
+        } = admission;
+        match result {
+            Ok(hash) => info!(%hash, %source, "Admitted peer transaction"),
+            Err(AdmissionError::Malformed(error)) => {
+                penalize(network, &mut self.policy, author, "undecodable transaction");
+                debug!(%error, %source, "Malformed transaction");
+            }
+            Err(error) => debug!(%error, %source, "Peer transaction rejected"),
+        }
+    }
+
     fn queue(&mut self, peer: libp2p::PeerId, height: u64) {
         self.waiting.retain(|(id, _)| *id != peer);
         self.waiting.push_back((peer, height));
@@ -237,27 +261,26 @@ impl PeerSync {
                             }
                         }
                         hyphen_network::NetworkMessage::NewTransaction(tx_bytes) => {
-                            use hyphen_rpc::admission::{AdmissionError, admit_transaction};
-                            let Ok(_view) = blockchain.canonical_view() else {
+                            // Each job retains at most one gossip payload while waiting for a canonical view.
+                            if self.admissions.len() >= 4 {
+                                debug!(%propagation_source, "Peer transaction validation busy");
                                 return;
-                            };
-                            match admit_transaction(blockchain, mempool, tx_bytes, unix_time_ms()) {
-                                Ok(hash) => {
-                                    info!(%hash, %propagation_source, "Admitted peer transaction")
-                                }
-                                Err(AdmissionError::Malformed(error)) => {
-                                    penalize(
-                                        network,
-                                        &mut self.policy,
-                                        author,
-                                        "undecodable transaction",
-                                    );
-                                    debug!(%error, %propagation_source, "Malformed transaction");
-                                }
-                                Err(error) => {
-                                    debug!(%error, %propagation_source, "Peer transaction rejected")
-                                }
                             }
+                            let chain = Arc::clone(blockchain);
+                            let pool = Arc::clone(mempool);
+                            self.admissions.spawn_blocking(move || {
+                                let result = chain
+                                    .canonical_view()
+                                    .map_err(|e| AdmissionError::State(e.to_string()))
+                                    .and_then(|_view| {
+                                        admit_transaction(&chain, &pool, tx_bytes, unix_time_ms())
+                                    });
+                                PeerAdmission {
+                                    author,
+                                    source: propagation_source,
+                                    result,
+                                }
+                            });
                         }
                         hyphen_network::NetworkMessage::InclusionReceiptVote(receipt) => {
                             warn!(
@@ -299,9 +322,7 @@ impl PeerSync {
                     channel,
                     request_id,
                 } => {
-                    let response = if matches!(request, hyphen_network::SyncRequest::GetTip) {
-                        handle_sync_request(&request, blockchain)
-                    } else if self.serving.len() >= 4 || self.responses.len() >= 4 {
+                    let response = if self.serving.len() >= 4 || self.responses.len() >= 4 {
                         SyncResponse::Error("sync server busy".into())
                     } else {
                         self.serving.insert(request_id);
@@ -662,10 +683,7 @@ fn handle_sync_request(
             // A CBOR array of u8 can use two encoded bytes per payload byte.
             // Stay below the sync/2 codec's 10 MiB response limit.
             let mut remaining = 4 * 1024 * 1024;
-            let Some(end_height) = start_height.checked_add(*count as u64) else {
-                return SyncResponse::Error("requested height range overflows".into());
-            };
-            for h in *start_height..end_height {
+            for h in (*start_height..=u64::MAX).take(*count as usize) {
                 match blockchain.blocks.get_block_by_height(h) {
                     Ok(block) => {
                         let data =
@@ -681,7 +699,8 @@ fn handle_sync_request(
                         remaining -= data.len();
                         blocks.push(data);
                     }
-                    Err(_) => break,
+                    Err(hyphen_state::store::StoreError::NotFound(_)) => break,
+                    Err(error) => return SyncResponse::Error(error.to_string()),
                 }
             }
             SyncResponse::Blocks(blocks)

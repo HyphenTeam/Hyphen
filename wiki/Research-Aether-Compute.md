@@ -1,16 +1,22 @@
 # AetherCompute protocol boundary
 
-## Inline Alice tasks on compute-devnet
+## Inline Alice tasks on neural-devnet
 
-`hyphen-compute-devnet-v1` (`HYAC`) activates an inline Alice verifier at genesis. The `hyphen-compute` client signs publications and solutions, reads task records, and requests finalization through the node RPC. The node recomputes the descriptor commitment, target, candidate output, hidden activations and operation count. Finalization requires a block height strictly greater than the challenge deadline. The finalized record retains the descriptor and solution. A branch change can replace or remove that record.
+`hyphen-neural-devnet-v3` (`HYN3`) activates an inline Alice verifier at genesis. The `hyphen-compute` client signs publications and solutions, reads task records, and requests finalization through the node RPC. The node recomputes the descriptor commitment, target, candidate output, hidden activations and operation count. Finalization requires a block height strictly greater than the challenge deadline. The finalized record retains the descriptor and solution. A branch change can replace or remove that record.
 
-The profile accepts up to 32 compute transitions per block, 4,096 bytes per envelope and 2,048 task records over the lifetime of the chain. The publisher declares `reward` in the signed specification. The current transitions provide neither escrow nor a transfer to the worker.
+The profile accepts up to 32 compute transitions per block, 4,096 bytes per envelope and 2,048 task records over the lifetime of the chain. The publisher declares `reward` in the signed specification. Native payment requires a separately funded reserve and publisher authorization.
 
-`hyphen-compute show TASK_ID` checks the publisher and worker signatures and recomputes submitted or finalized solutions. The RPC node supplies the chain status. To check against your own validated chain, stop your compute-devnet node and run `hyphen-compute show TASK_ID --data-dir PATH`. The client checks the locally stored protocol state against the tip header and writes the tip height, hash and state root to stderr. The signed record is written to stdout.
+`hyphen-compute reward TASK --data-dir DB` reads the locally validated HYN3 task. Use `reserve FEE` to derive the gross funding amount and address. After finalization the worker signs `invoice DESTINATION --key-file WORKER --out INVOICE`. The publisher uses `pay INVOICE INDEX FEE --key-file PUBLISHER --journal JOURNAL --out CLAIM`. Relay with `hyphen-offline submit CLAIM --rpc RPC`. The worker uses `confirm INVOICE RESERVE_SPEND --min-confirmations N` to check the canonical payout and retained invoice. Confirmation binds the finalized task, actual reserve, destination, net amount and depth on the selected branch. A heavier history can revoke it. [CLI implementation](../crates/hyphen-node/src/bin/hyphen-compute/reward.rs) · [Payment and reorg test](../crates/hyphen-node/tests/compute_reward.rs)
+
+`hyphen-compute show TASK_ID` checks the publisher and worker signatures and recomputes submitted or finalized solutions. The RPC node supplies the chain status. To check against your own validated chain, stop your neural-devnet node and run `hyphen-compute show TASK_ID --data-dir PATH`. The client checks the locally stored protocol state against the tip header and writes the tip height, hash and state root to stderr. The signed record is written to stdout.
+
+Add `--expect-tip HASH` to the local command to bind the read to an independently selected block. A mismatch fails before result export. The same tip can be used for `hyphen-contract query` and offline payment confirmation. [Local state check](../crates/hyphen-node/src/bin/common/mod.rs)
 
 Build `hyphen-node`, `hyphen-compute`, `bob-miner`, the independent miner and the pool server in their default debug directories. Run `python scripts/test-compute-rpc.py` from the workspace to submit a task to a fresh network and compare its finalized record before and after a node restart. The script prints the directory containing its transactions, heights and signed record. [RPC test](../scripts/test-compute-rpc.py)
 
 ## Consensus-enforced behavior
+
+`hyphen-compute show TASK_ID --output solution.bin` verifies the signed record and writes the finalized solution as little-endian signed Q32.32 words to a new file. Add `--data-dir PATH` to read a stopped local node. Both paths check the BLAKE3 digest of the bytes against the worker's signed output commitment. In a fresh run the task was published at height 1, submitted at 2 and finalized at 19. The client rejected an early export. After restart the RPC and local database exports both matched the original 128 solution bytes. [Client](../crates/hyphen-node/src/bin/hyphen-compute.rs) · [End-to-end check](../scripts/test-compute-rpc.py)
 
 `hyphen-compute` defines bounded, domain-separated transactions for publishing
 scientific tasks, submitting state updates, filing fraud proofs, renewing
@@ -59,22 +65,7 @@ proof-system ID and current retention-provider count. Search accepts a task ID.
 
 ## Native execution host
 
-On standard devnet, the miner can use CUDA or HIP to sieve Cunningham candidates. The host verifies surviving chains before submission. `accelerator-check` compares one complete window against the portable CPU sieve. An RTX A4000 Laptop GPU with CUDA 12.9 matched six million-candidate windows across lengths 3 and 4. On `neural-devnet`, CUDA kernel 4 derives candidates and scores the 16/64/16 network. The miner reproduces the winning score in Rust before signing. Three device windows matched Rust at all 40,962 positions, including counter wraparound. The compute-devnet node verifies inline Alice tasks in Rust.
-
-The following local measurements used release builds on one Windows host with an i7-11850H, one miner thread, an RTX A4000 Laptop GPU, the same miner key and a fresh database for each run. Each miner ran for 70 seconds against a local SOLO pool. The board sensor was sampled every 500 ms and integrated over observed timestamps. Other host activity was not controlled.
-
-| Network | Search | Node height (runs 1 / 2) | Valid shares (1 / 2) | Mean GPU board watts (1 / 2) |
-| --- | --- | ---: | ---: | ---: |
-| Standard devnet | CPU | 13 / 13 | 21 / 21 | 30.08 / 30.20 |
-| Standard devnet | CUDA sieve | 55 / 57 | 101 / 105 | 37.14 / 36.45 |
-| Neural devnet | CPU | 27 / 25 | 27 / 25 | 29.38 / 30.29 |
-| Neural devnet | CUDA scoring | 28 / 29 | 28 / 29 | 62.98 / 67.00 |
-
-All eight runs recorded zero invalid shares. The two median neural search times were 2.098 and 1.987 ms on CPU and 2.512 and 2.045 ms with CUDA. Each chain retargets its work independently. CPU package energy, wall power and ASIC/FPGA implementations still require measurement.
-
-The medians include the easy initial blocks. In runs 1 and 2 the completed neural solutions accounted for 8,160,520 and 2,444,440 candidate scores on CPU and 1,292,808,543 and 1,446,900,064 on CUDA. The GPU counts the whole final batch. Both totals omit search for the next block still in progress when the run ends. In run 1, the last accepted CUDA solution alone took 55.10 seconds.
-
-Build the node, pool, miner and CUDA plugin in release mode in the four-repository checkout. Run `python scripts/measure-mining.py --accelerator-dir PATH_TO_PLUGIN_DIRECTORY` with `nvidia-smi` on PATH. The script writes the executable hashes, device and driver details, observed tips, board samples, share counts and miner logs under `target/mining-measurement-*`. Select a GPU with `--gpu` and set the duration per configuration with `--seconds`.
+The CUDA plugin batches neural evaluations. The host checks the winning neural score and applies the memory gate. [Mining measurements](Operations-Mining-Acceleration.md)
 
 ## Non-claims
 
@@ -129,13 +120,13 @@ until a versioned statement binds such a beacon, the task and the worker.
 
 # AetherCompute 协议边界
 
-## 计算开发网的内联 Alice 任务
+## 神经开发网的内联 Alice 任务
 
-`hyphen-compute-devnet-v1`（`HYAC`）从创世启用内联 Alice 验证器。`hyphen-compute` 客户端通过节点 RPC 签署发布和解，查询任务并请求最终化。节点复算描述符承诺、目标、候选输出、隐藏层激活值和操作数。最终化区块的高度必须严格超过挑战截止高度。规范链记录保留描述符与解，重组可以替换或移除记录。
+`hyphen-neural-devnet-v3`（`HYN3`）从创世启用内联 Alice 验证器。`hyphen-compute` 客户端签署任务和解，通过节点 RPC 提交、查询并请求最终化。节点复算描述符承诺、目标、候选输出、隐藏层激活值和操作数。最终化区块的高度必须严格超过挑战截止高度。规范链记录保留描述符与解，重组可以替换或移除记录。
 
-每块最多接受 32 次计算状态转换，每个交易封装最多 4,096 字节，整条链累计可容纳 2,048 条任务记录。`reward` 是发布者签名声明的金额，现有状态转换没有锁定资金或向工作者转账。
+每块最多接受 32 次计算状态转换，每个交易封装最多 4,096 字节，整条链累计可容纳 2,048 条任务记录。`reward` 是发布者签署的报价。发布者可以按报价和手续费单独准备原生资产储备。工作者在任务最终化后签署收款地址，发布者用 `hyphen-compute reward … pay` 核对发票并生成兑付交易，任意中继可广播。工作者用 `confirm` 核对当前规范链上的储备、收款地址、净额和确认深度。重组后须重新核实到账。[CLI 与完整命令示例](#inline-alice-tasks-on-neural-devnet) · [兑付及重组测试](../crates/hyphen-node/tests/compute_reward.rs)
 
-`hyphen-compute show TASK_ID` 校验发布者和工作者签名，复算已提交或已最终化的解。任务的上链状态由 RPC 节点提供。要核对自己验证过的链，停止本地计算开发网节点，运行 `hyphen-compute show TASK_ID --data-dir PATH`。客户端对照链顶区块头核验本地协议状态，将链顶高度、哈希和状态根写入标准错误，将签名记录写入标准输出。
+`hyphen-compute show TASK_ID` 校验发布者和工作者签名，复算已提交或已最终化的解。任务的上链状态由 RPC 节点提供。要核对自己验证过的链，停止本地神经开发网节点，运行 `hyphen-compute show TASK_ID --data-dir PATH`。客户端对照链顶区块头核验本地协议状态，将链顶高度、哈希和状态根写入标准错误，将签名记录写入标准输出。
 
 在各仓库默认 debug 目录构建 `hyphen-node`、`hyphen-compute`、`bob-miner`、独立矿工和矿池服务端后，在主仓运行 `python scripts/test-compute-rpc.py`。脚本在新网络提交任务，比较节点重启前后的最终化记录，并打印含交易哈希、高度和签名记录的目录。[RPC 联调脚本](../scripts/test-compute-rpc.py)
 
@@ -169,13 +160,7 @@ Explorer 提供 `/api/science/tasks`、`/api/science/task/{id}` 以及对应 `#/
 
 ## 原生执行宿主
 
-独立 `HyphenMiner` 仓库定义原生设备的 C ABI。普通矿工可用 CUDA 或 HIP 筛选坎宁安候选，再由主机逐条验证幸存素数链。`accelerator-check` 将整个窗口与可移植 CPU 筛选器比较。使用 CUDA 12.9 的 RTX A4000 Laptop GPU 对链长 3 和 4 共运行六个窗口，每个窗口一百万个候选，结果均与 CPU 一致。Q12 周期扩散内核属于较早的研究配置。计算开发网节点用 Rust 验证内联任务。
-
-`neural-devnet` 的 CUDA 内核 4 从公开种子和计数器派生候选，对 16/64/16 网络评分，矿工用 Rust 复算达标分数再签名。三个设备窗口共 40,962 项评分全部匹配，包括计数器回绕。上表每种配置均在同一台 i7-11850H 和 RTX A4000 Laptop 主机上进行了两次 70 秒 release 测试，各使用一个矿工线程、相同矿工密钥、全新数据库和本机 SOLO 矿池。每 500 毫秒采样显卡板卡功耗，按实测时间戳积分。普通网 CPU 两次均到高度 13，CUDA 到 55 和 57。神经网 CPU 到高度 27 和 25，CUDA 到 28 和 29。八次均为零无效份额。神经搜索日志中位数为 CPU 2.098 和 1.987 毫秒，CUDA 2.512 和 2.045 毫秒。各链自行调难，其他主机负载未受控。CPU 封装功耗、整机功耗以及 ASIC、FPGA 的同条件数据仍待实测。
-
-复测上表时，在四仓工作区构建 release 节点、矿池、矿工和 CUDA 插件，并确保命令行可调用 `nvidia-smi`。运行 `python scripts/measure-mining.py --accelerator-dir 插件目录`，原始链顶、份额、板卡功耗、二进制哈希和设备信息保存在 `target/mining-measurement-*`。`--gpu` 可选择显卡，`--seconds` 设置每组采样时长。
-
-中位数包含初始低难度区块。两轮已解出的神经区块中，CPU 评分数分别为 8,160,520 和 2,444,440，CUDA 为 1,292,808,543 和 1,446,900,064。GPU 计入找到解的最后一整批。两者都没有计入测量结束时仍在搜索的下一个区块。第一轮 CUDA 最后一个已接收解单独耗时 55.10 秒。
+CUDA 插件计算神经评分，主机执行 BLAKE3 scratchpad。参见[设备验收](Operations-Mining-Acceleration.md)。
 
 ## 非声明事项
 

@@ -125,7 +125,6 @@ impl Wallet {
     ) -> Result<Option<u64>, WalletError> {
         let dk = self.keys();
         let vk = ViewKey(dk.view_secret.to_bytes());
-        let addr = self.stealth_address();
         let eph = EphemeralKey(*ephemeral_pubkey);
 
         let otp = curve25519_dalek::ristretto::CompressedRistretto::from_slice(one_time_pubkey)
@@ -133,29 +132,14 @@ impl Wallet {
             .decompress()
             .ok_or_else(|| WalletError::Stealth("decompression failed".into()))?;
 
-        let ours = stealth::is_output_ours(&vk, &addr.spend_public, &eph, output_index, &otp)
+        let ss = stealth::receiver_shared_scalar(&vk, &eph, output_index)
             .map_err(|e| WalletError::Stealth(e.to_string()))?;
-
-        if !ours {
+        let expected =
+            ss * curve25519_dalek::constants::RISTRETTO_BASEPOINT_POINT + dk.spend_public;
+        if otp != expected {
             return Ok(None);
         }
-
-        let sk = SpendKey(dk.spend_secret.to_bytes());
-        let (spend_scalar, _pk) = stealth::recover_one_time_key(&vk, &sk, &eph, output_index)
-            .map_err(|e| WalletError::Stealth(e.to_string()))?;
-
-        let ss = {
-            let big_r = curve25519_dalek::ristretto::CompressedRistretto::from_slice(&eph.0)
-                .map_err(|e| WalletError::Stealth(e.to_string()))?
-                .decompress()
-                .ok_or_else(|| WalletError::Stealth("eph decompression".into()))?;
-            let a_r = dk.view_secret * big_r;
-            let idx_bytes = output_index.to_le_bytes();
-            hyphen_crypto::hash::hash_to_scalar(
-                b"Hyphen_ECDH",
-                &[a_r.compress().as_bytes().as_slice(), &idx_bytes].concat(),
-            )
-        };
+        let spend_scalar = ss + dk.spend_secret;
         let value = stealth::decrypt_amount(encrypted_amount, &ss);
 
         let blinding_scalar = derive_commitment_blinding(&ss);

@@ -82,6 +82,7 @@ const SIEVE_TABLE: ([u64; SIEVE_CAPACITY], usize) = build_sieve();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmsError {
+    ZeroStride,
     ChainLengthOutOfRange(u32),
     InvalidWitness(u64),
     WitnessAlreadyClaimed(u64),
@@ -92,6 +93,7 @@ pub enum VmsError {
 impl fmt::Display for VmsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ZeroStride => f.write_str("search stride must be nonzero"),
             Self::ChainLengthOutOfRange(length) => write!(
                 f,
                 "chain length {length} is outside {MIN_CHAIN_LENGTH}..={MAX_CHAIN_LENGTH}"
@@ -251,8 +253,8 @@ pub struct SearchParams<'a> {
     pub length: u32,
     /// First candidate in this worker's residue class.
     pub offset: u64,
-    /// Distance between candidates. Use `stride = workers` and distinct odd
-    /// offsets to partition the space exactly.
+    /// Distance between candidates. To partition odd origins among k workers,
+    /// use stride 2*k and start worker i at the first odd origin plus 2*i.
     pub stride: u64,
     /// Witnesses still required.
     pub count: u64,
@@ -282,6 +284,9 @@ pub fn search(params: &SearchParams<'_>) -> Result<SearchOutcome, VmsError> {
     if !(1..=MAX_WITNESSES_PER_BLOCK).contains(&params.count) {
         return Err(VmsError::WitnessCountOutOfRange(params.count));
     }
+    if params.stride == 0 {
+        return Err(VmsError::ZeroStride);
+    }
 
     let mut witnesses = Vec::with_capacity(params.count as usize);
     let mut candidates_tested = 0u64;
@@ -293,11 +298,7 @@ pub fn search(params: &SearchParams<'_>) -> Result<SearchOutcome, VmsError> {
         candidates_tested += 1;
         remaining -= 1;
 
-        if !passes_small_prime_sieve(candidate, params.length) {
-            candidate = candidate.wrapping_add(params.stride);
-            continue;
-        }
-        if chain_is_valid_after_sieve(candidate, params.length) {
+        if chain_is_valid(candidate, params.length) {
             chains_found += 1;
             if !(params.is_claimed)(candidate) {
                 witnesses.push(candidate);
@@ -306,7 +307,10 @@ pub fn search(params: &SearchParams<'_>) -> Result<SearchOutcome, VmsError> {
                 }
             }
         }
-        candidate = candidate.wrapping_add(params.stride);
+        let Some(next) = candidate.checked_add(params.stride) else {
+            break;
+        };
+        candidate = next;
     }
 
     Ok(SearchOutcome {
@@ -562,6 +566,28 @@ mod tests {
         .unwrap();
         assert_eq!(outcome.candidates_tested, 64);
         assert!(outcome.witnesses.len() < 4);
+    }
+
+    #[test]
+    fn search_stays_in_its_residue_class_at_the_end_of_the_domain() {
+        let params = SearchParams {
+            length: 2,
+            offset: 3,
+            stride: u64::MAX - 1,
+            count: 2,
+            max_candidates: 10,
+            is_claimed: &|_| false,
+        };
+        let found = search(&params).unwrap();
+        assert_eq!(found.candidates_tested, 1);
+        assert_eq!(found.witnesses, [3]);
+        assert_eq!(
+            search(&SearchParams {
+                stride: 0,
+                ..params
+            }),
+            Err(VmsError::ZeroStride)
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Alice: the on-chain half of the neural challenge.
 //!
 //! The contract stores one 56-byte descriptor per epoch, verifies a submitted
-//! preimage with exactly one forward pass, and records the first accepted
+//! preimage with two forward passes, and records the first accepted
 //! solution. It never trains, never allocates and never uses floating point:
 //! weights, activation and acceptance are the same Q32.32 code the miners run.
 //!
@@ -40,6 +40,10 @@
 
 use core::panic::PanicInfo;
 
+#[allow(unsafe_code)]
+#[path = "../../include/storage.rs"]
+mod storage;
+
 use hyphen_neural::mlp::{MAX_HIDDEN_DIM, MAX_INPUT_DIM, MAX_OUTPUT_DIM, MAX_WEIGHTS};
 use hyphen_neural::{
     ChallengeDescriptor, DESCRIPTOR_BYTES, NeuralError, SUBMISSION_HEADER_BYTES, decode_descriptor,
@@ -71,7 +75,6 @@ unsafe extern "C" {
     fn h_input_len() -> u32;
     fn h_input_copy(ptr: u32) -> i32;
     fn h_set_return(ptr: u32, len: u32) -> i32;
-    fn h_storage_read(key_ptr: u32, key_len: u32, value_ptr: u32) -> i32;
     fn h_storage_write(key_ptr: u32, key_len: u32, value_ptr: u32, value_len: u32) -> i32;
     fn h_caller(ptr: u32) -> i32;
 }
@@ -287,11 +290,7 @@ fn read_request(buffer: &mut [u8]) -> Result<usize, NeuralError> {
 /// Reads a stored value into `buffer` and returns its length, or zero when the
 /// key is absent.
 fn read_storage(key: &[u8; KEY_BYTES], buffer: &mut [u8]) -> Result<usize, NeuralError> {
-    let length = host_storage_read(key, buffer);
-    if length < 0 {
-        return Err(NeuralError::HostFailure);
-    }
-    Ok(length as usize)
+    storage::read_into(key, buffer).map_err(|_| NeuralError::HostFailure)
 }
 
 fn write_storage(key: &[u8; KEY_BYTES], value: &[u8]) -> Result<(), NeuralError> {
@@ -331,17 +330,6 @@ fn host_caller(buffer: &mut [u8; 32]) -> i32 {
 #[allow(unsafe_code)]
 fn host_set_return(buffer: &[u8]) -> i32 {
     unsafe { h_set_return(buffer.as_ptr() as u32, buffer.len() as u32) }
-}
-
-#[allow(unsafe_code)]
-fn host_storage_read(key: &[u8; KEY_BYTES], buffer: &mut [u8]) -> i32 {
-    unsafe {
-        h_storage_read(
-            key.as_ptr() as u32,
-            key.len() as u32,
-            buffer.as_mut_ptr() as u32,
-        )
-    }
 }
 
 #[allow(unsafe_code)]

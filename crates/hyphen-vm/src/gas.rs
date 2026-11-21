@@ -34,14 +34,13 @@ impl GasMeter {
     }
 
     pub fn consume(&mut self, amount: u64) -> Result<(), GasError> {
-        let new_used = self.used.saturating_add(amount);
-        if new_used > self.limit {
+        if amount > self.remaining() {
             return Err(GasError::OutOfGas {
                 needed: amount,
                 remaining: self.remaining(),
             });
         }
-        self.used = new_used;
+        self.used += amount;
         Ok(())
     }
 
@@ -70,5 +69,9 @@ mod tests {
         assert!(meter.consume(51).is_err());
         assert!(meter.consume(50).is_ok());
         assert_eq!(meter.remaining(), 0);
+        let mut maximum = GasMeter::new(u64::MAX);
+        maximum.consume(u64::MAX - 1).unwrap();
+        assert!(maximum.consume(2).is_err());
+        assert_eq!(maximum.remaining(), 1);
     }
 }

@@ -50,11 +50,9 @@ impl NullifierSet {
     }
 
     pub fn insert(&self, nullifier: &[u8; 32], block_height: u64) -> Result<()> {
-        let prev = self.tree.insert(nullifier, &block_height.to_le_bytes())?;
-        if prev.is_some() {
-            return Err(NullifierError::Duplicate);
-        }
-        Ok(())
+        self.tree
+            .compare_and_swap(nullifier, None::<&[u8]>, Some(&block_height.to_le_bytes()))?
+            .map_err(|_| NullifierError::Duplicate)
     }
 
     pub fn remove(&self, nullifier: &[u8; 32]) -> Result<()> {
@@ -76,5 +74,25 @@ impl NullifierSet {
     pub fn flush(&self) -> Result<()> {
         self.tree.flush()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_insert_preserves_spent_height_and_root() {
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let set = NullifierSet::open(&db).unwrap();
+        let key = [19; 32];
+        set.insert(&key, 7).unwrap();
+        let root = set.root_hash().unwrap();
+        assert!(matches!(
+            set.insert(&key, 12),
+            Err(NullifierError::Duplicate)
+        ));
+        assert_eq!(set.spent_height(&key).unwrap(), Some(7));
+        assert_eq!(set.root_hash().unwrap(), root);
     }
 }

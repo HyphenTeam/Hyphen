@@ -2,45 +2,13 @@
 
 Status: research. `crates/hyphen-neural` and `contracts/alice-neural` are
 executable, tested and deployable on any chain in this repository that runs the
-`hyphen-vm` contract ABI. The challenge is **not** the block proof-of-work: block
-eligibility remains the PoUW v3 Cunningham-witness rule described in the
-[whitepaper](Whitepaper.md). Nothing here changes chain weight, issuance or
-fork choice.
+`hyphen-vm` contract ABI. Block mining uses the [neural nonce and BLAKE3 scratchpad predicate](Consensus-Neural-Work.md).
 
-## The mechanism in one paragraph
+## Public reference input
 
-Alice is a two-layer perceptron whose weights are derived from a public chain
-seed. The contract publishes the network `A` and one target `y* = A(x*)`, and a
-prover earns the epoch by submitting any `x` with `A(x)` inside a published
-tolerance of `y*`. Verification is a single `O(input_dim * hidden_dim)` forward
-pass. Producing `x` requires inverting a non-convex integer map, which is the
-only asymmetry the mechanism has.
+The descriptor defines the network `A` and a reference input `x*`. Anyone can derive `x*` from the public seed and epoch and submit it directly. The verifier derives the weights, evaluates `A(x*)` and `A(x)`, and checks the maximum component error. Each of the two forward passes costs `O(hidden_dim × (input_dim + output_dim))`. An accepted submission establishes this numerical relation. [Descriptor evaluation](../crates/hyphen-neural/src/challenge.rs)
 
-## Why the challenge is the inverse problem
-
-The intuitive design — publish 1,000 plaintext/ciphertext pairs and ask miners to
-learn Alice's weights — is unsound, and not in a subtle way. The contract must
-hold Alice's weights in order to verify anything, so the weights are public by
-construction. Copying them satisfies every loss threshold without doing work. The
-same objection kills any scoring rule that rewards reproducing `A`.
-
-The inverse formulation publishes `A` and a target `A(x*)`, and asks for any `x`
-whose image lands inside the tolerance. The verifier is one forward pass.
-
-**`x*` is not secret.** `ChallengeDescriptor::derive_preimage` recomputes it from
-the public `chain_seed`, so the target can be produced without searching at all.
-That is acceptable for a contract that settles a result someone declared, and it
-is disqualifying for a proof of work: a block gated on this circuit would be
-free to produce.
-
-`crates/hyphen-neural/src/work.rs` supplies the one-way variant that a block may
-use. The seed fixes the *network*, a published threshold fixes the difficulty,
-and a solution is any `x` with `score(A(x)) < threshold`. The reference miner
-tests candidates with forward passes. A lower bound on the cost for other
-solvers remains open. The task commits to the
-exact descriptor through `program_hash`, so the threshold cannot be relaxed after
-publication. `hyphen_compute::NeuralWorkVerifier` is the node's default
-settlement verifier for this reason, and the inverse circuit is not eligible.
+On HYN3, the block carries a nonce. The verifier derives its input, evaluates the fixed-point network and checks the BLAKE3 scratchpad digest for a qualifying score. Application tasks carry their own descriptor and solution. The inline Alice verifier checks the task against its signed specification. [Block work](Consensus-Neural-Work.md) · [Application tasks](Research-Aether-Compute.md)
 
 ## Numbers are integers, on purpose
 
@@ -71,13 +39,11 @@ accept(desc, x)  <=>  max_i |A(x)_i - y*_i| <= desc.tolerance_ulp
 
 `tolerance_ulp` is a protocol field, bounded at open time to
 `1 / 1_000` of the unit range. The default is `4_295` ulps, one millionth of the
-range. A random `x` misses by `O(1)`, so the tolerance does not admit guesses.
+range.
 
 ## Difficulty
 
-The hidden width is the difficulty axis. Cost per solve rises with
-`output_dim * hidden_dim * input_dim` for the Jacobian plus `hidden_dim * input_dim`
-per forward pass; verification pays only the forward pass. The controller is:
+The experimental solver adjusts hidden width according to the observed time. Its Jacobian calculation depends on all three layer widths. Deriving the public reference input takes one ChaCha20 word per input component, independently of hidden width.
 
 ```text
 observed < target / 2  -> width *= 2
@@ -98,17 +64,7 @@ fixed costs dominate. The controller can therefore not hold a ten-minute epoch:
 at the widest width the contract profile is still three orders of magnitude below
 the target, so the controller saturates at `MAX_HIDDEN_DIM`.
 
-This is a property of the design, not a tuning problem. An on-chain verifier must
-regenerate Alice's weights from the seed, which costs the same `O(hidden_dim *
-input_dim)` as the forward pass; raising the width until solving takes ten
-minutes would make one verification cost minutes of contract gas. A ten-minute
-target requires a second hardness axis that is cheap to verify — a solution
-filter, a proof system, or off-chain settlement — and each of those is a different
-security argument. They are deliberately not part of this profile.
-
-What the controller still does is honest: it publishes the dimension that matches
-the observed solve time within the accepted range, and the range is a protocol
-constant rather than an operator setting.
+Those timings describe the iterative solver. Direct reference-input derivation remains available at every width.
 
 ## Security properties and obligations
 
@@ -117,10 +73,7 @@ Established by the code and its tests:
 - **Determinism.** Same descriptor, same weights, same target, same acceptance on
   every host. Pinned by unit tests, an RFC 8439 vector, and an end-to-end test
   that runs the compiled contract inside `hyphen-vm`.
-- **No weight copying, and no derived preimage.** The inverse circuit's answer is
-  recomputable from the public seed, so only the one-way work circuit
-  (`work.rs`) may gate work; the weights are
-  never part of a submission.
+- **Public weights.** The inverse circuit's reference answer can be recomputed from the public seed. HYN3 validators derive the block challenge and weights locally and check both gates for the submitted nonce.
 - **Single settlement.** The first accepted preimage is stored under
   `hyphen:sol:v1:<epoch>`; later submissions return `2` and mutate nothing.
 - **No epoch rewrite.** A second, different descriptor for an open epoch returns
@@ -138,8 +91,7 @@ Open obligations, stated plainly:
   the seed. A deployment must derive the seed from a value the operator cannot
   pick — the parent block hash or a beacon — and that wiring belongs to the
   application that calls `Open`, not to this contract.
-- **No succinctness.** Verification is a full forward pass, not a proof. It is
-  cheap, not constant-size.
+- **Verification cost.** Reconstructing the reference output and checking the submitted input requires two network evaluations.
 - **No external audit.** The fixed-point profile, the activation constants and the
   contract ABI have not been reviewed outside this repository.
 - **No economic model.** The contract records settlements; it does not pay
@@ -213,8 +165,7 @@ bodies and the `hyphen-vm` ledger, exactly like any other application contract.
 
 - [Useful-work augmented PoW](Research-Useful-Work-Augmented-PoW.md) — why external tasks
   do not replace the block work rule.
-- [AetherCompute](Research-Aether-Compute.md) — the fail-closed settlement layer for
-  user-funded work.
+- Signed task publication, result checking and the declared reward field. [AetherCompute](Research-Aether-Compute.md)
 
 ---
 
@@ -222,17 +173,11 @@ bodies and the `hyphen-vm` ledger, exactly like any other application contract.
 
 # 神经密码学挑战（Alice / Bob）
 
-状态：研究。`crates/hyphen-neural` 与 `contracts/alice-neural` 已实现、已测试，可部署在仓库内任意支持 `hyphen-vm` 合约 ABI 的链上。该挑战**不是**区块工作量证明：出块资格仍然由白皮书描述的 PoUW v3 Cunningham 见证链规则决定。本模块不改变链权重、发行或分叉选择。
+Alice 与 Bob 实现应用层挑战。区块使用独立的[神经工作量验证规则](Consensus-Neural-Work.md)。
 
-## 一句话机制
+## 公开参考输入
 
-Alice 是一个两层感知机，权重由公开链种子派生。合约公布网络 `A` 与目标 `y* = A(x*)`；矿工提交任意 `x`，只要 `A(x)` 落在已公布的容差内即赢得该 epoch。验证只需一次 `O(input_dim * hidden_dim)` 前向传播；求出 `x` 需要反转一个非凸整数映射，这就是机制唯一的非对称性。
-
-## 为什么判定必须是求逆
-
-直觉方案——公布 1000 组明密文、让矿工学习 Alice 权重——在安全上是坏的，而且坏得很直接：合约要验证就必须持有 Alice 的权重，因此权重必然公开；矿工直接复制权重即可通过任何 loss 阈值，完全不需要做功。任何奖励「复现 `A`」的评分规则都有同样的问题。
-
-求逆方案只保留 `A` 公开，隐藏的是原像 `x*`。知道函数不代表知道原像，目标公开，「是否找到 `x`」是合约一次前向即可判定的布尔值——这才是机制真正需要的性质。
+描述符定义网络 `A` 和参考输入 `x*`。任何人都可以从公开种子和 epoch 派生 `x*`，直接提交并取得零误差。验证器派生权重，分别计算 `A(x*)` 和 `A(x)`，再检查最大分量误差。两次前向传播各需 `O(hidden_dim × (input_dim + output_dim))` 运算。签名提交证明的计算性质是该数值关系成立。[描述符验证](../crates/hyphen-neural/src/challenge.rs)
 
 ## 全程整数
 
@@ -251,11 +196,11 @@ Alice 是一个两层感知机，权重由公开链种子派生。合约公布�
 accept(desc, x)  <=>  max_i |A(x)_i - y*_i| <= desc.tolerance_ulp
 ```
 
-`tolerance_ulp` 是协议字段，开 epoch 时被限制在单位区间的 `1/1000` 以内。默认 `4_295` ulp，即百万分之一。随机 `x` 的误差是 `O(1)` 量级，容差不会放过瞎猜。
+`tolerance_ulp` 是协议字段，开 epoch 时被限制在单位区间的 `1/1000` 以内。默认 `4_295` ulp，约为百万分之一。
 
 ## 难度
 
-隐藏层宽度是难度轴。求解成本随 `output_dim * hidden_dim * input_dim`（Jacobian）与每次前向的 `hidden_dim * input_dim` 增长；验证只付前向传播。控制器规则：
+实验求解器根据观测时间调整隐藏层宽度。其雅可比矩阵计算量与三层宽度相关。直接派生参考输入时，每个输入分量只需一个 ChaCha20 输出字，成本与隐藏层宽度无关。
 
 ```text
 observed < target / 2  -> width *= 2
@@ -267,16 +212,14 @@ otherwise              -> width 不变
 
 **实测边界。** 在开发机上以 release、单核运行 `cargo run --release -p hyphen-neural --example envelope`：参考求解器解 16 宽配置约 6 ms，最宽 512 宽配置约 15 ms；同一区间内一次验证为 0.01–0.21 ms。实测「计算/验证」比约 30–70 倍，在固定开销占主导的最小宽度上约 770 倍。因此控制器无法维持十分钟 epoch：最宽配置仍比目标低三个数量级，控制器会饱和在 `MAX_HIDDEN_DIM`。
 
-这是设计本身的约束，不是调参问题。链上验证器必须从种子重新生成 Alice 权重，这个成本与一次前向传播同为 `O(hidden_dim * input_dim)`；把宽度提高到求解需要十分钟，就意味着一次验证要消耗数分钟的合约 gas。十分钟目标需要第二条可廉价验证的难度轴——解过滤、证明系统或链下结算——而每一种都对应不同的安全论证。本 profile 有意不包含它们。
-
-控制器仍然诚实地工作：在允许范围内公布与实测求解时间匹配的维度，而范围是协议常量，不是运维可调参数。
+这些耗时仅描述迭代求解器。在每种宽度下，提交者都能直接派生参考输入。
 
 ## 安全性质与待办
 
 代码与测试已确立：
 
 - **确定性**：同一 descriptor 在所有主机上得到相同权重、相同目标、相同判定。由单元测试、RFC 8439 向量，以及在 `hyphen-vm` 内运行真实合约的端到端测试钉住。
-- **不可抄权重**：唯一被接受的见证是原像，权重从不进入提交内容。
+- **公开参考输入**。链上复算参考输出与提交输出，接受所有满足容差的输入。
 - **只结算一次**：第一个被接受的原像写入 `hyphen:sol:v1:<epoch>`，之后提交返回 `2` 且不修改状态。
 - **不可改写 epoch**：对已开启 epoch 提交不同 descriptor 返回 `EpochConflict`；相同 descriptor 重复开启是幂等的。
 - **查询只读**：`hyphen_query` 只回答 `Status`，不写存储；VM 会拒绝任何写入状态的查询。
@@ -285,6 +228,6 @@ otherwise              -> width 不变
 明确未完成：
 
 - **种子来源**：合约把 descriptor 绑定到 epoch，但无法验证 `chain_seed` 是真实链上取值；开启者选种子。生产部署必须从运维无法选择的值派生种子（父区块哈希或信标），这段接线属于调用 `Open` 的应用，而不属于本合约。
-- **非简洁证明**：验证是完整前向传播，不是证明；便宜，但不是常数大小。
+- **验证成本**。重建目标并验证提交值需要两次完整的网络求值。
 - **未经外部审计**：定点 profile、激活常量与合约 ABI 尚未经过仓库外评审。
 - **无经济模型**：合约只记录结算，不发放奖励；奖励属于调用它的托管或代币层。

@@ -8,10 +8,8 @@
 ### Consensus and payments
 
 - [Consensus profiles](Consensus-Profiles.md)
-- [Standard devnet](Consensus-Devnet-V2.md)
 - [Neural proof of work](Consensus-Neural-Work.md)
-- [Historical devnet v1](Consensus-Devnet-V1.md)
-- [Witness inventory and fork weight](Witness-Inventory-Measurements.md)
+- [HYN3 signatures, wallet migration and block coordinates](HYN3-Identity-and-Recovery.md)
 - [Conditional offline payments](Offline-Payments.md)
 
 ### Node operations

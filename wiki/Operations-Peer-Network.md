@@ -5,7 +5,7 @@
 Each node needs its own data directory and persistent Ed25519 identity. Run the first node with the devnet command in the [README](../README.md). Copy the complete `/ip4/127.0.0.1/tcp/48334/p2p/…` address from its `Listening on` log entry. In a second terminal, substitute that address for `SEED_MULTIADDR` and start a second node.
 
 ```sh
-cargo run --release --locked -p hyphen-node -- --network devnet --data-dir data/devnet-b --listen /ip4/127.0.0.1/tcp/48344 --rpc-bind 127.0.0.1:48343 --template-bind 127.0.0.1:3360 --explorer-bind 127.0.0.1:8082 --boot-nodes SEED_MULTIADDR
+cargo run --release --locked -p hyphen-node -- --network neural-devnet --data-dir data/neural-v3-b --listen /ip4/127.0.0.1/tcp/48344 --rpc-bind 127.0.0.1:48343 --template-bind 127.0.0.1:3360 --explorer-bind 127.0.0.1:8082 --boot-nodes SEED_MULTIADDR
 ```
 
 Compare `height` and `tip_hash` at `http://127.0.0.1:8080/api/info` and `http://127.0.0.1:8082/api/info` while mining is paused. A fresh devnet stays at genesis until a miner produces a block. Equal heights alone do not establish that two nodes share a tip.
@@ -29,8 +29,4 @@ When peers disagree about history, the node can follow parent hashes to a common
 
 ## Verification
 
-The standard-work node updates witness claims and the chain tip in one durable database transaction. On the first startup of an older standard-work database, it rebuilds the witness index from local canonical blocks. Allow time for that one-time scan before checking peer availability.
-
-Run `hyphen-node --network devnet --print-chain-identity` on both installations. To exercise restart recovery, stop the seed, leave the second node running, then restart the seed with its original data directory and port. Compare hashes again after catch-up. A node using `neural-devnet` has a different genesis and network magic. Its Identify handshake should produce an incompatible-network disconnect when pointed at the devnet seed.
-
-For block production, pool ledger recovery and wallet rescans on Windows, check out the three client repositories under the node repository and run `./scripts/devnet-smoke.ps1 -Network devnet`. Select `-Network neural-devnet` to exercise the neural SOLO profile. [Deployment](Operations-Deploy-Linux.md) · [Peer fault accounting](Security-Peer-Policy.md)
+Run `hyphen-node --print-chain-identity` on both installations and check the HYN3 genesis and consensus digest. Pause mining, compare tips, then restart the peer with its original database and check again. On Windows `./scripts/devnet-smoke.ps1 -VerifyPeerSync` also checks pool restart and wallet reward recovery.

@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
+use hyphen_crypto::hash::{framed_hash as hash_many, framed_hasher};
 use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature};
+use rustbinary::CompactEncode;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -34,7 +36,7 @@ impl SignedDeploy {
         if params.deployer != *secret.public_key().as_bytes() {
             return Err(VmLedgerError::WrongSigner);
         }
-        let signature = secret.sign(deploy_digest(chain_id, &params).as_bytes());
+        let signature = secret.sign(deploy_digest(chain_id, &params)?.as_bytes());
         Ok(Self {
             chain_id,
             params,
@@ -61,7 +63,7 @@ impl SignedCall {
         if call.caller != *secret.public_key().as_bytes() {
             return Err(VmLedgerError::WrongSigner);
         }
-        let signature = secret.sign(call_digest(chain_id, nonce, &call).as_bytes());
+        let signature = secret.sign(call_digest(chain_id, nonce, &call)?.as_bytes());
         Ok(Self {
             chain_id,
             nonce,
@@ -211,10 +213,24 @@ impl VmLedger {
         if self.contracts.is_empty() && self.storage.is_empty() && self.next_nonce.is_empty() {
             return Ok(Hash256::ZERO);
         }
-        let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
-            .serialize(self)
+        let limit = crate::DEFAULT_WIRE_BYTES;
+        let length = crate::wire_config(limit)
+            .serialized_size(self)
             .map_err(|e| VmLedgerError::Encoding(e.to_string()))?;
-        Ok(hash(D_ROOT, &encoded))
+        if length > limit as u64 {
+            return Err(VmLedgerError::Encoding(
+                rustbinary::Error::SizeLimit {
+                    limit: limit as u64,
+                }
+                .to_string(),
+            ));
+        }
+        // The root commits to domain length, domain, payload length and compact ledger bytes.
+        let mut sink = HashWriter(framed_hasher(D_ROOT));
+        sink.0.update(&length.to_be_bytes());
+        self.encode_compact(&mut sink)
+            .map_err(|e| VmLedgerError::Encoding(e.to_string()))?;
+        Ok(Hash256::from_bytes(*sink.0.finalize().as_bytes()))
     }
 
     pub fn apply(
@@ -264,7 +280,7 @@ impl VmLedger {
         let owner = PublicKey(signed.params.deployer);
         owner
             .verify(
-                deploy_digest(chain_id, &signed.params).as_bytes(),
+                deploy_digest(chain_id, &signed.params)?.as_bytes(),
                 &signed.signature,
             )
             .map_err(|_| VmLedgerError::InvalidSignature)?;
@@ -299,13 +315,16 @@ impl VmLedger {
         signed: &SignedCall,
         budget: &mut VmBlockBudget,
     ) -> Result<u64, VmLedgerError> {
-        if signed.chain_id != chain_id || signed.call.value != 0 {
+        if signed.chain_id != chain_id {
             return Err(VmLedgerError::WrongChain);
+        }
+        if signed.call.value != 0 {
+            return Err(VmLedgerError::UnsupportedCallValue);
         }
         let caller = PublicKey(signed.call.caller);
         caller
             .verify(
-                call_digest(chain_id, signed.nonce, &signed.call).as_bytes(),
+                call_digest(chain_id, signed.nonce, &signed.call)?.as_bytes(),
                 &signed.signature,
             )
             .map_err(|_| VmLedgerError::InvalidSignature)?;
@@ -420,6 +439,8 @@ pub enum VmLedgerError {
     Encoding(String),
     #[error("transaction belongs to another chain")]
     WrongChain,
+    #[error("contract calls require zero native value")]
+    UnsupportedCallValue,
     #[error("secret key does not own the declared account")]
     WrongSigner,
     #[error("signature verification failed")]
@@ -436,33 +457,34 @@ pub enum VmLedgerError {
     Execution(String),
 }
 
-fn deploy_digest(chain_id: Hash256, params: &DeployParams) -> Hash256 {
-    let bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+fn deploy_digest(chain_id: Hash256, params: &DeployParams) -> Result<Hash256, VmLedgerError> {
+    let bytes = crate::wire_config(MAX_VM_TRANSACTION_BYTES)
         .serialize(params)
-        .expect("deploy serialization is infallible");
-    hash_many(D_DEPLOY, &[chain_id.as_bytes(), &bytes])
+        .map_err(|e| VmLedgerError::Encoding(e.to_string()))?;
+    Ok(hash_many(D_DEPLOY, &[chain_id.as_bytes(), &bytes]))
 }
 
-fn call_digest(chain_id: Hash256, nonce: u64, call: &ContractCall) -> Hash256 {
-    let bytes = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+fn call_digest(
+    chain_id: Hash256,
+    nonce: u64,
+    call: &ContractCall,
+) -> Result<Hash256, VmLedgerError> {
+    let bytes = crate::wire_config(MAX_VM_TRANSACTION_BYTES)
         .serialize(call)
-        .expect("call serialization is infallible");
-    hash_many(D_CALL, &[chain_id.as_bytes(), &nonce.to_be_bytes(), &bytes])
+        .map_err(|e| VmLedgerError::Encoding(e.to_string()))?;
+    Ok(hash_many(
+        D_CALL,
+        &[chain_id.as_bytes(), &nonce.to_be_bytes(), &bytes],
+    ))
 }
 
-fn hash(domain: &[u8], bytes: &[u8]) -> Hash256 {
-    hash_many(domain, &[bytes])
-}
+struct HashWriter(blake3::Hasher);
 
-fn hash_many(domain: &[u8], parts: &[&[u8]]) -> Hash256 {
-    let mut framed = blake3::Hasher::new();
-    framed.update(&(domain.len() as u64).to_be_bytes());
-    framed.update(domain);
-    for part in parts {
-        framed.update(&(part.len() as u64).to_be_bytes());
-        framed.update(part);
+impl rustbinary::EncodeWriter for HashWriter {
+    fn write_all(&mut self, bytes: &[u8]) -> rustbinary::Result<()> {
+        self.0.update(bytes);
+        Ok(())
     }
-    Hash256::from_bytes(*framed.finalize().as_bytes())
 }
 
 #[cfg(test)]
@@ -566,6 +588,10 @@ mod tests {
         ledger.apply(chain_id, 2, &call).unwrap();
         assert_ne!(ledger.root(), before);
         assert_eq!(ledger.storage(address, b"key"), Some(b"value".as_slice()));
+        let encoded = crate::wire_config(crate::DEFAULT_WIRE_BYTES)
+            .serialize(&ledger)
+            .unwrap();
+        assert_eq!(ledger.root().unwrap(), hash_many(D_ROOT, &[&encoded]));
     }
 
     #[test]

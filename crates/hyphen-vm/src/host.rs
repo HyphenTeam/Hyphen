@@ -148,13 +148,17 @@ fn host_storage_read(
         Some(memory) => memory,
         None => return Ok(-1),
     };
-    let mut key = vec![0u8; key_len];
-    if memory.read(&caller, key_ptr as usize, &mut key).is_err() {
+    let start = key_ptr as usize;
+    let Some(key) = memory
+        .data(&caller)
+        .get(start..start.saturating_add(key_len))
+    else {
         return Ok(-1);
-    }
+    };
 
     let storage = data.storage.lock().unwrap();
-    match storage.entries.get(&key) {
+    match storage.entries.get(key) {
+        Some(value) if value.len() > MAX_STORAGE_VALUE_SIZE => Ok(-1),
         Some(value) => {
             if data.legacy_gas.is_none() {
                 consume_gas(&mut caller, value.len() as u64)?;

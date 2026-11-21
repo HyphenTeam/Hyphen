@@ -27,5 +27,8 @@ parking_lot.workspace = true
 hyphen-wire.workspace = true
 
 [dev-dependencies]
+blake3.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
 serde_json.workspace = true
 wat.workspace = true

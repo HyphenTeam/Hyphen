@@ -16,8 +16,11 @@
     body{margin:0;min-width:320px;min-height:100vh;background:var(--ink)}
     a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
     button,input{font:inherit;letter-spacing:0}button{cursor:pointer}
-    .shell{min-height:100vh;display:grid;grid-template-rows:auto auto 1fr auto}
-    .topline{height:4px;background:var(--cyan);border-right:33vw solid var(--amber);box-shadow:inset 33vw 0 0 var(--green)}
+    .shell{position:relative;min-height:100vh;display:grid;grid-template-rows:auto 1fr auto}
+    .aurora-sky{position:fixed;inset:0;overflow:hidden;pointer-events:none}
+    :root{--flow:cubic-bezier(.22,.78,.18,1);--passage:320ms}
+    .aurora-field{position:absolute;inset:-12%;background:radial-gradient(ellipse at 15% 20%,#18544f92,transparent 43%),radial-gradient(ellipse at 80% 4%,#344a655e,transparent 55%),radial-gradient(ellipse at 70% 80%,#38335268,transparent 52%);transition:transform 640ms var(--flow)}
+    .topline{height:3px;background:linear-gradient(95deg,#286367,#83ebc2 38%,#51b7ce 62%,#746a9b)}
     header{border-bottom:1px solid var(--line);background:#0d1011;position:sticky;top:0;z-index:20}
     .header-main{height:68px;max-width:1500px;margin:auto;padding:0 24px;display:flex;align-items:center;gap:26px}
     .brand{display:flex;align-items:center;gap:12px;color:var(--text);min-width:max-content}
@@ -30,9 +33,20 @@
     .search:focus-within{border-color:var(--cyan)}
     .search input{width:100%;min-width:100px;border:0;background:transparent;color:var(--text);padding:0 12px;outline:0;font-family:var(--mono);font-size:12px}
     .search button{width:42px;border:0;border-left:1px solid var(--line);background:var(--raised);color:var(--cyan);font:700 16px var(--mono)}
-    nav.tabs{height:39px;max-width:1500px;margin:auto;padding:0 24px;display:flex;align-items:stretch;gap:22px}
+    nav.tabs{position:relative;height:39px;max-width:1500px;margin:auto;padding:0 24px;display:flex;align-items:stretch;gap:22px}
     nav.tabs a{display:flex;align-items:center;color:var(--muted);font:700 11px var(--mono);border-bottom:2px solid transparent}
-    nav.tabs a:hover{text-decoration:none;color:var(--text)}nav.tabs a.active{color:var(--cyan);border-color:var(--cyan)}
+    nav.tabs a:hover{text-decoration:none;color:var(--text)}nav.tabs a.active{color:var(--cyan)}
+    .tab-indicator{position:absolute;left:0;bottom:0;width:1px;height:2px;background:var(--cyan);transform-origin:left;transform:scaleX(0);transition:transform var(--passage) var(--flow);pointer-events:none}
+    #content{view-transition-name:observatory}
+    :root{view-transition-name:none}
+    ::view-transition-group(chain-object),::view-transition-group(observatory){animation-duration:var(--passage);animation-timing-function:var(--flow)}
+    ::view-transition-old(observatory){animation:depart 155ms ease-out both}
+    ::view-transition-new(observatory){animation:arrive var(--passage) var(--flow) both}
+    @keyframes depart{to{opacity:0;transform:translateY(-6px)}}
+    @keyframes arrive{from{opacity:0;transform:translateY(9px)}}
+    main td a[href^="#/"]{display:inline-block}
+    .metrics,.stack-layout,.detail-grid article,.object-list,.data-table{border-radius:10px;overflow:clip}
+    @media(prefers-reduced-motion:reduce){.aurora-field,.tab-indicator{transition:none}.loading:before{animation:none!important}::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation-duration:0s}}
     main{width:100%;max-width:1500px;margin:0 auto;padding:24px;min-height:620px}
     .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);background:var(--surface)}
     .metric{min-width:0;padding:17px 18px;border-right:1px solid var(--line)}.metric:last-child{border-right:0}
@@ -62,9 +76,16 @@
     @keyframes blink{50%{opacity:.15}}
     @media(max-width:900px){.header-main{height:auto;min-height:68px;flex-wrap:wrap;padding:12px 16px;gap:12px}.search{order:3;flex-basis:100%}.runtime{margin-left:auto}nav.tabs{padding:0 16px}.metrics{grid-template-columns:repeat(2,1fr)}.metric:nth-child(2){border-right:0}.metric:nth-child(-n+2){border-bottom:1px solid var(--line)}.chain-strip{grid-template-columns:repeat(3,1fr)}.chain-strip div:nth-child(3){border-right:0}.chain-strip div:nth-child(-n+3){border-bottom:1px solid var(--line)}main{padding:16px}.detail-grid{grid-template-columns:1fr}}
     @media(max-width:540px){.brand-copy span,.runtime span:first-child{display:none}.metrics{grid-template-columns:1fr}.metric{border-right:0;border-bottom:1px solid var(--line)!important}.metric:last-child{border-bottom:0!important}.chain-strip{grid-template-columns:repeat(2,1fr)}.chain-strip div{border-bottom:1px solid var(--line)!important}.chain-strip div:nth-child(even){border-right:0}.chain-strip div:nth-last-child(-n+2){border-bottom:0!important}.domain-band{align-items:flex-start;flex-wrap:wrap}.domain-band span{width:100%;margin:0}.section-head h1{font-size:18px}dl{grid-template-columns:110px minmax(0,1fr)}footer{flex-direction:column}}
+    .stack-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(215px,290px);border:1px solid var(--line);background:var(--surface)}
+    .stack-layout canvas{width:100%;height:clamp(300px,50vh,520px);background:var(--ink);display:block}
+    .stack-tools{border-left:1px solid var(--line);padding:18px;display:grid;grid-template-columns:minmax(0,1fr);align-content:center;gap:15px;font:12px var(--mono)}
+    .stack-tools label{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;color:var(--muted)}.stack-tools select,.stack-pager button{font:inherit;background:var(--raised);color:var(--text);border:1px solid var(--line);padding:7px}.stack-tools input{accent-color:var(--cyan);width:100%;margin:0}.stack-tools output{overflow-wrap:anywhere;color:var(--cyan)}
+    .stack-tools code{overflow-wrap:anywhere}.stack-tools select{max-width:100%}.stack-pager{display:flex;gap:8px;flex-wrap:wrap}.stack-pager button:disabled{opacity:.4}.tabs{overflow-x:auto}.tabs a{white-space:nowrap}
+    @media(max-width:700px){.stack-layout{grid-template-columns:minmax(0,1fr)}.stack-tools{border-left:0;border-top:1px solid var(--line)}}
   </style>
 </head>
 <body>
+  <div class="aurora-sky" aria-hidden="true"><div class="aurora-field"></div></div>
   <div class="topline"></div>
   <div class="shell">
     <header>
@@ -73,7 +94,7 @@
         <form class="search" id="searchForm"><input id="searchInput" autocomplete="off" spellcheck="false" aria-label="Search chain" placeholder="height / block / transaction / task"><button type="submit" title="Search" aria-label="Search">&gt;</button></form>
         <div class="runtime"><span>RUST CORE</span><span id="wasmState">WASM BOOT</span></div>
       </div>
-      <nav class="tabs" aria-label="Explorer sections"><a href="#/" data-route="home">OVERVIEW</a><a href="#/science" data-route="science">AETHERCOMPUTE</a><a href="#/apps" data-route="apps">WASM APPS</a></nav>
+      <nav class="tabs" aria-label="Explorer sections"><a href="#/" data-route="home">OVERVIEW</a><a href="#/stack" data-route="stack">BLOCK STACK</a><a href="#/science" data-route="science">AETHERCOMPUTE</a><a href="#/apps" data-route="apps">WASM APPS</a><span class="tab-indicator" aria-hidden="true"></span></nav>
     </header>
     <main id="content"><div class="loading">INITIALIZING RUST WASM RUNTIME</div></main>
     <footer><span>PUBLIC COMMITMENTS ONLY &middot; NO WALLET TELEMETRY &middot; NO THIRD-PARTY ASSETS</span><b>HYPHEN NODE / SAME ORIGIN</b></footer>

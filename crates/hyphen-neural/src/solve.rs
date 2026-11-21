@@ -8,9 +8,9 @@
 //!
 //! Everything is Q32.32 with a fixed operation order, so two miners starting
 //! from the same descriptor produce byte-identical candidates and an auditor can
-//! replay the search. The point of the challenge is the cost asymmetry: one
-//! verification is a single forward pass, while the search runs many iterations
-//! with an `output_dim * hidden_dim * input_dim` Jacobian each.
+//! replay the search. Each iteration computes a Jacobian at a cost proportional
+//! to all three layer widths. The public descriptor also derives an exact
+//! reference input directly. Verification evaluates the reference and candidate.
 
 use std::vec::Vec;
 
@@ -54,7 +54,11 @@ impl Default for SolveConfig {
 impl SolveConfig {
     /// Rejects configurations that cannot make progress.
     pub fn validate(&self) -> Result<(), NeuralError> {
-        if self.max_iterations == 0 || self.damping <= 0 || self.restarts == 0 {
+        if self.max_iterations == 0
+            || self.damping <= 0
+            || self.restarts == 0
+            || self.restarts - 1 > u32::MAX - DOMAIN_SOLVER
+        {
             return Err(NeuralError::InvalidSpec);
         }
         Ok(())
@@ -119,27 +123,28 @@ pub fn solve(
         let mut candidate = initial_candidate(descriptor, restart);
         let mut damping = config.damping;
 
-        for iteration in 0..config.max_iterations {
-            mlp::forward(&spec, &weights, &candidate, &mut hidden, &mut output)?;
+        mlp::forward(&spec, &weights, &candidate, &mut hidden, &mut output)?;
+        for iteration in 0..=config.max_iterations {
             let max_error = mlp::max_abs_difference(&output, &target);
-            let mean_squared_error = mlp::mean_squared_error(&output, &target);
             let accepted = max_error <= descriptor.tolerance_ulp;
-            let outcome = SolveOutcome {
-                input: candidate.clone(),
-                iterations: iteration,
-                restart,
-                max_error,
-                mean_squared_error,
-                accepted,
-            };
             if best
                 .as_ref()
-                .is_none_or(|current| outcome.max_error < current.max_error)
+                .is_none_or(|current| max_error < current.max_error)
             {
-                best = Some(outcome.clone());
+                best = Some(SolveOutcome {
+                    input: candidate.clone(),
+                    iterations: iteration,
+                    restart,
+                    max_error,
+                    mean_squared_error: mlp::mean_squared_error(&output, &target),
+                    accepted,
+                });
             }
             if accepted {
-                return Ok(outcome);
+                return best.ok_or(NeuralError::BudgetExhausted);
+            }
+            if iteration == config.max_iterations {
+                break;
             }
 
             for (slot, (left, right_value)) in
@@ -199,6 +204,7 @@ pub fn verify(
     descriptor: &ChallengeDescriptor,
     solution: &[i64],
 ) -> Result<Verification, NeuralError> {
+    descriptor.validate()?;
     let layout = descriptor.spec.weight_layout();
     let mut weights = vec![0i64; layout.total];
     let mut input = vec![0i64; descriptor.spec.input_dim as usize];
@@ -277,7 +283,7 @@ fn build_normal_equations(
     output_dim: usize,
 ) {
     for row in 0..input_dim {
-        for column in 0..input_dim {
+        for column in row..input_dim {
             let mut accumulator = 0i128;
             for index in 0..output_dim {
                 accumulator = accumulator.saturating_add(linalg::scale_mul(
@@ -286,6 +292,7 @@ fn build_normal_equations(
                 ));
             }
             normal[row * input_dim + column] = accumulator;
+            normal[column * input_dim + row] = accumulator;
         }
         let mut accumulator = 0i128;
         for index in 0..output_dim {

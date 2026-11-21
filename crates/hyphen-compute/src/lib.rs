@@ -20,7 +20,8 @@ pub use neural::{
 
 use hyphen_wire::CanonicalSet;
 
-use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature, blake3_hash_many};
+use hyphen_crypto::hash::framed_hash as hash_many;
+use hyphen_crypto::{Hash256, PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -497,17 +498,13 @@ impl ComputeState {
         if self.tasks.is_empty() {
             return Hash256::ZERO;
         }
-        let leaves = self
-            .tasks
-            .iter()
-            .map(|(id, record)| {
-                let encoded = wire_config(DEFAULT_WIRE_BYTES)
-                    .serialize(record)
-                    .expect("bounded in-memory task records always serialize");
-                hash_many(D_STATE_LEAF, &[id.as_bytes(), &encoded])
-            })
-            .collect::<Vec<_>>();
-        let tree_root = merkle_root(&leaves);
+        let leaves = self.tasks.iter().map(|(id, record)| {
+            let encoded = wire_config(DEFAULT_WIRE_BYTES)
+                .serialize(record)
+                .expect("bounded in-memory task records always serialize");
+            hash_many(D_STATE_LEAF, &[id.as_bytes(), &encoded])
+        });
+        let tree_root = merkle_root(leaves);
         hash_many(
             D_STATE_ROOT,
             &[
@@ -699,15 +696,8 @@ impl ComputeState {
             ..
         } = &mut record.status
         {
-            let mut coverage = record
-                .retention
-                .values()
-                .map(|item| item.retain_until_height)
-                .collect::<Vec<_>>();
-            coverage.sort_unstable_by(|left, right| right.cmp(left));
-            if let Some(third_provider_height) = coverage.get(2) {
-                *retain_until_height = (*retain_until_height).max(*third_provider_height);
-            }
+            let covered = third_highest(record.retention.values().map(|a| a.retain_until_height));
+            *retain_until_height = (*retain_until_height).max(covered);
         }
         Ok(())
     }
@@ -727,7 +717,7 @@ impl ComputeState {
                 result,
                 challenge_deadline,
                 ..
-            } => (result.clone(), *challenge_deadline),
+            } => (result, *challenge_deadline),
             _ => return Err(ComputeError::WrongStatus),
         };
         if at_height <= challenge_deadline {
@@ -740,12 +730,13 @@ impl ComputeState {
             .retention
             .values()
             .filter(|attestation| attestation.retain_until_height >= required_until)
+            .take(3)
             .count();
         if independent < 3 && !verifier.has_inline_output(&record.task.spec, &result.claim) {
             return Err(ComputeError::InsufficientRetention);
         }
         record.status = TaskStatus::Finalized {
-            result,
+            result: result.clone(),
             finalized_height: at_height,
             retain_until_height: required_until,
         };
@@ -809,40 +800,80 @@ fn hash(domain: &[u8], bytes: &[u8]) -> Hash256 {
     hash_many(domain, &[bytes])
 }
 
-fn hash_many(domain: &[u8], parts: &[&[u8]]) -> Hash256 {
-    let length = parts.iter().map(|part| part.len()).sum::<usize>();
-    let mut framed = Vec::with_capacity(domain.len() + length + 16 + parts.len() * 8);
-    framed.extend_from_slice(&(domain.len() as u64).to_be_bytes());
-    framed.extend_from_slice(domain);
-    for part in parts {
-        framed.extend_from_slice(&(part.len() as u64).to_be_bytes());
-        framed.extend_from_slice(part);
+/// Height covered by three distinct map entries. Equal heights count separately.
+fn third_highest(heights: impl Iterator<Item = u64>) -> u64 {
+    let mut top = [0; 3];
+    for mut height in heights {
+        for slot in &mut top {
+            if height > *slot {
+                std::mem::swap(slot, &mut height);
+            }
+        }
     }
-    blake3_hash_many(&[&framed])
+    top[2]
 }
 
-fn merkle_root(leaves: &[Hash256]) -> Hash256 {
-    if leaves.is_empty() {
-        return hash(D_STATE_NODE, b"empty");
-    }
-    let mut level = leaves.to_vec();
-    while level.len() > 1 {
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        for pair in level.chunks(2) {
-            let right = pair.get(1).copied().unwrap_or(pair[0]);
-            next.push(hash_many(
-                D_STATE_NODE,
-                &[pair[0].as_bytes(), right.as_bytes()],
-            ));
+fn merkle_root(leaves: impl Iterator<Item = Hash256>) -> Hash256 {
+    let join = |left: Hash256, right: Hash256| {
+        hash_many(D_STATE_NODE, &[left.as_bytes(), right.as_bytes()])
+    };
+    let mut subtrees = Vec::<(u32, Hash256)>::new();
+    for (index, mut root) in leaves.enumerate() {
+        let height = index.trailing_ones();
+        for _ in 0..height {
+            root = join(subtrees.pop().expect("one subtree per set bit").1, root);
         }
-        level = next;
+        subtrees.push((height, root));
     }
-    level[0]
+    let Some((mut height, mut root)) = subtrees.pop() else {
+        return hash(D_STATE_NODE, b"empty");
+    };
+    for (left_height, left) in subtrees.into_iter().rev() {
+        // AetherCompute duplicates an unpaired right child at each level.
+        for _ in height..left_height {
+            root = join(root, root);
+        }
+        root = join(left, root);
+        height = left_height + 1;
+    }
+    root
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retention_counts_providers_with_tied_heights() {
+        for heights in [vec![], vec![9, 9], vec![3, 8, 3, 9], vec![9, 1, 9, 1, 9]] {
+            let mut sorted = heights.clone();
+            sorted.sort_unstable_by(|a, b| b.cmp(a));
+            assert_eq!(
+                third_highest(heights.into_iter()),
+                sorted.get(2).copied().unwrap_or(0)
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_root_matches_duplicate_last_at_every_level() {
+        let leaves: Vec<_> = (0..2048u32)
+            .map(|i| hash(b"leaf", &i.to_le_bytes()))
+            .collect();
+        for count in (1..=129).chain([1023, 1024, 1025, 2047, 2048]) {
+            let mut level = leaves[..count].to_vec();
+            while level.len() > 1 {
+                level = level
+                    .chunks(2)
+                    .map(|pair| {
+                        let right = pair.last().unwrap();
+                        hash_many(D_STATE_NODE, &[pair[0].as_ref(), right.as_ref()])
+                    })
+                    .collect();
+            }
+            assert_eq!(merkle_root(leaves[..count].iter().copied()), level[0]);
+        }
+    }
 
     struct TestVerifier;
     impl ProofVerifier for TestVerifier {

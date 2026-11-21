@@ -16,6 +16,22 @@ pub struct ChainArchive {
     pub blocks: Vec<Block>,
 }
 
+impl ChainArchive {
+    /// Read a bounded compact archive for the node CLI and offline auditors.
+    pub fn read(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::io::Read;
+        const LIMIT: usize = 512 * 1024 * 1024;
+        let file = std::fs::File::open(path)?;
+        let mut encoded = Vec::new();
+        if file.metadata()?.len() > LIMIT as u64
+            || file.take(LIMIT as u64 + 1).read_to_end(&mut encoded)? > LIMIT
+        {
+            return Err("chain archive exceeds the 512 MiB CLI limit".into());
+        }
+        Ok(hyphen_wire::wire_config(LIMIT).deserialize(&encoded)?)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayReport {
     pub blocks_applied: u64,
@@ -261,11 +277,11 @@ mod tests {
                 "duplicate identity"
             );
             let cfg = match vector.profile.as_str() {
-                "devnet-v2" => ChainConfig::devnet(),
-                "neural-devnet-v1" => ChainConfig::neural_devnet(),
-                "contract-devnet-v1" => ChainConfig::contract_devnet(),
-                "compute-devnet-v1" => ChainConfig::compute_devnet(),
-                "offline-devnet-v1" => ChainConfig::offline_devnet(),
+                "devnet-v2" => ChainConfig::archived_devnet_v2(),
+                "neural-devnet-v1" => ChainConfig::archived_neural_devnet_v1(),
+                "contract-devnet-v1" => ChainConfig::archived_contract_devnet_v1(),
+                "compute-devnet-v1" => ChainConfig::archived_compute_devnet_v1(),
+                "offline-devnet-v1" => ChainConfig::archived_offline_devnet_v1(),
                 "testnet-research" => ChainConfig::testnet(),
                 "mainnet-research" => ChainConfig::mainnet(),
                 other => panic!("unknown chain identity vector profile {other}"),
@@ -305,7 +321,7 @@ mod tests {
 
     #[test]
     fn reference_verifier_rejects_height_gaps() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let genesis = build_genesis_block(&cfg);
         let mut child = signed_child(&cfg);
         child.header.height = 2;
@@ -325,7 +341,7 @@ mod tests {
 
     #[test]
     fn reference_verifier_rejects_transaction_root_tampering() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let genesis = build_genesis_block(&cfg);
         let mut child = signed_child(&cfg);
         child.transactions.push(vec![0xde, 0xad, 0xbe, 0xef]);
@@ -345,7 +361,7 @@ mod tests {
 
     #[test]
     fn reference_verifier_rejects_authorization_tampering() {
-        let cfg = ChainConfig::devnet();
+        let cfg = ChainConfig::archived_devnet_v2();
         let genesis = build_genesis_block(&cfg);
         let mut child = signed_child(&cfg);
         let last = child.block_authorization.last_mut().unwrap();

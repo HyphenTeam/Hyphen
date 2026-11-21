@@ -10,6 +10,45 @@ use prost::Message;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[allow(dead_code)] // Shared by the compute and contract readers.
+pub fn parse_hash(text: &str) -> std::result::Result<Hash256, String> {
+    let bytes = hyphen_crypto::hex_decode(text).map_err(|e| e.to_string())?;
+    Ok(Hash256::from_bytes(
+        bytes.try_into().map_err(|_| "expected a 32-byte hash")?,
+    ))
+}
+
+#[allow(dead_code)]
+pub fn checked_local_state(
+    path: &Path,
+    expected: Option<Hash256>,
+) -> Result<hyphen_consensus::Blockchain> {
+    if !path.join("conf").is_file() {
+        return Err("expected an existing stopped HYN3 node database".into());
+    }
+    let db = hyphen_consensus::Blockchain::open(
+        path.to_str().ok_or("invalid database path")?,
+        ChainConfig::neural_devnet(),
+    )?;
+    let tip = db.tip()?;
+    if expected.is_some_and(|hash| hash != tip.hash) {
+        return Err("local tip differs from the expected block hash".into());
+    }
+    let state_root = db.state_root()?;
+    let block = db.store().get_block_by_hash(&tip.hash)?;
+    if block.hash() != tip.hash
+        || block.header.height != tip.height
+        || block.header.state_root != state_root
+    {
+        return Err("local protocol state differs from the canonical header".into());
+    }
+    eprintln!(
+        "tip_height={} tip_hash={} state_root={}",
+        tip.height, tip.hash, state_root
+    );
+    Ok(db)
+}
+
 #[allow(dead_code)] // Some binaries use only the bounded file and RPC readers.
 pub fn read_key(path: &Path) -> Result<hyphen_crypto::SecretKey> {
     let mut key = hyphen_crypto::SecretKey([0; 32]);

@@ -1,8 +1,10 @@
 # 双离线有条件付款 · Conditional offline payments
 
-`offline-devnet`（`HYOF`）允许一笔已确认预锁经过最多 16 次离线整额转付，再由当前持有人独立签名结算。预锁为普通钱包交易的实际输出。离线接收只记一笔有条件索偿。只有在收款人自己核验的规范链上有结算输出时，在线钱包才将其计入余额。该开发网尚待独立密码学审计、安全认证和移动设备验收。
+`neural-devnet`（`HYN3`）允许一笔已确认预锁经过最多 16 次离线整额转付，再由当前持有人独立签名结算。预锁为普通钱包交易的实际输出。离线接收只记一笔有条件索偿。只有在收款人自己核验的规范链上有结算输出时，在线钱包才将其计入余额。该开发网尚待独立密码学审计、安全认证和移动设备验收。
 
 ## 资金与身份
+
+**双离线时的兑付边界。** 假设付款前的钱包状态可复制，两位收款人在重联前不能通信。只有甲收款时，甲看到已注资的预锁、自己的请求和付款方的有效签名。付款人复制状态后又向乙付款时，甲看到的数据可以完全相同。任何只依赖这些数据的本地判定都会给出同一结果。乙也可以看到对自己有效的授权，而规范链上的同一预锁只能支付一次。因此，离线可以验真并保存冲突证据。要保证每位离线收款人都能兑付，还需要不可复制状态、在线裁决或外部担保等额外条件。单方在线时可代为广播已签好的结算，并按所需确认数核对自己的节点。[结算与重组验收](../scripts/test-offline-payments.py)
 
 预锁条款绑定创世哈希、首位持有人的 Ed25519 公钥、随机数、总金额和结算费。锁定地址的支出点由 `hash_to_point` 导出。通过普通 CLSAG 支出这笔预锁需要知道该点的离散对数。资金方按条款派生的地址和精确总额打款；金额错误也会改变对应的锁定条件，可能造成永久损失。应保留条款、已签资金交易和收到的最新凭证，直到结算确认。助记词只能恢复签名密钥，无法恢复他人已签发而本机丢失的转付凭证。
 
@@ -14,7 +16,9 @@
 
 ## 操作
 
-在主仓构建 `hyphen-offline` 和 `hyphen-node`。在独立钱包仓构建 `hyphen-reserve-wallet`。节点、矿池和矿工均选择 `--network offline-devnet`。带签名、钱包余额和地址派生的命令从标准输入读取本人的原始 64 字节 BIP39 种子。`--account` 选择离线授权账户，默认值为 0。在线准备工具使用常规钱包账户 0。输出文件采用新文件名。离线端之间仅传递公开的预锁凭证、收款请求和签名转付文件。
+`confirm` 和 `confirm-online` 都接受 `--expect-tip HASH`。传入独立取得的链尖哈希后，程序在核对赢家、确认深度和保存结算证据前比对本次查询的链尖。节点状态变化后，可在新链尖重新核对。在线查询依赖收款人自己同步和验证的节点。[订单确认](../crates/hyphen-node/src/bin/hyphen-offline/confirmation.rs)
+
+在主仓构建 `hyphen-offline` 和 `hyphen-node`。在独立钱包仓构建 `hyphen-reserve-wallet`。节点、矿池和矿工均选择 `--network neural-devnet`。带签名、钱包余额和地址派生的命令从标准输入读取本人的原始 64 字节 BIP39 种子。`--account` 选择离线授权账户，默认值为 0。在线准备工具使用常规钱包账户 0。输出文件采用新文件名。离线端之间仅传递公开的预锁凭证、收款请求和签名转付文件。
 
 ```sh
 cargo build --release --locked -p hyphen-node --bin hyphen-node --bin hyphen-offline
@@ -54,7 +58,15 @@ cargo build --release --locked --manifest-path HyphenWallet/rust/Cargo.toml --bi
 
 凭证文件和结算交易上限为 8 KiB，索偿附加数据上限为 4 KiB。Merkle 路径固定为 32 个哈希。检查点占用 `64 + 64 × (链高 + 1 + 已结算预锁数)` 字节磁盘，包含每个历史输出根和已排序的花费标识。离线核验按位置读取一个根，二分查找已花集合并逐个验证读取的数据单元。生成检查点需顺序读取区块历史。新钱包采用页缓存预算为 2 MiB 的 redb 事务日志，打开旧 sled 日志时继续使用其中的签名决定和检查点。凭证及结算会披露金额、转付公钥链和兑付目的地址。
 
-## 开发网实测
+## HYN3 实测
+
+资金交易 `68fc45f405c725fa59944df537c010ea42bd544289f8f65ee359ea8ad6e38c7c` 于高度 7 确认。两条链在高度 8 确认了不同索偿，重组后胜方钱包收取 9,000,000 原子单位并完成普通花费。另一条分支将资金输出从全局索引 6 移至 11，刷新证明后在高度 13 重新结算。从创世独立重放至高度 14 得到相同链顶 `42334b4d4ebdfb9891b74c873ed3f71f88257b419d4ac1fea16f01aade5251b3`。[复现步骤](Operations-Verification.md#local-hyn3-acceptance)
+
+## HYN2 历史实测
+
+HYN2 在高度 7 确认资金交易 `4630824f86789fe82cb52a877f86ab98592262c18deb13d7ba33acb13f17a23e`，锁入 10,000,000 原子单位。32 个无资金钱包均被拒绝。两笔竞争索偿经分叉切换后，钱包只从规范链扫到 9,000,000，且能继续普通支付。另一次分叉将原资金输出从索引 6 移到 12，末端持有人刷新证明后在高度 14 再次结算。独立数据库从创世重放至高度 16，链顶为 `e2416619f8711e8113c5997883d2babd085e0262f575cac74123b290c42759bf`。原始记录在 `target/offline-settlement-1l6szl2g/result.json`。[历史测试记录](Operations-Verification.md#historical-hyn2-acceptance)
+
+## 早期离线付款与资源实测 · Historical measurements before HYN2
 
 在同一台 Windows x64 主机上，各方分别从创世重放资金历史并安装检查点。高度 8 的普通付款 `c671da6b17f05c819a3f71b52d5c35e8e9159d2e0c3e18647b9d649c1084cf09` 锁入 10,000,000 原子单位。两跳凭证的索偿在高度 9 确认，持有人实际扫到净额 9,000,000。另一节点从共同父块出发，将竞争凭证打包，独立挖出更重历史。两个节点通过本机 TCP 重连后，原收款人余额归零，新收款人扫到 9,000,000。另建数据库分别从创世重放两份归档，恢复对应的高度 9 和高度 10 链顶。新收款人随即使用普通 CLSAG 交易付出 7,000,000，找零 1,000,000，手续费 1,000,000。
 
@@ -111,13 +123,15 @@ The parent at height 1,023 held 75,015,400 bytes of compressed undo values befor
 
 ## English protocol and operations
 
+An intact signing journal checks every locally recorded outgoing instruction in the presented ownership history, including the initial funder's first transfer when funds return. `accept`, `transfer` and `redeem` apply this check before publishing a receipt or signed file. Identical retries are accepted at the current receipt head. [Canonical payout proof and connectivity scenarios](HYN3-Algorithm-Audit.md)
+
 To confirm an order, supply the recipient's retained invoice, expected net amount and payout address to `hyphen-offline confirm`. The command reads the recipient's synchronized, stopped node and exits successfully only after the matching settlement has reached the requested depth on that node's canonical chain. The default is one block. The returned `reserve_spend` stays the same across retries, competing authorizations and funding relocation. Use it as a unique ledger key and reconcile its block hash after a reorganization. A sender can discard every wallet it created without affecting these checks. Offline acceptance establishes a conditional claim until settlement.
 
 With your own synchronized node running, use `confirm-online` as shown in the command table. The node reads the source, spending transaction, block and tip in one chain state. The client verifies the signed claim and checks it against the retained order. A mempool entry, insufficient depth or an unavailable node leaves that order unconfirmed by the query. Recheck after a reorganization. Use `--save-settlement` to preserve the signed transaction even when a competing receipt won. Use a fresh filename for a different winner. The saved transaction and signed delivery allow `verify-conflict --settlement` to identify a key that both delegated and redeemed the same state, or authorized two different requests from it. Two delivery files alone can prove the latter. Offline signature evidence survives a reorganization. Canonical inclusion, the operator's legal identity and compensation each require separate evidence or arrangements.
 
 Each hop uses one recipient key to sign the request and one current-holder key to authorize delivery. The current signer exposes a single holder key per hop. M-of-N custody is outside this signer. Colluding key holders can authorize competing histories. The canonical reserve marker still limits the chain to one payout, and each recipient checks their retained order against that payout.
 
-On `hyphen-offline-devnet-v1`, fund one whole reserve with an ordinary signed shielded payment. The reserve address commits to its initial holder, chain, nonce, gross amount and settlement fee. Before going offline each participant installs a checkpoint from their own verified node. The recipient checks inclusion, net value, prior signatures and the spent set at that checkpoint, then signs a fresh request. The payer verifies the intended recipient key out of band and countersigns the request. The recipient checks the delivery against their retained request. Each transfer consumes one of sixteen available hops. Anyone can relay the terminal holder's signed withdrawal. The transaction creates a regular spendable wallet output for the gross amount less the fixed fee.
+On `hyphen-neural-devnet-v3`, fund one whole reserve with an ordinary signed shielded payment. The reserve address commits to its initial holder, chain, nonce, gross amount and settlement fee. Before going offline each participant installs a checkpoint from their own verified node. The recipient checks inclusion, net value, prior signatures and the spent set at that checkpoint, then signs a fresh request. The payer verifies the intended recipient key out of band and countersigns the request. The recipient checks the delivery against their retained request. Each transfer consumes one of sixteen available hops. Anyone can relay the terminal holder's signed withdrawal. The transaction creates a regular spendable wallet output for the gross amount less the fixed fee.
 
 The command table lists the arguments in execution order. `reserve`, `public-key`, `request`, `transfer`, `accept` and `redeem` read the owner's raw 64-byte BIP39 seed on stdin. The independent wallet's `address`, `balance` and `prepare` commands use the same seed format. `RPC` is a socket address. `NODE_DB` is a stopped verified node database. Keep the funding terms and latest signed packet with the wallet backup. The recovery phrase restores keys. The packet carries the other parties' authorizations. Each party retains its own journal and checkpoint. Archived funding or claim bytes can be relayed again and their canonical location checked after a disconnect.
 

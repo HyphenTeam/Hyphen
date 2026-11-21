@@ -67,9 +67,9 @@ fn frozen_transition_vectors() {
     assert_eq!(suites.len(), 3);
     for suite in suites.values() {
         let cfg = match suite.profile.as_str() {
-            "devnet" => ChainConfig::devnet(),
-            "offline-devnet" => ChainConfig::offline_devnet(),
-            "compute-devnet" => ChainConfig::compute_devnet(),
+            "devnet" => ChainConfig::archived_devnet_v2(),
+            "offline-devnet" => ChainConfig::archived_offline_devnet_v1(),
+            "compute-devnet" => ChainConfig::archived_compute_devnet_v1(),
             p => panic!("unknown profile {p}"),
         };
         let chain =
@@ -104,75 +104,74 @@ fn frozen_transition_vectors() {
 }
 
 #[test]
+fn frozen_neural_nonce_block_work() {
+    let v: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../test-vectors/neural-block-work-v3.json"
+    ))
+    .unwrap();
+    let cfg = ChainConfig::neural_devnet();
+    let parent = hyphen_core::build_genesis_block(&cfg).hash();
+    assert_eq!(parent.to_string(), v["parent"]);
+    let miner: [u8; 32] = hyphen_crypto::hex_decode(v["miner_key"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let height = v["height"].as_u64().unwrap();
+    let nonce = v["nonce"].as_u64().unwrap();
+    let seed = hyphen_core::neural_work_seed(&parent, height, &miner);
+    assert_eq!(seed.to_string(), v["seed"]);
+    let mut work = hyphen_neural::WorkDescriptor {
+        spec: hyphen_neural::PROFILE_SPEC,
+        epoch: height,
+        threshold: cfg.neural_work_initial_threshold,
+        chain_seed: *seed.as_bytes(),
+    };
+    let mut weights = vec![0; work.spec.weight_count()];
+    work.derive_weights(&mut weights).unwrap();
+    assert_eq!(Some(work.threshold), v["threshold"].as_u64());
+    let commitment =
+        hyphen_core::neural_work_commitment(&parent, height, work.threshold, &miner, &[nonce]);
+    assert_eq!(commitment.to_string(), v["commitment"]);
+    let score = hyphen_neural::block_work::nonce_score(&work, &weights, nonce).unwrap();
+    assert_eq!(Some(score), v["neural_score"].as_u64());
+    assert!(hyphen_neural::block_work::verify_nonce(&work, nonce).unwrap());
+    let gate = hyphen_neural::block_work::gate_digest(&work.chain_seed, nonce, score);
+    assert_eq!(gate.to_hex().as_str(), v["gate_digest"].as_str().unwrap());
+    let digest = hyphen_neural::block_work::memory_digest(gate);
+    assert_eq!(
+        digest.to_hex().as_str(),
+        v["memory_digest"].as_str().unwrap()
+    );
+    work.threshold = hyphen_neural::block_work::low_word(&digest);
+    assert_eq!(Some(work.threshold), v["memory_score"].as_u64());
+    assert!(!hyphen_neural::block_work::verify_nonce(&work, nonce).unwrap());
+    work.threshold += 1;
+    assert!(hyphen_neural::block_work::verify_nonce(&work, nonce).unwrap());
+}
+
+#[test]
 fn profile_table_matches_node_verifiers_and_parameters() {
     use hyphen_compute::{neural_circuit_id, neural_work_circuit_id};
-    use hyphen_core::config::{DifficultyAlgorithm, STATE_TRANSITION_VERSION};
+    let cfg = ChainConfig::neural_devnet();
     let table = include_str!("../../../wiki/Consensus-Profiles.md");
-    let profiles = [
-        ("mainnet", ChainConfig::mainnet()),
-        ("testnet", ChainConfig::testnet()),
-        ("devnet", ChainConfig::devnet()),
-        ("contract-devnet", ChainConfig::contract_devnet()),
-        ("compute-devnet", ChainConfig::compute_devnet()),
-        ("offline-devnet", ChainConfig::offline_devnet()),
-        ("neural-devnet", ChainConfig::neural_devnet()),
-    ];
-    for (name, cfg) in profiles {
-        let row = table
-            .lines()
-            .find(|s| s.starts_with(&format!("| `{name}` /")))
-            .unwrap();
-        let cols = row
-            .trim_matches('|')
-            .split('|')
-            .map(str::trim)
-            .collect::<Vec<_>>();
-        assert!(cols[0].contains(std::str::from_utf8(&cfg.network_magic).unwrap()));
-        assert_eq!(
-            cols[1],
-            format!(
-                "{} / {}",
-                hyphen_core::FROZEN_BLOCK_VERSION,
-                STATE_TRANSITION_VERSION
-            )
-        );
-        let mask = cols[2].split('`').nth(1).unwrap();
-        assert_eq!(
-            u32::from_str_radix(mask.trim_start_matches("0x"), 16).unwrap(),
-            cfg.consensus_features
-        );
-        if cfg.feature_enabled(hyphen_core::FEATURE_NEURAL_WORK) {
-            assert!(cols[3].starts_with("Parent-derived neural"));
-            assert_eq!(cfg.neural_work_initial_threshold, 1 << 56);
-        } else {
-            let algorithm = match cfg.difficulty_algorithm {
-                DifficultyAlgorithm::LwmaV1 => "LWMA",
-                DifficultyAlgorithm::MomentumDampedLwmaV2 => "momentum LWMA",
-            };
-            assert_eq!(cols[3], format!("C{}, {algorithm}", cfg.pouw_chain_length));
-            assert_eq!(
-                cols[4],
-                format!(
-                    "{} / {} / {}",
-                    cfg.block_time.as_secs(),
-                    cfg.difficulty_window,
-                    cfg.genesis_difficulty
-                )
-            );
-        }
-        let chain =
-            Blockchain::open_db(sled::Config::new().temporary(true).open().unwrap(), cfg).unwrap();
-        let verifier = &chain.compute_verifier;
-        assert!(!verifier.supports(neural_circuit_id(), 1));
-        assert_eq!(
-            verifier.supports(neural_work_circuit_id(), 2),
-            cols[5] == "Work v1, system 2"
-        );
-        assert_eq!(
-            verifier.supports(inline_circuit_id(), 3),
-            cols[5] == "Inline Alice v1, system 3"
-        );
-    }
+    let row = table
+        .lines()
+        .find(|row| row.starts_with("| `neural-devnet` /"))
+        .unwrap();
+    let expected = format!(
+        "| `neural-devnet` / {} | {} / {} | `0x{:x}` |",
+        std::str::from_utf8(&cfg.network_magic).unwrap(),
+        hyphen_core::FROZEN_BLOCK_VERSION,
+        hyphen_core::config::STATE_TRANSITION_VERSION,
+        cfg.consensus_features
+    );
+    assert!(row.starts_with(&expected));
+    assert_eq!(cfg.neural_work_initial_threshold, 1 << 60);
+    let chain =
+        Blockchain::open_db(sled::Config::new().temporary(true).open().unwrap(), cfg).unwrap();
+    assert!(!chain.compute_verifier.supports(neural_circuit_id(), 1));
+    assert!(!chain.compute_verifier.supports(neural_work_circuit_id(), 2));
+    assert!(chain.compute_verifier.supports(inline_circuit_id(), 3));
 }
 
 #[test]
@@ -192,7 +191,7 @@ fn retarget_boundary_vectors() {
     for v in data {
         let cfg = match v.profile.as_str() {
             "mainnet" => ChainConfig::mainnet(),
-            "devnet" => ChainConfig::devnet(),
+            "devnet" => ChainConfig::archived_devnet_v2(),
             _ => panic!("unknown profile"),
         };
         let raw = next_difficulty(&v.timestamps, &v.difficulties, &cfg);
@@ -261,13 +260,13 @@ fn payment_boundary_vectors() {
     let c = cases.claim;
     assert_eq!(
         c.valid_genesis,
-        build_genesis_block(&ChainConfig::offline_devnet())
+        build_genesis_block(&ChainConfig::archived_offline_devnet_v1())
             .hash()
             .to_string()
     );
     assert_eq!(
         c.foreign_genesis,
-        build_genesis_block(&ChainConfig::devnet())
+        build_genesis_block(&ChainConfig::archived_devnet_v2())
             .hash()
             .to_string()
     );

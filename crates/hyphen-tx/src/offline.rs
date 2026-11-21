@@ -20,6 +20,16 @@ const MAX_CLAIM_EXTRA: usize = 4096;
 pub const SPENT_PREFIX: &[u8; 1] = &[0xff];
 pub type Result<T> = std::result::Result<T, &'static str>;
 
+/// Decode a signed redemption with the offline profile's byte and item budgets.
+pub fn decode_claim(bytes: &[u8]) -> std::result::Result<Transaction, rustbinary::Error> {
+    if bytes.first() != Some(&CLAIM_VERSION) {
+        return Err(rustbinary::Error::Custom(
+            "expected signed redemption".into(),
+        ));
+    }
+    hyphen_wire::wire_config(MAX_CLAIM_BYTES).deserialize(bytes)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, rustbinary::CompactBinary)]
 pub struct Reserve {
     pub chain: Hash256,
@@ -265,13 +275,25 @@ impl Voucher {
     }
 
     pub fn transfer(&mut self, chain: Hash256, owner: &SecretKey, invoice: Invoice) -> Result<()> {
-        let (head, current) = self.holder(chain)?;
+        self.transfer_with_receipt(chain, owner, invoice, |_, _, _| {})
+            .map(|_| ())
+    }
+
+    /// Append a verified transfer and return the outgoing head for the signing journal.
+    pub fn transfer_with_receipt(
+        &mut self,
+        chain: Hash256,
+        owner: &SecretKey,
+        invoice: Invoice,
+        visit: impl FnMut(Hash256, PublicKey, &Invoice),
+    ) -> Result<Hash256> {
+        let (head, current) = self.verify_history(chain, visit)?;
         if self.transfers.len() >= MAX_HOPS || current != owner.public_key() {
             return Err("transfer limit or wrong signing key");
         }
         let signature = owner.sign(invoice.authorization(head)?.as_ref());
         self.transfers.push(Transfer { invoice, signature });
-        Ok(())
+        Ok(head)
     }
 }
 
@@ -311,7 +333,18 @@ pub fn redeem(
     key: &SecretKey,
     destination: StealthAddress,
 ) -> Result<Transaction> {
-    let (head, holder) = voucher.holder(chain)?;
+    redeem_with_receipt(voucher, chain, key, destination, |_, _, _| {}).map(|(_, tx)| tx)
+}
+
+/// Return the authenticated terminal head together with the signed withdrawal.
+pub fn redeem_with_receipt(
+    voucher: Voucher,
+    chain: Hash256,
+    key: &SecretKey,
+    destination: StealthAddress,
+    visit: impl FnMut(Hash256, PublicKey, &Invoice),
+) -> Result<(Hash256, Transaction)> {
+    let (head, holder) = voucher.verify_history(chain, visit)?;
     if key.public_key() != holder {
         return Err("redemption requires the current holder");
     }
@@ -346,7 +379,7 @@ pub fn redeem(
             signature,
         })
         .map_err(|_| "claim serialization failed")?;
-    Ok(tx)
+    Ok((head, tx))
 }
 
 /// The caller resolves the index in the canonical parent output set and checks

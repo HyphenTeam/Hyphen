@@ -137,6 +137,9 @@ pub fn forward(
 
 /// Largest absolute difference between two output vectors, in Q32.32 ulps.
 pub fn max_abs_difference(left: &[i64], right: &[i64]) -> u64 {
+    if left.len() != right.len() {
+        return u64::MAX;
+    }
     left.iter()
         .zip(right.iter())
         .map(|(a, b)| a.abs_diff(*b))
@@ -149,15 +152,20 @@ pub fn mean_squared_error(left: &[i64], right: &[i64]) -> u128 {
     if left.is_empty() || left.len() != right.len() {
         return u128::MAX;
     }
-    let sum: u128 = left
-        .iter()
-        .zip(right.iter())
-        .map(|(a, b)| {
-            let difference = (*a as i128 - *b as i128).unsigned_abs();
-            difference * difference
-        })
-        .sum();
-    sum / left.len() as u128
+    let width = left.len() as u128;
+    let squares = left.iter().zip(right).map(|(a, b)| {
+        let difference = u128::from(a.abs_diff(*b));
+        difference * difference
+    });
+    if let Some(sum) = squares.clone().try_fold(0u128, u128::checked_add) {
+        return sum / width;
+    }
+    // The quotients sum to at most the largest square. The sum of remainders
+    // is strictly below width², which fits in u128 on supported targets.
+    let (quotient, remainder) = squares.fold((0, 0), |(q, r), square| {
+        (q + square / width, r + square % width)
+    });
+    quotient + remainder / width
 }
 
 #[cfg(test)]
@@ -239,5 +247,12 @@ mod tests {
         assert_eq!(mean_squared_error(&[3, 4], &[0, 0]), (25 / 2) as u128);
         assert_eq!(mean_squared_error(&[1], &[1]), 0);
         assert_eq!(mean_squared_error(&[], &[]), u128::MAX);
+        assert_eq!(max_abs_difference(&[1], &[1, 2]), u64::MAX);
+        let square = u128::from(u64::MAX).pow(2);
+        assert_eq!(mean_squared_error(&[i64::MIN; 4], &[i64::MAX; 4]), square);
+        assert_eq!(
+            mean_squared_error(&[i64::MIN, i64::MIN, 0], &[i64::MAX, i64::MAX, 2]),
+            2 * (square / 3) + 1
+        );
     }
 }

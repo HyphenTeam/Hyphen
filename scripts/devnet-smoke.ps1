@@ -1,9 +1,10 @@
 param(
     [switch]$SkipBuild,
     [switch]$Offline,
+    [switch]$Release,
     [switch]$VerifyPeerSync,
-    [ValidateSet('devnet', 'neural-devnet', 'contract-devnet', 'compute-devnet')]
-    [string]$Network = 'devnet',
+    [ValidateSet('neural-devnet')]
+    [string]$Network = 'neural-devnet',
     [ValidateRange(1, 100)]
     [int]$TargetHeight = 1,
     [int]$TimeoutSeconds = 120
@@ -37,6 +38,7 @@ function Invoke-Cargo {
 
 if (-not $SkipBuild) {
     $common = @('build', '--locked')
+    if ($Release) { $common += '--release' }
     if ($Offline) {
         $common += '--offline'
     }
@@ -48,9 +50,10 @@ if (-not $SkipBuild) {
 $runDir = Join-Path $repoRoot ("target\$Network-smoke-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 
-$nodeExe = (Resolve-Path 'target\debug\hyphen-node.exe').Path
-$poolExe = (Resolve-Path 'HyphenPool\target\debug\hyphen-pool-server.exe').Path
-$minerExe = (Resolve-Path 'HyphenMiner\target\debug\hyphen-miner.exe').Path
+$profile = if ($Release) { 'release' } else { 'debug' }
+$nodeExe = (Resolve-Path "target\$profile\hyphen-node.exe").Path
+$poolExe = (Resolve-Path "HyphenPool\target\$profile\hyphen-pool-server.exe").Path
+$minerExe = (Resolve-Path "HyphenMiner\target\$profile\hyphen-miner.exe").Path
 
 # This address comes from a published fixed seed and is for local devnet only.
 $devAddress = 'hy12X1dKMPZ9KRTa4CaZ1MFGHPqCGFnjwVZAPQPKcYq5fpUPkdKn6VVomB1oRK8r7bW8s7uR9iYUQtpSdSfifsCg1P3WKdxD3'
@@ -238,6 +241,7 @@ try {
         throw 'First reward changed after reopening the pool ledger'
     }
     $walletTest = @('test', '--locked', '--manifest-path', 'HyphenWallet/rust/Cargo.toml', '--test', 'devnet_reward')
+    if ($Release) { $walletTest += '--release' }
     if ($Offline) { $walletTest += '--offline' }
     $previousReward = $env:HYPHEN_SMOKE_REWARD_ATOMIC
     $previousHash = $env:HYPHEN_SMOKE_BLOCK_HASH
@@ -269,7 +273,7 @@ try {
         $env:HYPHEN_SMOKE_REWARD_ATOMIC = $previousReward
         $env:HYPHEN_SMOKE_BLOCK_HASH = $previousHash
     }
-    [pscustomobject]@{
+    $result = [pscustomobject]@{
         status = 'passed'
         run_dir = $runDir
         network = $nodeInfo.network
@@ -286,8 +290,10 @@ try {
         target_height = $TargetHeight
         peak_working_set_bytes_before_restart = $peakWorkingSetBytes
         memory_samples = $memorySamples
-        wallet_scan_sampled_peak_working_set_bytes = $walletPeak
+        wallet_scan_sampled_peak_working_set_bytes = if ($walletPeak -gt 0) { $walletPeak } else { $null }
     } | ConvertTo-Json -Depth 4
+    [IO.File]::WriteAllText((Join-Path $runDir 'result.json'), $result)
+    $result
 }
 finally {
     foreach ($process in @($miner, $pool, $peer, $node)) {

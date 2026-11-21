@@ -540,6 +540,16 @@ mod tests {
                 .unwrap();
         let bytes = hyphen_crypto::hex_decode(&vector.transaction_hex).unwrap();
         let transaction = Transaction::deserialise_limited(&bytes).unwrap();
+        let commitments: Vec<_> = transaction
+            .outputs
+            .iter()
+            .map(|output| output.commitment.to_point().unwrap())
+            .collect();
+        transaction
+            .prunable
+            .range_proof
+            .verify(&commitments)
+            .unwrap();
         let proof = &vector.disclosure;
         assert_eq!(
             (proof.global_index, proof.output_index, proof.value),

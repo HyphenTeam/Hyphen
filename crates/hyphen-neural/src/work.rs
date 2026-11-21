@@ -53,7 +53,8 @@ pub struct WorkDescriptor {
     pub epoch: u64,
     /// Network shape.
     pub spec: MlpSpec,
-    /// Accept when `score < threshold`. Expected attempts are `2^64 / threshold`.
+    /// Accept when `score < threshold`. Independent uniform scores give a mean
+    /// of `2^64 / threshold` trials for this single-score predicate.
     pub threshold: u64,
     /// Public seed the network is derived from, normally the parent block hash.
     pub chain_seed: [u8; 32],
@@ -69,12 +70,13 @@ impl WorkDescriptor {
         Ok(())
     }
 
-    /// Expected number of forward passes per accepted solution.
+    /// Ceiling of the single-score uniform-model mean, saturated to `u64`.
+    /// HYN3 block work additionally applies its BLAKE3 gate and memory test.
     pub fn expected_attempts(&self) -> u64 {
         if self.threshold == 0 {
             return u64::MAX;
         }
-        u64::MAX / self.threshold
+        ((1_u128 << 64).div_ceil(u128::from(self.threshold))).min(u128::from(u64::MAX)) as u64
     }
 
     /// Derives the Q32.32 weights of this epoch's network.
@@ -96,9 +98,7 @@ impl WorkDescriptor {
 
     /// Deterministic candidate `counter` in `[-ONE, ONE]`.
     ///
-    /// Any vector in range is a valid candidate; this helper only gives
-    /// independent searchers disjoint, reproducible streams so two miners never
-    /// test the same candidate by accident.
+    /// Searchers can partition the nonce space and reproduce each derived input.
     pub fn candidate(&self, counter: u64, out: &mut [i64]) -> Result<(), NeuralError> {
         let input_dim = self.spec.input_dim as usize;
         if out.len() != input_dim {
@@ -222,8 +222,8 @@ pub struct WorkSearch {
 /// `max_candidates` attempts are spent.
 ///
 /// `solution` is overwritten only on success, so a failed search never leaves a
-/// partial answer behind. Two searchers using different `start` values and the
-/// same `stride` never test the same candidate.
+/// partial answer behind. The search stops at the end of the `u64` interval.
+/// Distinct residues modulo the same stride give disjoint nonce sequences.
 #[allow(clippy::too_many_arguments)]
 pub fn search(
     descriptor: &WorkDescriptor,
@@ -240,6 +240,9 @@ pub fn search(
     if stride == 0 || max_candidates == 0 {
         return Err(NeuralError::InvalidSpec);
     }
+    if solution.len() != usize::from(descriptor.spec.input_dim) {
+        return Err(NeuralError::InvalidBuffer);
+    }
     let mut counter = start;
     for attempt in 0..max_candidates {
         descriptor.candidate(counter, scratch)?;
@@ -250,7 +253,13 @@ pub fn search(
                 found: true,
             });
         }
-        counter = counter.wrapping_add(stride);
+        let Some(next) = counter.checked_add(stride) else {
+            return Ok(WorkSearch {
+                attempts: attempt + 1,
+                found: false,
+            });
+        };
+        counter = next;
     }
     Ok(WorkSearch {
         attempts: max_candidates,
@@ -397,6 +406,56 @@ mod tests {
         .unwrap();
         assert!(!outcome.found);
         assert_eq!(solution, [-7i64; 16]);
+    }
+
+    #[test]
+    fn search_reports_the_last_representable_nonce_and_checks_output_width() {
+        let descriptor = descriptor(1);
+        let (weights, mut hidden, mut output) = buffers();
+        let mut solution = [-7; 16];
+        let mut scratch = [0; 16];
+        let outcome = search(
+            &descriptor,
+            &weights,
+            u64::MAX - 2,
+            2,
+            4,
+            &mut solution,
+            &mut hidden,
+            &mut output,
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            WorkSearch {
+                attempts: 2,
+                found: false
+            }
+        );
+        assert_eq!(solution, [-7; 16]);
+        assert_eq!(
+            search(
+                &descriptor,
+                &weights,
+                0,
+                1,
+                1,
+                &mut solution[..15],
+                &mut hidden,
+                &mut output,
+                &mut scratch
+            ),
+            Err(NeuralError::InvalidBuffer)
+        );
+        assert_eq!(
+            WorkDescriptor {
+                threshold: 1 << 60,
+                ..descriptor
+            }
+            .expected_attempts(),
+            16
+        );
     }
 
     #[test]

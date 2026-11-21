@@ -1,0 +1,8 @@
+[
+  {
+    "profile": "neural-devnet-v2",
+    "network_magic": "48594e32",
+    "consensus_params_hash": "336ccd2fdd7885e9cbfbe4805839d5b4c349fdf4f3acc80882b9a07909c75e46",
+    "genesis_hash": "b38330f989bf614fb1e7c1afa55af2adb0d7e6c94c638a6f77f01c7dea405707"
+  }
+]

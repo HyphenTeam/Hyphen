@@ -12,9 +12,9 @@ use hyphen_vm::ledger::{SignedCall, SignedDeploy, VmTransaction};
 use hyphen_vm::types::{ContractAddress, ContractCall, DeployParams};
 
 #[derive(Parser)]
-#[command(about = "Sign contract-devnet transactions and query canonical contract storage")]
+#[command(about = "Sign neural-devnet transactions and query canonical contract storage")]
 struct Cli {
-    /// Binary RPC endpoint on contract-devnet.
+    /// Binary RPC endpoint on neural-devnet.
     #[arg(long, default_value = "127.0.0.1:48333")]
     rpc: SocketAddr,
     #[command(subcommand)]
@@ -39,7 +39,7 @@ struct Signer {
 impl Signer {
     fn load(&self) -> Result<(SecretKey, Vec<u8>)> {
         if !hyphen_vm::gas::valid_transaction_gas(self.gas) {
-            return Err("gas outside contract-devnet transaction limits".into());
+            return Err("gas outside neural-devnet transaction limits".into());
         }
         let key = common::read_key(&self.key_file)?;
         let input = self
@@ -82,6 +82,12 @@ enum Command {
         input: Option<PathBuf>,
         #[arg(long, default_value_t = 10_000_000)]
         gas: u64,
+        /// Query a stopped HYN3 node after checking its committed protocol state.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Require the local database to match this independently selected tip.
+        #[arg(long, requires = "data_dir", value_parser = common::parse_hash)]
+        expect_tip: Option<hyphen_crypto::Hash256>,
     },
 }
 
@@ -117,11 +123,31 @@ fn submit(
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::Query {
+        address,
+        function,
+        input,
+        gas,
+        data_dir: Some(path),
+        expect_tip,
+    } = &cli.command
+    {
+        let db = common::checked_local_state(path, *expect_tip)?;
+        let (tip, snapshot) = db.vm_query_snapshot(*address)?;
+        return query(
+            snapshot.ok_or("contract absent from local state")?,
+            *address,
+            tip,
+            function.clone(),
+            input.as_deref(),
+            *gas,
+        );
+    }
     let timeout = Duration::from_secs(30);
     let mut stream = TcpStream::connect_timeout(&cli.rpc, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
-    let cfg = ChainConfig::contract_devnet();
+    let cfg = ChainConfig::neural_devnet();
     let chain_id = check_identity(&mut stream, &cfg)?;
     match cli.command {
         Command::Deploy { wasm, signer } => {
@@ -185,12 +211,8 @@ fn run() -> Result<()> {
             function,
             input,
             gas,
+            ..
         } => {
-            let args = input
-                .as_deref()
-                .map(|path| read_bytes(path, hyphen_vm::host::MAX_IO_SIZE))
-                .transpose()?
-                .unwrap_or_default();
             let response: VmQuerySnapshotResponse = request(
                 &mut stream,
                 METHOD_GET_VM_QUERY_SNAPSHOT,
@@ -201,18 +223,40 @@ fn run() -> Result<()> {
             let snapshot: hyphen_vm::ledger::ContractSnapshot =
                 hyphen_wire::wire_config(hyphen_vm::ledger::MAX_VM_TRANSACTION_BYTES)
                     .deserialize(&response.snapshot)?;
-            if snapshot.contract.address != address || response.block_hash.len() != 32 {
-                return Err("invalid query snapshot identity".into());
-            }
-            let output = snapshot.query(function, args, gas)?;
-            println!(
-                "block={}\nresult={}",
-                hex_encode(response.block_hash),
-                hex_encode(output)
-            );
-            Ok(())
+            let hash = response
+                .block_hash
+                .try_into()
+                .map_err(|_| "invalid snapshot block hash")?;
+            query(
+                snapshot,
+                address,
+                hyphen_crypto::Hash256::from_bytes(hash),
+                function,
+                input.as_deref(),
+                gas,
+            )
         }
     }
+}
+
+fn query(
+    snapshot: hyphen_vm::ledger::ContractSnapshot,
+    address: ContractAddress,
+    block: hyphen_crypto::Hash256,
+    function: String,
+    input: Option<&std::path::Path>,
+    gas: u64,
+) -> Result<()> {
+    if snapshot.contract.address != address {
+        return Err("invalid query snapshot identity".into());
+    }
+    let args = input
+        .map(|path| read_bytes(path, hyphen_vm::host::MAX_IO_SIZE))
+        .transpose()?
+        .unwrap_or_default();
+    let result = snapshot.query(function, args, gas)?;
+    println!("block={block}\nresult={}", hex_encode(result));
+    Ok(())
 }
 
 fn main() -> std::process::ExitCode {

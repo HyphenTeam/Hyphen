@@ -7,6 +7,7 @@ $destination = Join-Path $workspace 'crates\hyphen-explorer\src\hyphen_explorer_
 Push-Location $workspace
 try {
     cargo build --offline --release -p hyphen-explorer-web --target wasm32-unknown-unknown
+    if ($LASTEXITCODE) { throw 'Explorer Wasm build failed' }
     Copy-Item -LiteralPath $artifact -Destination $destination -Force
     Write-Host "Explorer WASM updated: $destination"
 } finally {

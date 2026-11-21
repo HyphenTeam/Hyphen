@@ -5,7 +5,7 @@
 每个节点都需要独立的数据目录和持久化 Ed25519 身份。在第一个终端按 [README](../README_CN.md) 启动开发网节点，从 `Listening on` 日志复制完整的 `/ip4/127.0.0.1/tcp/48334/p2p/…` 地址。另开一个终端，将下列 `SEED_MULTIADDR` 替换为刚复制的地址。
 
 ```sh
-cargo run --release --locked -p hyphen-node -- --network devnet --data-dir data/devnet-b --listen /ip4/127.0.0.1/tcp/48344 --rpc-bind 127.0.0.1:48343 --template-bind 127.0.0.1:3360 --explorer-bind 127.0.0.1:8082 --boot-nodes SEED_MULTIADDR
+cargo run --release --locked -p hyphen-node -- --network neural-devnet --data-dir data/neural-v3-b --listen /ip4/127.0.0.1/tcp/48344 --rpc-bind 127.0.0.1:48343 --template-bind 127.0.0.1:3360 --explorer-bind 127.0.0.1:8082 --boot-nodes SEED_MULTIADDR
 ```
 
 暂停挖矿后，对照 `http://127.0.0.1:8080/api/info` 和 `http://127.0.0.1:8082/api/info` 的 `height` 与 `tip_hash`。新开发网在矿工产出首块前会停留在创世高度。判断两台节点已同步时，需要同时核对高度和链顶哈希。
@@ -29,8 +29,4 @@ cargo run --release --locked -p hyphen-node -- --network devnet --data-dir data/
 
 ## 验证
 
-标准工作量节点在同一笔持久化数据库事务中更新见证记录与链顶。首次打开旧版标准工作量数据库时，节点会从本地已经确认的区块重建见证索引。大库升级时需预留一次历史扫描时间，再检查节点是否已对外服务。
-
-在两个安装目录分别执行 `hyphen-node --network devnet --print-chain-identity`。测试恢复时，让第二个节点保持运行，停止种子节点，再使用原数据目录和端口重启它。追块完成后再次核对链顶哈希。`neural-devnet` 的创世块和网络标识不同，连接标准开发网种子后，Identify 应报告身份不兼容并断开连接。
-
-在 Windows 上将三个客户端仓库检出到节点仓库下，运行 `./scripts/devnet-smoke.ps1 -Network devnet`，可验证出块、矿池账本恢复及钱包重扫。使用 `-Network neural-devnet` 可验证神经工作量 SOLO 模式。[部署指南](Operations-Deploy-Linux.md) · [节点故障计分](Security-Peer-Policy.md)
+在两个安装目录分别运行 `hyphen-node --print-chain-identity`，核对 HYN3 创世和参数摘要。暂停挖矿后核对两节点的高度和链顶，重启其中一个并再次核对。Windows 下运行 `./scripts/devnet-smoke.ps1 -VerifyPeerSync` 可同时验收矿池账本恢复和钱包奖励。

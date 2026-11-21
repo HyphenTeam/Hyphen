@@ -1,7 +1,9 @@
 mod common;
+#[path = "hyphen-compute/reward.rs"]
+mod reward;
 
 use clap::{Parser, Subcommand};
-use common::{Result, check_identity, read_bytes, request};
+use common::{Result, check_identity, parse_hash, read_bytes, request};
 use hyphen_compute::inline::{
     InlineNeuralVerifier, MAX_INLINE_ENVELOPE, inline_circuit_id, inline_claim, inline_input,
 };
@@ -11,7 +13,7 @@ use hyphen_compute::{
     neural_challenge_program_hash,
 };
 use hyphen_core::ChainConfig;
-use hyphen_crypto::{Hash256, blake3_hash, hex_decode};
+use hyphen_crypto::{Hash256, blake3_hash};
 use hyphen_neural::{DESCRIPTOR_BYTES, decode_descriptor};
 use hyphen_rpc::messages::*;
 use std::net::{SocketAddr, TcpStream};
@@ -19,7 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(about = "Publish and verify inline neural tasks on compute-devnet")]
+#[command(about = "Publish and verify inline neural tasks on neural-devnet")]
 struct Cli {
     #[arg(long, default_value = "127.0.0.1:48333")]
     rpc: SocketAddr,
@@ -29,6 +31,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Fund and reconcile a publisher-authorized native payment for an inline task.
+    Reward(reward::Reward),
     Publish {
         /// Raw 56-byte challenge descriptor.
         descriptor: PathBuf,
@@ -39,12 +43,12 @@ enum Command {
         /// Last block height at which a worker may submit a solution.
         #[arg(long)]
         deadline: u64,
-        /// Amount declared by the publisher. This devnet does not escrow or transfer it.
+        /// Quoted net reward. The publisher can fund and pay it using the reward commands.
         #[arg(long)]
         reward: u64,
     },
     Submit {
-        #[arg(value_parser = parse_id)]
+        #[arg(value_parser = parse_hash)]
         task: Hash256,
         /// Raw descriptor followed by little-endian signed Q32.32 solution values.
         proof: PathBuf,
@@ -52,24 +56,50 @@ enum Command {
         key_file: PathBuf,
     },
     Finalize {
-        #[arg(value_parser = parse_id)]
+        #[arg(value_parser = parse_hash)]
         task: Hash256,
     },
     /// Read the signed record, including the retained solution.
     Show {
-        #[arg(value_parser = parse_id)]
+        #[arg(value_parser = parse_hash)]
         task: Hash256,
-        /// Read a stopped local compute-devnet database and report its checked tip on stderr.
+        /// Read a stopped local neural-devnet database and report its checked tip on stderr.
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Require the stopped database to match this independently selected tip.
+        #[arg(long, requires = "data_dir", value_parser = parse_hash)]
+        expect_tip: Option<Hash256>,
+        /// Save the verified solution bytes of a finalized task to a new file.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
-fn parse_id(s: &str) -> std::result::Result<Hash256, String> {
-    let bytes = hex_decode(s).map_err(|e| e.to_string())?;
-    Ok(Hash256::from_bytes(
-        bytes.try_into().map_err(|_| "expected a 32-byte task ID")?,
-    ))
+fn show(record: &TaskRecord, output: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = output {
+        use std::io::Write;
+        let TaskStatus::Finalized { result, .. } = &record.status else {
+            return Err("solution export requires a finalized task".into());
+        };
+        let bytes = result
+            .claim
+            .proof
+            .get(DESCRIPTOR_BYTES..)
+            .ok_or("missing solution")?;
+        if blake3_hash(bytes) != result.claim.output.object_hash {
+            return Err("solution digest differs from signed output".into());
+        }
+        let parent = path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(bytes)?;
+        file.as_file().sync_all()?;
+        file.persist_noclobber(path)?;
+    }
+    println!("{}", serde_json::to_string(record)?);
+    Ok(())
 }
 
 fn read_task(stream: &mut TcpStream, task: Hash256, chain_id: Hash256) -> Result<TaskRecord> {
@@ -136,40 +166,30 @@ fn verify_record(record: &TaskRecord, task: Hash256, chain_id: Hash256) -> Resul
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Command::Reward(args) = cli.command {
+        return args.run();
+    }
     if let Command::Show {
         task,
         data_dir: Some(path),
+        expect_tip,
+        output,
     } = &cli.command
     {
-        if !path.join("conf").is_file() {
-            return Err("expected an existing node database".into());
-        }
-        let db = hyphen_consensus::Blockchain::open(
-            path.to_str().ok_or("invalid database path")?,
-            ChainConfig::compute_devnet(),
-        )?;
-        let tip = db.tip()?;
-        let state_root = db.state_root()?;
-        if db.store().get_block_by_hash(&tip.hash)?.header.state_root != state_root {
-            return Err("local protocol state differs from the canonical header".into());
-        }
-        eprintln!(
-            "tip_height={} tip_hash={} state_root={}",
-            tip.height, tip.hash, state_root
-        );
+        let db = common::checked_local_state(path, *expect_tip)?;
         let record = db
             .compute_task(*task)
             .ok_or("task absent from canonical state")?;
         verify_record(&record, *task, db.chain_id())?;
-        println!("{}", serde_json::to_string(&record)?);
-        return Ok(());
+        return show(&record, output.as_deref());
     }
     let timeout = Duration::from_secs(30);
     let mut stream = TcpStream::connect_timeout(&cli.rpc, timeout)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
-    let chain_id = check_identity(&mut stream, &ChainConfig::compute_devnet())?;
+    let chain_id = check_identity(&mut stream, &ChainConfig::neural_devnet())?;
     let (id, transaction) = match cli.command {
+        Command::Reward(_) => unreachable!(),
         Command::Publish {
             descriptor,
             key_file,
@@ -218,12 +238,8 @@ fn main() -> Result<()> {
             )
         }
         Command::Finalize { task } => (task, ComputeTransaction::Finalize { task_id: task }),
-        Command::Show { task, .. } => {
-            println!(
-                "{}",
-                serde_json::to_string(&read_task(&mut stream, task, chain_id)?)?
-            );
-            return Ok(());
+        Command::Show { task, output, .. } => {
+            return show(&read_task(&mut stream, task, chain_id)?, output.as_deref());
         }
     };
     let bytes = transaction.encode()?;

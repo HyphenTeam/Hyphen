@@ -2,12 +2,15 @@
 
 use hyphen_core::block::Block;
 use hyphen_crypto::Hash256;
+use sled::transaction::{ConflictableTransactionError, TransactionError, Transactional};
 use thiserror::Error;
 
 use crate::compress::{compress, decompress};
 
 #[derive(Debug, Error)]
 pub enum BranchArchiveError {
+    #[error(transparent)]
+    Store(#[from] crate::store::StoreError),
     #[error("sled error: {0}")]
     Sled(#[from] sled::Error),
     #[error("compression error: {0}")]
@@ -26,12 +29,14 @@ pub enum BranchArchiveError {
 
 pub struct BranchBlockArchive {
     blocks: sled::Tree,
+    positions: sled::Tree,
 }
 
 impl BranchBlockArchive {
     pub fn open(db: &sled::Db) -> Result<Self, BranchArchiveError> {
         Ok(Self {
             blocks: db.open_tree("branch_block_archive")?,
+            positions: db.open_tree("branch_positions_v1")?,
         })
     }
 
@@ -44,24 +49,77 @@ impl BranchBlockArchive {
         enforce_size(encoded.len(), max_size)?;
         let hash = block.hash();
         let compressed = compress(&encoded)?;
-        match self.blocks.compare_and_swap(
-            hash.as_bytes(),
-            None as Option<&[u8]>,
-            Some(compressed.as_slice()),
-        )? {
-            Ok(()) => Ok(hash),
-            Err(error) => {
-                let existing = error
-                    .current
-                    .ok_or(BranchArchiveError::ImmutableConflict(hash))?;
-                let existing = decompress(&existing)?;
-                if existing == encoded {
-                    Ok(hash)
-                } else {
-                    Err(BranchArchiveError::ImmutableConflict(hash))
+        let key = position_key(block.header.height, hash);
+        let result = (&self.blocks, &self.positions).transaction(|(bodies, positions)| {
+            if let Some(existing) = bodies.get(hash.as_bytes())? {
+                if existing.as_ref() != compressed
+                    && decompress(&existing).as_deref().ok() != Some(&encoded)
+                {
+                    return Err(ConflictableTransactionError::Abort(
+                        BranchArchiveError::ImmutableConflict(hash),
+                    ));
                 }
+            } else {
+                bodies.insert(hash.as_bytes().as_slice(), compressed.as_slice())?;
+            }
+            positions.insert(key.as_slice(), block.header.prev_hash.as_bytes().as_slice())?;
+            Ok(hash)
+        });
+        result.map_err(|error| match error {
+            TransactionError::Abort(error) => error,
+            TransactionError::Storage(error) => error.into(),
+        })
+    }
+
+    pub fn index_position(&self, block: &Block) -> Result<(), BranchArchiveError> {
+        self.positions.insert(
+            position_key(block.header.height, block.hash()),
+            block.header.prev_hash.as_bytes().as_slice(),
+        )?;
+        Ok(())
+    }
+
+    /// Older databases retain detached bodies and their undo records without a height index.
+    pub fn index_existing_branches(
+        &self,
+        store: &crate::store::BlockStore,
+        max_size: usize,
+    ) -> Result<(), BranchArchiveError> {
+        if self.positions.contains_key(b"ready")? {
+            return Ok(());
+        }
+        for key in store.undo_index.inner().iter().keys() {
+            let hash = stored_hash(&key?)?;
+            let block = store.get_block_by_hash(&hash)?;
+            match store.get_block_hash_at_height(block.header.height) {
+                Ok(canonical) if canonical == hash => continue,
+                Ok(_) | Err(crate::store::StoreError::NotFound(_)) => {
+                    self.index_position(&block)?
+                }
+                Err(err) => return Err(err.into()),
             }
         }
+        for key in self.blocks.iter().keys() {
+            self.index_position(&self.get(&stored_hash(&key?)?, max_size)?)?;
+        }
+        self.positions.insert(b"ready", &[])?;
+        self.positions.flush()?;
+        Ok(())
+    }
+
+    pub fn at_height(
+        &self,
+        height: u64,
+        limit: usize,
+    ) -> Result<Vec<(Hash256, Hash256)>, BranchArchiveError> {
+        self.positions
+            .scan_prefix(height.to_be_bytes())
+            .take(limit)
+            .map(|entry| {
+                let (key, parent) = entry?;
+                Ok((stored_hash(&key[8..])?, stored_hash(&parent)?))
+            })
+            .collect()
     }
 
     pub fn get(&self, hash: &Hash256, max_size: usize) -> Result<Block, BranchArchiveError> {
@@ -85,8 +143,22 @@ impl BranchBlockArchive {
 
     pub fn flush(&self) -> Result<(), BranchArchiveError> {
         self.blocks.flush()?;
+        self.positions.flush()?;
         Ok(())
     }
+}
+
+fn stored_hash(bytes: &[u8]) -> Result<Hash256, BranchArchiveError> {
+    Ok(Hash256::from_bytes(bytes.try_into().map_err(|_| {
+        BranchArchiveError::Serialize("invalid branch index hash".into())
+    })?))
+}
+
+fn position_key(height: u64, hash: Hash256) -> [u8; 40] {
+    let mut key = [0; 40];
+    key[..8].copy_from_slice(&height.to_be_bytes());
+    key[8..].copy_from_slice(hash.as_bytes());
+    key
 }
 
 fn enforce_size(actual: usize, maximum: usize) -> Result<(), BranchArchiveError> {

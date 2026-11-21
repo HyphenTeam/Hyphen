@@ -1,9 +1,8 @@
 use super::{Packet, Result, common, encoded, load, save};
 use hyphen_crypto::{Commitment, Hash256, blake3_hash};
 use hyphen_rpc::messages::OfflineSpendResponse;
-use hyphen_tx::Transaction;
 use hyphen_tx::offline::{
-    Funding, Invoice, MAX_CLAIM_BYTES, VerifiedSettlement, Voucher, spent_image,
+    Funding, Invoice, MAX_CLAIM_BYTES, VerifiedSettlement, Voucher, decode_claim, spent_image,
     verified_settlement,
 };
 use hyphen_wallet::HyphenAddress;
@@ -54,7 +53,7 @@ pub(super) fn canonical_spend(
     {
         return Err("inconsistent canonical settlement record".into());
     }
-    let tx = Transaction::deserialise_limited(&spend.transaction)?;
+    let tx = decode_claim(&spend.transaction)?;
     let [input] = tx.inputs.as_slice() else {
         return Err("expected one reserve input".into());
     };
@@ -96,6 +95,9 @@ pub(super) struct Order {
     net_amount: u64,
     #[arg(long, default_value = "1")]
     min_confirmations: NonZeroU64,
+    /// Require this exact tip for the settlement and its confirmation depth.
+    #[arg(long, value_parser = common::parse_hash)]
+    expect_tip: Option<Hash256>,
     /// Preserve the verified canonical transaction, including a competing payout, for later review.
     #[arg(long)]
     save_settlement: Option<PathBuf>,
@@ -106,7 +108,7 @@ pub(super) fn verify_saved_settlement(
     funding: &Funding,
     chain: Hash256,
 ) -> Result<VerifiedSettlement> {
-    let tx = Transaction::deserialise_limited(bytes)?;
+    let tx = decode_claim(bytes)?;
     let [input] = tx.inputs.as_slice() else {
         return Err("expected one settlement input".into());
     };
@@ -176,8 +178,14 @@ impl Order {
         }
         let address = HyphenAddress::decode(&self.destination)?;
         let image = spent_image(chain, &voucher.funding.output()?);
-        let spend =
-            canonical_spend(lookup(image)?, chain, image)?.ok_or("no confirmed settlement")?;
+        let snapshot = lookup(image)?;
+        if self
+            .expect_tip
+            .is_some_and(|tip| snapshot.tip != tip.as_bytes())
+        {
+            return Err("settlement tip differs from the expected block hash".into());
+        }
+        let spend = canonical_spend(snapshot, chain, image)?.ok_or("no confirmed settlement")?;
         if let Some(path) = &self.save_settlement {
             match save(path, &spend.transaction_bytes) {
                 Ok(()) => (),

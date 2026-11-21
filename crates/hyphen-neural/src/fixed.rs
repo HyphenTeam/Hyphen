@@ -31,7 +31,8 @@ pub const fn from_int(value: i64) -> i64 {
 /// Rounds a Q32.32 value to the nearest integer, truncating halfway cases
 /// toward positive infinity.
 pub fn to_int(value: i64) -> i64 {
-    value.saturating_add(ONE / 2) >> FRAC_BITS
+    let whole = value >> FRAC_BITS;
+    whole + i64::from(value & (ONE / 2) != 0)
 }
 
 /// Q32.32 multiplication: `(a * b) >> 32`, saturating instead of wrapping.
@@ -75,20 +76,7 @@ pub fn sub(a: i64, b: i64) -> i64 {
 
 /// Integer square root, exact for every `u64`.
 pub fn isqrt(value: u64) -> u64 {
-    if value < 2 {
-        return value;
-    }
-    let mut lower = 1u64;
-    let mut upper = value;
-    while lower < upper {
-        let middle = lower + (upper - lower) / 2;
-        match middle.checked_mul(middle) {
-            Some(square) if square <= value => lower = middle + 1,
-            Some(_) => upper = middle,
-            None => upper = middle,
-        }
-    }
-    lower - 1
+    value.isqrt()
 }
 
 /// Fixed-point `tanh` through the Padé (3,2) approximant
@@ -127,6 +115,14 @@ pub fn tanh_grad(output: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearest_integer_at_representation_boundaries() {
+        for value in [MIN, -ONE / 2 - 1, -ONE / 2, ONE / 2 - 1, ONE / 2, MAX] {
+            let expected = (i128::from(value) + i128::from(ONE / 2)) >> FRAC_BITS;
+            assert_eq!(i128::from(to_int(value)), expected);
+        }
+    }
 
     #[test]
     fn one_times_one_is_one() {

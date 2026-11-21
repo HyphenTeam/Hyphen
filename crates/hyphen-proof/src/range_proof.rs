@@ -1,6 +1,6 @@
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use curve25519_dalek::traits::MultiscalarMul;
+use curve25519_dalek::traits::{IsIdentity, MultiscalarMul, VartimeMultiscalarMul};
 use hyphen_crypto::system_rng;
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
@@ -69,21 +69,6 @@ fn scalar_powers(base: &Scalar, n: usize) -> Vec<Scalar> {
         cur *= base;
     }
     v
-}
-
-// δ(y,z) = (z − z²)·⟨1ⁿ, yⁿ⟩ − z³·⟨1ⁿ, 2ⁿ⟩
-fn delta(y: &Scalar, z: &Scalar, n: usize) -> Scalar {
-    let y_powers = scalar_powers(y, n);
-    let two = Scalar::from(2u64);
-    let two_powers = scalar_powers(&two, n);
-
-    let sum_y: Scalar = y_powers.iter().sum();
-    let sum_2: Scalar = two_powers.iter().sum();
-
-    let z2 = z * z;
-    let z3 = z2 * z;
-
-    (z - z2) * sum_y - z3 * sum_2
 }
 
 impl RangeProof {
@@ -222,105 +207,8 @@ impl RangeProof {
         ))
     }
 
-    #[allow(clippy::needless_range_loop)]
     pub fn verify(&self, commitment: &RistrettoPoint) -> Result<(), ProofError> {
-        let n = MAX_RANGE_BITS;
-        let g_blind = g_gen();
-
-        let mut transcript = Transcript::new(b"Hyphen_RangeProof");
-        transcript_point(&mut transcript, b"V", commitment);
-
-        let a_point = decompress_pt(&self.a)?;
-        let s_point = decompress_pt(&self.s)?;
-        let t1_point = decompress_pt(&self.t1)?;
-        let t2_point = decompress_pt(&self.t2)?;
-
-        transcript_point(&mut transcript, b"A", &a_point);
-        transcript_point(&mut transcript, b"S", &s_point);
-
-        let y = transcript_challenge(&mut transcript, b"y");
-        let z = transcript_challenge(&mut transcript, b"z");
-
-        transcript_point(&mut transcript, b"T1", &t1_point);
-        transcript_point(&mut transcript, b"T2", &t2_point);
-
-        let x = transcript_challenge(&mut transcript, b"x");
-
-        let [tau_x, mu, t_hat] = self.responses()?;
-
-        transcript_scalar(&mut transcript, b"tau_x", &tau_x);
-        transcript_scalar(&mut transcript, b"mu", &mu);
-        transcript_scalar(&mut transcript, b"t_hat", &t_hat);
-
-        // Check 1: t_hat · G + tau_x · H =? z² · V + δ(y,z) · G + x · T₁ + x² · T₂
-        let z2 = z * z;
-        let dyz = delta(&y, &z, n);
-
-        let lhs = t_hat * h_gen() + tau_x * g_blind;
-        let rhs = z2 * commitment + dyz * h_gen() + x * t1_point + (x * x) * t2_point;
-
-        if lhs != rhs {
-            return Err(ProofError::VerificationFailed);
-        }
-
-        // Check 2: inner product proof
-        let g = BP_GENS.g(n);
-        let h = BP_GENS.h(n);
-
-        let y_inv = y.invert();
-        let y_inv_powers = scalar_powers(&y_inv, n);
-        let h_prime: Vec<RistrettoPoint> = h
-            .iter()
-            .zip(y_inv_powers.iter())
-            .map(|(hi, yi)| yi * hi)
-            .collect();
-
-        let y_powers = scalar_powers(&y, n);
-        let two = Scalar::from(2u64);
-        let two_powers = scalar_powers(&two, n);
-
-        // P = A + x·S − z·⟨1,g⟩ + ⟨z·y^n + z²·2^n, h'⟩ − μ·H
-        let neg_z = -z;
-        let mut p_scalars: Vec<Scalar> = Vec::with_capacity(2 + 2 * n);
-        let mut p_points: Vec<RistrettoPoint> = Vec::with_capacity(2 + 2 * n);
-
-        p_scalars.push(Scalar::ONE);
-        p_points.push(a_point);
-        p_scalars.push(x);
-        p_points.push(s_point);
-
-        for i in 0..n {
-            p_scalars.push(neg_z);
-            p_points.push(g[i]);
-        }
-        for i in 0..n {
-            p_scalars.push(z * y_powers[i] + z2 * two_powers[i]);
-            p_points.push(h_prime[i]);
-        }
-
-        let p_commit = RistrettoPoint::multiscalar_mul(&p_scalars, &p_points) - mu * g_blind;
-
-        let q_point = transcript_challenge(&mut transcript, b"Q_ipa");
-        let q = q_point * h_gen();
-
-        // The IPA commitment: P = <l,G> + <r,H'> + <l,r>·Q
-        let p_total = p_commit + t_hat * q;
-
-        let valid = inner_product::verify(
-            &mut transcript,
-            &self.ipp,
-            &q,
-            g,
-            &h_prime,
-            &p_total,
-            &t_hat,
-        );
-
-        if valid {
-            Ok(())
-        } else {
-            Err(ProofError::VerificationFailed)
-        }
+        self.verify_commitments(std::slice::from_ref(commitment), b"Hyphen_RangeProof")
     }
 }
 
@@ -487,26 +375,40 @@ impl AggregatedRangeProof {
         ))
     }
 
-    #[allow(clippy::needless_range_loop)]
     pub fn verify(&self, commitments: &[RistrettoPoint]) -> Result<(), ProofError> {
         let m = commitments.len();
         if self.m != m as u64 {
             return Err(ProofError::InvalidProofLength);
         }
         validate_aggregation(m, m)?;
+        self.proof
+            .verify_commitments(commitments, b"Hyphen_AggRangeProof")
+    }
+}
+
+impl RangeProof {
+    fn verify_commitments(
+        &self,
+        commitments: &[RistrettoPoint],
+        domain: &'static [u8],
+    ) -> Result<(), ProofError> {
+        let m = commitments.len();
         let n_bits = MAX_RANGE_BITS;
         let nm = n_bits * m;
         let g_blind = g_gen();
-
-        let mut transcript = Transcript::new(b"Hyphen_AggRangeProof");
+        if !self.ipp.has_dimension(nm) {
+            return Err(ProofError::InvalidProofLength);
+        }
+        let [tau_x, mu, t_hat] = self.responses()?;
+        let mut transcript = Transcript::new(domain);
         for c in commitments {
             transcript_point(&mut transcript, b"V", c);
         }
 
-        let a_point = decompress_pt(&self.proof.a)?;
-        let s_point = decompress_pt(&self.proof.s)?;
-        let t1_point = decompress_pt(&self.proof.t1)?;
-        let t2_point = decompress_pt(&self.proof.t2)?;
+        let a_point = decompress_pt(&self.a)?;
+        let s_point = decompress_pt(&self.s)?;
+        let t1_point = decompress_pt(&self.t1)?;
+        let t2_point = decompress_pt(&self.t2)?;
 
         transcript_point(&mut transcript, b"A", &a_point);
         transcript_point(&mut transcript, b"S", &s_point);
@@ -516,19 +418,16 @@ impl AggregatedRangeProof {
         transcript_point(&mut transcript, b"T2", &t2_point);
         let x = transcript_challenge(&mut transcript, b"x");
 
-        let [tau_x, mu, t_hat] = self.proof.responses()?;
-
         transcript_scalar(&mut transcript, b"tau_x", &tau_x);
         transcript_scalar(&mut transcript, b"mu", &mu);
         transcript_scalar(&mut transcript, b"t_hat", &t_hat);
 
         // δ(y,z) for aggregated proof
-        let y_powers = scalar_powers(&y, nm);
         let two = Scalar::from(2u64);
         let two_powers = scalar_powers(&two, n_bits);
         let z_powers = scalar_powers(&z, m + 2);
 
-        let sum_y: Scalar = y_powers.iter().sum();
+        let sum_y = (0..nm).fold(Scalar::ZERO, |sum, _| Scalar::ONE + y * sum);
         let sum_2: Scalar = two_powers.iter().sum();
         let z2 = z * z;
         let mut dyz = (z - z2) * sum_y;
@@ -546,52 +445,44 @@ impl AggregatedRangeProof {
             return Err(ProofError::VerificationFailed);
         }
 
-        // IPA verification
-        let g = BP_GENS.g(nm);
-        let h = BP_GENS.h(nm);
-        let y_inv = y.invert();
-        let y_inv_powers = scalar_powers(&y_inv, nm);
-        let h_prime: Vec<RistrettoPoint> = h
+        let q = transcript_challenge(&mut transcript, b"Q_ipa");
+        let terms = self
+            .ipp
+            .verification_terms(&mut transcript, nm)
+            .ok_or(ProofError::VerificationFailed)?;
+        // Subtract the folded IPA commitment from P + t_hat Q. Pull y^-i into
+        // each H coefficient so the verifier can use the original generators.
+        let g_scalars = terms.weights.iter().map(|s| -z - terms.a * s);
+        let y_inverse = y.invert();
+        // The original equation contains z*y^i*(1/y)^i. Preserve its value
+        // even for a zero transcript challenge under Dalek's scalar arithmetic.
+        let z_tail = if y == Scalar::ZERO { Scalar::ZERO } else { z };
+        let mut y_power = Scalar::ONE;
+        let h_scalars = terms
+            .weights
             .iter()
-            .zip(y_inv_powers.iter())
-            .map(|(hi, yi)| yi * hi)
-            .collect();
-
-        let neg_z = -z;
-        let mut p_scalars = Vec::with_capacity(2 + 2 * nm);
-        let mut p_points = Vec::with_capacity(2 + 2 * nm);
-        p_scalars.push(Scalar::ONE);
-        p_points.push(a_point);
-        p_scalars.push(x);
-        p_points.push(s_point);
-        for _ in 0..nm {
-            p_scalars.push(neg_z);
-        }
-        for i in 0..nm {
-            p_points.push(g[i]);
-        }
-        for idx in 0..nm {
-            let j = idx / n_bits;
-            let i = idx % n_bits;
-            p_scalars.push(z * y_powers[idx] + z_powers[j + 2] * two_powers[i]);
-            p_points.push(h_prime[idx]);
-        }
-        let p_commit = RistrettoPoint::multiscalar_mul(&p_scalars, &p_points) - mu * g_blind;
-
-        let q_point = transcript_challenge(&mut transcript, b"Q_ipa");
-        let q = q_point * h_gen();
-
-        let p_total = p_commit + t_hat * q;
-
-        if inner_product::verify(
-            &mut transcript,
-            &self.proof.ipp,
-            &q,
-            g,
-            &h_prime,
-            &p_total,
-            &t_hat,
-        ) {
+            .rev()
+            .enumerate()
+            .map(|(i, inverse_weight)| {
+                let bit_weight = z_powers[2 + i / n_bits] * two_powers[i % n_bits];
+                let offset = if i == 0 { z } else { z_tail };
+                let coefficient = offset + y_power * (bit_weight - terms.b * inverse_weight);
+                y_power *= y_inverse;
+                coefficient
+            });
+        let fixed_scalars = [Scalar::ONE, x, -mu, (t_hat - terms.a * terms.b) * q];
+        let fixed_points = [a_point, s_point, g_blind, h_gen()];
+        let scalars = fixed_scalars
+            .into_iter()
+            .chain(g_scalars)
+            .chain(h_scalars)
+            .chain(terms.round_scalars);
+        let points = fixed_points
+            .iter()
+            .chain(BP_GENS.g(nm))
+            .chain(BP_GENS.h(nm))
+            .chain(&terms.round_points);
+        if RistrettoPoint::vartime_multiscalar_mul(scalars, points).is_identity() {
             Ok(())
         } else {
             Err(ProofError::VerificationFailed)
@@ -623,10 +514,22 @@ mod tests {
 
     #[test]
     fn aggregated_range_proof_round_trip() {
-        let values = [100u64, 200u64];
+        let values = [0, u64::MAX];
         let blindings: Vec<Scalar> = (0..2).map(|_| Scalar::random(&mut system_rng())).collect();
         let (proof, commitments) = AggregatedRangeProof::prove(&values, &blindings).unwrap();
         proof.verify(&commitments).unwrap();
+        assert!(proof.verify(&[commitments[1], commitments[0]]).is_err());
+
+        let mut changed = proof.clone();
+        changed.proof.ipp.b =
+            (Scalar::from_canonical_bytes(changed.proof.ipp.b).unwrap() + Scalar::ONE).to_bytes();
+        assert!(changed.verify(&commitments).is_err());
+        let mut changed = proof.clone();
+        changed.proof.ipp.l_vec.swap(0, 1);
+        assert!(changed.verify(&commitments).is_err());
+        let mut changed = proof;
+        changed.proof.ipp.a = [0xff; 32];
+        assert!(changed.verify(&commitments).is_err());
     }
 
     #[test]

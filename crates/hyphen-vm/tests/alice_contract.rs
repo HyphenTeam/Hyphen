@@ -155,6 +155,22 @@ fn the_contract_opens_verifies_and_settles_an_epoch() {
 }
 
 #[test]
+fn query_reports_a_storage_record_that_exceeds_the_descriptor_width() {
+    let Some(code) = load_wasm() else { return };
+    let contract = Contract::new([8; 32], code, 0, 1);
+    let epoch = 1u64;
+    let key = [b"hyphen:chal:v1:".as_slice(), &epoch.to_le_bytes()].concat();
+    let entries = [(key, vec![0; DESCRIPTOR_BYTES + 1])].into();
+    let mut engine = VmEngine::with_storage([(contract.address, entries)].into());
+    let result = query(&mut engine, &contract, &status_request(epoch));
+    assert_eq!(
+        result.return_data[0],
+        hyphen_neural::NeuralError::HostFailure.code()
+    );
+    assert!(result.state_changes.is_empty());
+}
+
+#[test]
 fn the_query_path_refuses_to_mutate_state() {
     let Some(wasm) = load_wasm() else {
         return;

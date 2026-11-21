@@ -3,7 +3,7 @@
 Status: pre-specification, 2026-07-31.
 
 This is not a deployed-feature statement. None of the four mechanisms is part
-of current `hyphen-devnet-v2` consensus. Activation requires a new research
+of current `hyphen-neural-devnet-v3` consensus. Activation requires a new research
 profile, chain identity, specification version and vectors. README and white
 papers must not call a mechanism solved, proved or production-ready before its
 proof obligations, attack tests and independent review are complete.
@@ -228,7 +228,7 @@ literature, patent and independent review.
 状态：预规范（pre-specification），2026-07-31。
 
 本文不是已部署功能声明。四项机制均未进入当前
-`hyphen-devnet-v2` 共识。任何激活都必须使用新的研究 profile、链身份、
+`hyphen-neural-devnet-v3` 共识。任何激活都必须使用新的研究 profile、链身份、
 规范版本和测试向量；在证明义务、攻击测试和独立审查关闭前，不得在
 README 或白皮书中写成“已解决”“已证明”或“生产可用”。
 
@@ -402,7 +402,7 @@ pi_restore = (pi_archive, pi_latest, blob, pi_owner, pi_unspent, pi_availability
 - `hyphen-tx`：状态 witness 与恢复交易类型；
 - `hyphen-consensus`：原子验证/应用/rollback；
 - `hyphen-network`：有界 witness/blob 传输和 DoS 预算；
-- 新研究 profile：不得原地修改 `hyphen-devnet-v2`。
+- 新研究 profile：不得原地修改 `hyphen-neural-devnet-v3`。
 
 首个未激活参考实现位于 `crates/hyphen-state/src/expiring_state.rs`，跨语言
 向量位于 `test-vectors/h-wes-v0.json`。它已经固定 159 字节记录编码、确定性

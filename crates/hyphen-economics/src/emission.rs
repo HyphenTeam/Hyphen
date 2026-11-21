@@ -39,6 +39,9 @@ pub fn lcd_base_reward(height: u64, cfg: &ChainConfig) -> u64 {
     let r_tail = cfg.tail_emission as u128;
     let c = cfg.emission_decay_constant as u128;
     let h = height as u128;
+    if height == 0 {
+        return cfg.initial_reward.max(cfg.tail_emission);
+    }
 
     let a = r0.saturating_sub(r_tail);
     let c_sq = c.saturating_mul(c);
@@ -87,7 +90,9 @@ pub fn block_reward_with_mse(height: u64, difficulty_ratio_bps: u64, cfg: &Chain
     let base = lcd_base_reward(height, cfg) as u128;
     let multiplier = mse_multiplier_bps(difficulty_ratio_bps, cfg) as u128;
     let adjusted = base * multiplier / 10_000;
-    adjusted.max(cfg.tail_emission as u128) as u64
+    u64::try_from(adjusted)
+        .unwrap_or(u64::MAX)
+        .max(cfg.tail_emission)
 }
 
 /// Approximate cumulative *base* supply emitted from genesis to `height` (inclusive).
@@ -100,23 +105,37 @@ pub fn total_supply_at_height(height: u64, cfg: &ChainConfig) -> u128 {
     let step = 1024u64;
     let mut h = 0u64;
 
-    while h <= height {
-        let end = (h + step - 1).min(height);
-        let r_start = lcd_base_reward(h, cfg) as u128;
-        let r_end = lcd_base_reward(end, cfg) as u128;
-        let blocks = (end - h + 1) as u128;
-        total += (r_start + r_end) * blocks / 2;
-
+    loop {
+        let mut end = h.saturating_add(step - 1).min(height);
+        let r_start = u128::from(lcd_base_reward(h, cfg));
+        let r_end = u128::from(lcd_base_reward(end, cfg));
+        if r_start == u128::from(cfg.tail_emission) {
+            return total + r_start * (u128::from(height - h) + 1);
+        }
+        // The integer base reward is monotone. Whole segments on the same
+        // plateau contribute exactly the same as their individual trapezoids.
+        if r_start == r_end && end < height {
+            let mut span = 1;
+            while span <= (height - end) / step
+                && u128::from(lcd_base_reward(end + span * step, cfg)) == r_end
+            {
+                end += span * step;
+                span *= 2;
+            }
+        }
+        let blocks = u128::from(end - h) + 1;
+        total += r_end * blocks + (r_start - r_end) * blocks / 2;
+        if end == height {
+            return total;
+        }
         h = end + 1;
     }
-
-    total
 }
 
 /// Estimate the height at which the reward first reaches the tail emission floor.
 /// Returns the height where the decay component drops below 1 atomic unit.
 pub fn tail_emission_height_estimate(cfg: &ChainConfig) -> u64 {
-    let a = (cfg.initial_reward - cfg.tail_emission) as u128;
+    let a = u128::from(cfg.initial_reward.saturating_sub(cfg.tail_emission));
     let c = cfg.emission_decay_constant as u128;
 
     // We want: A · c² / (h² + c²) < 1
@@ -124,24 +143,10 @@ pub fn tail_emission_height_estimate(cfg: &ChainConfig) -> u64 {
     // => h² > A · c² - c²
     // => h > c · sqrt(A - 1)
     // Approximate: h ≈ c · A^(1/2)  (for large A)
-    let a_sqrt = integer_sqrt(a);
+    let a_sqrt = a.isqrt();
     let h = c.saturating_mul(a_sqrt);
 
     h.min(u64::MAX as u128) as u64
-}
-
-/// Integer square root via Newton's method.
-fn integer_sqrt(n: u128) -> u128 {
-    if n == 0 {
-        return 0;
-    }
-    let mut x = n;
-    let mut y = x.div_ceil(2);
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
 }
 
 #[cfg(test)]
@@ -233,12 +238,31 @@ mod tests {
     }
 
     #[test]
-    fn integer_sqrt_correct() {
-        assert_eq!(integer_sqrt(0), 0);
-        assert_eq!(integer_sqrt(1), 1);
-        assert_eq!(integer_sqrt(4), 2);
-        assert_eq!(integer_sqrt(100), 10);
-        assert_eq!(integer_sqrt(1_000_000), 1000);
+    fn supply_preserves_segment_rounding_across_plateaus_and_tail() {
+        let mut cfg = ChainConfig::neural_devnet();
+        cfg.initial_reward = 151;
+        cfg.tail_emission = 11;
+        cfg.tail_emission_height = 120_010;
+        for height in [0, 1, 1023, 1024, 100_031, 120_100, 200_001] {
+            let reference: u128 = (0..=height)
+                .step_by(1024)
+                .map(|h| {
+                    let end = height.min(h + 1023);
+                    (u128::from(lcd_base_reward(h, &cfg)) + u128::from(lcd_base_reward(end, &cfg)))
+                        * u128::from(end - h + 1)
+                        / 2
+                })
+                .sum();
+            assert_eq!(total_supply_at_height(height, &cfg), reference);
+        }
+        let max = u64::MAX;
+        assert_eq!(
+            total_supply_at_height(max, &cfg),
+            total_supply_at_height(200_001, &cfg) + u128::from(max - 200_001) * 11
+        );
+        cfg.emission_decay_constant = 0;
+        assert_eq!(lcd_base_reward(0, &cfg), 151);
+        assert_eq!(lcd_base_reward(1, &cfg), 11);
     }
 
     #[test]

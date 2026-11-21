@@ -5,13 +5,9 @@
 //! domain-separated ChaCha20 stream, so the contract stores 56 bytes per epoch
 //! and every participant reconstructs identical weights.
 //!
-//! The task is the inverse problem, not weight copying. Alice publishes the
-//! network `A` and a target `y* = A(x*)`; the prover must find any `x` with
-//! `A(x)` inside the published tolerance of `y*`. Publishing `A` is harmless
-//! here: knowing the function does not reveal a preimage, and the verifier does
-//! exactly one forward pass. The earlier "learn Alice's weights" framing is not
-//! used because Alice's weights are public, so copying them would satisfy any
-//! loss threshold without doing work.
+//! Alice accepts any input whose output lies within the target tolerance.
+//! The descriptor also derives one exact solution. Checking a submitted input
+//! uses two forward passes, one for the reference and one for the candidate.
 
 use crate::error::NeuralError;
 use crate::fixed::{self, ONE};
@@ -125,7 +121,7 @@ impl ChallengeDescriptor {
         Ok(())
     }
 
-    /// Derives the hidden preimage Alice used to produce the target.
+    /// Derives the public reference input Alice uses to produce the target.
     pub fn derive_preimage(&self, input: &mut [i64]) -> Result<(), NeuralError> {
         self.validate()?;
         if input.len() != self.spec.input_dim as usize {
@@ -151,7 +147,7 @@ impl ChallengeDescriptor {
         mlp::forward(&self.spec, weights, input, hidden, target)
     }
 
-    /// Verifies a candidate preimage with exactly one forward pass.
+    /// Reconstructs the target, then evaluates the candidate against it.
     ///
     /// All buffers are caller-owned so this runs unchanged inside a `no_std`
     /// contract: `weights` must hold at least [`MlpSpec::weight_count`] values,

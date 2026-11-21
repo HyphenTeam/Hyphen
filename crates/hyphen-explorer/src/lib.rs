@@ -27,7 +27,13 @@ pub struct ExplorerState {
 }
 
 const INDEX_HTML: &str = include_str!("index.html");
-const APP_JS: &str = include_str!("app.js");
+const APP_JS: &str = concat!(
+    include_str!("aurora.js"),
+    "\n",
+    include_str!("stack.js"),
+    "\n",
+    include_str!("app.js")
+);
 const EXPLORER_WASM: &[u8] = include_bytes!("hyphen_explorer_web.wasm");
 const ATOMIC_UNITS: u64 = 1_000_000_000_000;
 
@@ -97,6 +103,8 @@ struct InfoResponse {
 struct BlockSummary {
     height: u64,
     hash: String,
+    prev_hash: String,
+    cell: StackCell,
     timestamp: u64,
     difficulty: u64,
     tx_count: usize,
@@ -109,11 +117,56 @@ struct BlockSummary {
 }
 
 #[derive(Serialize)]
+struct StackCell {
+    x: u8,
+    y: u8,
+    z: String,
+}
+
+impl StackCell {
+    fn from_block(hash: Hash256, height: u64) -> Self {
+        let prefix = hash.as_bytes()[0];
+        Self {
+            x: prefix >> 4,
+            y: prefix & 15,
+            z: height.to_string(),
+        }
+    }
+}
+
+#[derive(Serialize)]
 struct BlocksResponse {
     blocks: Vec<BlockSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    forks: Option<ForkWindow>,
     total_height: u64,
     page: u64,
     limit: u64,
+}
+
+#[derive(Serialize, Default)]
+struct ForkWindow {
+    blocks: Vec<ForkBlock>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct ForkBlock {
+    hash: String,
+    prev_hash: String,
+    cell: StackCell,
+    status: &'static str,
+    recent_sibling: bool,
+}
+
+/// A historical Ethash-style kinship window for the *next* block. HYN3
+/// accounts for work and emission on the selected branch only.
+fn recent_sibling(tip: u64, height: u64, same_parent: bool, validated: bool) -> bool {
+    validated
+        && same_parent
+        && height > 0
+        && tip != u64::MAX
+        && tip.checked_sub(height).is_some_and(|age| age < 6)
 }
 
 #[derive(Serialize)]
@@ -139,12 +192,16 @@ struct HeaderDetail {
     reward: String,
     reward_atomic: u64,
     view_tag: u8,
+    declared_block_size: u32,
     block_size: u32,
 }
 
 #[derive(Serialize)]
 struct BlockDetail {
     hash: String,
+    canonical: bool,
+    /// Decimal text preserves all 64 witness bits in JSON clients.
+    neural_work_nonce: Option<String>,
     header: HeaderDetail,
     tx_count: usize,
     tx_hashes: Vec<String>,
@@ -510,6 +567,7 @@ fn header_detail(block: &Block) -> HeaderDetail {
         reward: format_hpn(h.reward),
         reward_atomic: h.reward,
         view_tag: h.view_tag,
+        declared_block_size: h.block_size,
         block_size: encoded_block_size(block),
     }
 }
@@ -527,9 +585,12 @@ fn encoded_block_size(block: &Block) -> u32 {
 
 fn block_summary(block: &Block) -> BlockSummary {
     let header = &block.header;
+    let hash = block.hash();
     BlockSummary {
         height: header.height,
-        hash: block.hash().to_string(),
+        hash: hash.to_string(),
+        prev_hash: header.prev_hash.to_string(),
+        cell: StackCell::from_block(hash, header.height),
         timestamp: header.timestamp,
         difficulty: header.difficulty,
         tx_count: block.transactions.len(),
@@ -686,6 +747,12 @@ struct Rejection {
 }
 
 impl Rejection {
+    fn internal(error: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: error.to_string(),
+        }
+    }
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -855,11 +922,7 @@ fn get_info(state: &ExplorerState) -> Response<Body> {
 }
 
 fn get_blocks(state: &ExplorerState, params: &QueryParams) -> Result<Response<Body>, Rejection> {
-    let tip = state.blockchain.tip().map_err(|error| Rejection {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: error.to_string(),
-    })?;
-
+    let tip = state.blockchain.tip().map_err(Rejection::internal)?;
     let page = params.number::<u64>("page")?.unwrap_or(0);
     let limit = params
         .number::<u64>("limit")?
@@ -867,17 +930,33 @@ fn get_blocks(state: &ExplorerState, params: &QueryParams) -> Result<Response<Bo
         .min(PAGE_LIMIT_MAX as u64);
     let skip = page.saturating_mul(limit);
     let mut blocks = Vec::new();
+    let mut forks = (params.get("branches") == Some("1")).then(ForkWindow::default);
 
     if tip.height >= skip {
         let start_height = tip.height - skip;
-        let count = limit.min(start_height + 1);
+        let count = limit.min(start_height.saturating_add(1));
 
         for offset in 0..count {
             let height = start_height - offset;
-            match state.blockchain.blocks.get_block_by_height(height) {
-                Ok(block) => blocks.push(block_summary(&block)),
-                Err(_) => break,
+            let block = state
+                .blockchain
+                .blocks
+                .get_block_by_height(height)
+                .map_err(Rejection::internal)?;
+            if let Some(window) = &mut forks {
+                window.add_height(state, tip.height, height, Some(&block))?;
             }
+            blocks.push(block_summary(&block));
+        }
+    }
+    if page == 0
+        && let Some(window) = &mut forks
+    {
+        for delta in 1..=limit {
+            let Some(height) = tip.height.checked_add(delta) else {
+                break;
+            };
+            window.add_height(state, tip.height, height, None)?;
         }
     }
 
@@ -885,6 +964,7 @@ fn get_blocks(state: &ExplorerState, params: &QueryParams) -> Result<Response<Bo
         StatusCode::OK,
         &BlocksResponse {
             blocks,
+            forks,
             total_height: tip.height,
             page,
             limit,
@@ -892,11 +972,58 @@ fn get_blocks(state: &ExplorerState, params: &QueryParams) -> Result<Response<Bo
     ))
 }
 
+impl ForkWindow {
+    fn add_height(
+        &mut self,
+        state: &ExplorerState,
+        tip: u64,
+        height: u64,
+        canonical: Option<&Block>,
+    ) -> Result<(), Rejection> {
+        const MAX_SIBLINGS: usize = 8;
+        let mut shown = 0;
+        let canonical_hash = canonical.map(Block::hash);
+        for (hash, parent) in state
+            .blockchain
+            .branch_blocks
+            .at_height(height, MAX_SIBLINGS + 2)
+            .map_err(Rejection::internal)?
+        {
+            if Some(hash) == canonical_hash {
+                continue;
+            }
+            if shown == MAX_SIBLINGS {
+                self.truncated = true;
+                break;
+            }
+            let validated = state
+                .blockchain
+                .blocks
+                .has_block(&hash)
+                .map_err(Rejection::internal)?;
+            self.blocks.push(ForkBlock {
+                hash: hash.to_string(),
+                prev_hash: parent.to_string(),
+                cell: StackCell::from_block(hash, height),
+                status: if validated { "detached" } else { "staged" },
+                recent_sibling: recent_sibling(
+                    tip,
+                    height,
+                    canonical.is_some_and(|b| b.header.prev_hash == parent),
+                    validated,
+                ),
+            });
+            shown += 1;
+        }
+        Ok(())
+    }
+}
+
 fn get_block_handler(state: &ExplorerState, id: &str) -> Response<Body> {
-    let block = if let Ok(height) = id.parse::<u64>() {
-        state.blockchain.blocks.get_block_by_height(height).ok()
-    } else if let Some(hash) = parse_hash(id) {
+    let block = if let Some(hash) = parse_hash(id) {
         state.blockchain.blocks.get_block_by_hash(&hash).ok()
+    } else if let Ok(height) = id.parse::<u64>() {
+        state.blockchain.blocks.get_block_by_height(height).ok()
     } else {
         None
     };
@@ -924,7 +1051,23 @@ fn get_block_handler(state: &ExplorerState, id: &str) -> Response<Body> {
         StatusCode::OK,
         &BlockDetail {
             hash: block.hash().to_string(),
+            canonical: state
+                .blockchain
+                .blocks
+                .get_block_hash_at_height(block.header.height)
+                .is_ok_and(|hash| hash == block.hash()),
             header: header_detail(&block),
+            neural_work_nonce: match block.pow_witnesses.as_slice() {
+                [nonce]
+                    if block.header.height > 0
+                        && state
+                            .cfg
+                            .feature_enabled(hyphen_core::config::FEATURE_NEURAL_MEMORY_WORK) =>
+                {
+                    Some(nonce.to_string())
+                }
+                _ => None,
+            },
             tx_count: block.transactions.len(),
             tx_hashes,
             uncle_count: block.uncle_headers.len(),
@@ -984,10 +1127,11 @@ fn search_handler(
         )
     };
 
-    if let Ok(height) = query.parse::<u64>()
-        && state.blockchain.blocks.get_block_by_height(height).is_ok()
+    if query.len() != 64
+        && let Ok(height) = query.parse::<u64>()
+        && let Ok(hash) = state.blockchain.blocks.get_block_hash_at_height(height)
     {
-        return Ok(hit("block", Some(height), None));
+        return Ok(hit("block", Some(height), Some(hash.to_string())));
     }
 
     if let Some(hash) = parse_hash(query) {
@@ -1369,6 +1513,22 @@ mod tests {
 
         let rejection = Route::resolve("/api/block/%zz").unwrap_err();
         assert_eq!(rejection.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn recent_siblings_require_validated_shared_parent_and_six_block_window() {
+        assert!(recent_sibling(12, 12, true, true));
+        assert!(recent_sibling(12, 7, true, true));
+        for (tip, height, parent, validated) in [
+            (12, 6, true, true),
+            (12, 13, true, true),
+            (12, 12, false, true),
+            (12, 12, true, false),
+            (0, 0, true, true),
+            (u64::MAX, u64::MAX, true, true),
+        ] {
+            assert!(!recent_sibling(tip, height, parent, validated));
+        }
     }
 
     #[test]

@@ -570,7 +570,7 @@ mod tests {
 
     fn handler() -> (TestDb, RpcHandler) {
         let db = TestDb::new();
-        let mut cfg = ChainConfig::devnet();
+        let mut cfg = ChainConfig::archived_devnet_v2();
         cfg.consensus_features |= FEATURE_H_WES;
         let chain = Arc::new(Blockchain::open(db.0.to_str().unwrap(), cfg).unwrap());
         let mempool = Arc::new(parking_lot::RwLock::new(Mempool::new(16)));

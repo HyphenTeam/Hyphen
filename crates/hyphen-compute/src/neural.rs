@@ -1,9 +1,7 @@
 //! Settlement for the fixed-point neural circuits.
 //!
-//! The block proof of work is PoUW v3 and stays in `hyphen-pow`; this module is
-//! only the AetherCompute path. Two circuits live here: the inverse challenge
-//! the Alice contract publishes, and the one-way work challenge that is safe to
-//! gate a block on.
+//! These verifiers settle AetherCompute statements. HYN3 block admission uses
+//! the separate nonce gate and scratchpad in `hyphen_neural::block_work`.
 //!
 //! # Proof layout
 //!
@@ -11,19 +9,14 @@
 //! descriptor(56 bytes) || solution(input_dim * 8 bytes, little-endian Q32.32)
 //! ```
 //!
-//! # What this proves, and what it does not
+//! # Verification costs
 //!
-//! [`NeuralChallengeVerifier`] re-checks one forward pass against a target that
-//! `ChallengeDescriptor::derive_preimage` recomputes from the public
-//! `chain_seed`. That makes the result *deterministic* but not *worked for*: a
-//! prover can derive `x*` instead of searching, so that circuit must never gate
-//! a block.
+//! [`NeuralChallengeVerifier`] derives the reference input `x*` from the public
+//! seed, evaluates the network on `x*` and on the submission, and compares the
+//! outputs. A prover can submit `x*` directly.
 //!
-//! [`NeuralWorkVerifier`] is the one-way counterpart: the seed fixes the
-//! network, a threshold fixes the difficulty, and only a candidate whose
-//! `score(A(x))` falls below the threshold is accepted. The task commits to the
-//! exact descriptor through its `program_hash`, so the threshold cannot be
-//! relaxed after publication.
+//! [`NeuralWorkVerifier`] evaluates one submitted input against a score threshold.
+//! The signed `program_hash` commits to the network descriptor and threshold.
 
 use hyphen_crypto::Hash256;
 use hyphen_neural::{
@@ -74,10 +67,9 @@ pub fn neural_work_program_hash(descriptor: &WorkDescriptor) -> Result<Hash256, 
 
 /// Settles tasks whose circuit is the one-way neural work challenge.
 ///
-/// The proof is `descriptor(56) || solution(input_dim * 8)`. The seed determines
-/// the network and the task commits to the descriptor, so the only way to
-/// produce an accepted solution is to run forward passes until the score drops
-/// below the committed threshold. Verification is exactly one forward pass.
+/// The proof is `descriptor(56) || solution(input_dim * 8)`. Verification
+/// derives the weights and evaluates one candidate. The witness contains no
+/// search history or evidence of the producer's cost.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NeuralWorkVerifier;
 
@@ -145,12 +137,8 @@ impl ProofVerifier for NeuralWorkVerifier {
 
 /// Settles tasks whose circuit is the Alice neural challenge.
 ///
-/// Every submission is re-verified locally with one forward pass, so a node
-/// accepts only solutions inside the descriptor's tolerance. Execution is
-/// fully deterministic, which is why no fraud or retention proof is accepted:
-/// there is nothing left for a challenger to prove that this node did not
-/// already check, and proof of custody is not implemented for retained
-/// outputs.
+/// Every verifier evaluates the public reference input and the submitted
+/// input, then compares their outputs against the descriptor's tolerance.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NeuralChallengeVerifier;
 

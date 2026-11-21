@@ -1,5 +1,6 @@
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::traits::VartimeMultiscalarMul;
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +112,61 @@ pub fn prove(
     }
 }
 
-#[allow(clippy::needless_range_loop)]
+/// Public coefficients of the IPA verification equation, in generator order.
+pub(crate) struct VerificationTerms {
+    pub a: Scalar,
+    pub b: Scalar,
+    pub weights: Vec<Scalar>,
+    pub round_scalars: Vec<Scalar>,
+    pub round_points: Vec<RistrettoPoint>,
+}
+
+impl InnerProductProof {
+    pub(crate) fn has_dimension(&self, n: usize) -> bool {
+        n.is_power_of_two()
+            && self.l_vec.len() == n.ilog2() as usize
+            && self.r_vec.len() == self.l_vec.len()
+    }
+
+    pub(crate) fn verification_terms(
+        &self,
+        transcript: &mut Transcript,
+        n: usize,
+    ) -> Option<VerificationTerms> {
+        if !self.has_dimension(n) {
+            return None;
+        }
+        let a = Scalar::from_canonical_bytes(self.a).into_option()?;
+        let b = Scalar::from_canonical_bytes(self.b).into_option()?;
+        let mut weights = vec![Scalar::ONE; n];
+        let mut round_points = Vec::with_capacity(2 * self.l_vec.len());
+        let mut round_scalars = Vec::with_capacity(2 * self.l_vec.len());
+        for (j, (left, right)) in self.l_vec.iter().zip(&self.r_vec).enumerate() {
+            let l = curve25519_dalek::ristretto::CompressedRistretto(*left).decompress()?;
+            let r = curve25519_dalek::ristretto::CompressedRistretto(*right).decompress()?;
+            transcript.append_message(b"L", left);
+            transcript.append_message(b"R", right);
+            let u = transcript_challenge(transcript, b"u");
+            let inverse = u.invert();
+            round_points.extend([l, r]);
+            round_scalars.extend([u * u, inverse * inverse]);
+            // Append one index bit. Descending order preserves unread parent weights.
+            for i in (0..1 << j).rev() {
+                let parent = weights[i];
+                weights[2 * i] = parent * inverse;
+                weights[2 * i + 1] = parent * u;
+            }
+        }
+        Some(VerificationTerms {
+            a,
+            b,
+            weights,
+            round_scalars,
+            round_points,
+        })
+    }
+}
+
 pub fn verify(
     transcript: &mut Transcript,
     proof: &InnerProductProof,
@@ -122,88 +177,20 @@ pub fn verify(
     _c: &Scalar,
 ) -> bool {
     let n = g_vec.len();
-    if !n.is_power_of_two() || h_vec.len() != n {
+    if h_vec.len() != n {
         return false;
     }
-    let rounds = n.ilog2() as usize;
-    if proof.l_vec.len() != rounds || proof.r_vec.len() != rounds {
-        return false;
-    }
-
-    // Replay challenges
-    let mut challenges = Vec::with_capacity(rounds);
-    for i in 0..rounds {
-        let l_pt =
-            match curve25519_dalek::ristretto::CompressedRistretto(proof.l_vec[i]).decompress() {
-                Some(p) => p,
-                None => return false,
-            };
-        let r_pt =
-            match curve25519_dalek::ristretto::CompressedRistretto(proof.r_vec[i]).decompress() {
-                Some(p) => p,
-                None => return false,
-            };
-        transcript_point(transcript, b"L", &l_pt);
-        transcript_point(transcript, b"R", &r_pt);
-        challenges.push(transcript_challenge(transcript, b"u"));
-    }
-
-    // Compute scalar factors for each generator (s_i)
-    let Some(a_final) = Scalar::from_canonical_bytes(proof.a).into_option() else {
+    let Some(terms) = proof.verification_terms(transcript, n) else {
         return false;
     };
-    let Some(b_final) = Scalar::from_canonical_bytes(proof.b).into_option() else {
-        return false;
-    };
-
-    // Build s[i] and s_inv[i]
-    let mut s = vec![Scalar::ONE; n];
-    for (j, u_j) in challenges.iter().enumerate() {
-        let u_j_inv = u_j.invert();
-        let stride = 1 << (rounds - 1 - j);
-        for i in 0..n {
-            if (i / stride) & 1 == 0 {
-                s[i] *= u_j_inv;
-            } else {
-                s[i] *= u_j;
-            }
-        }
-    }
-
-    // P_expected = a·b·Q + Σ (a·s_i)·g_i + Σ (b·s_i^{-1})·h_i − Σ u_j²·L_j − Σ u_j^{-2}·R_j
-    let mut scalars = Vec::with_capacity(1 + 2 * n + 2 * rounds);
-    let mut points = Vec::with_capacity(1 + 2 * n + 2 * rounds);
-
-    // Q term
-    scalars.push(a_final * b_final);
-    points.push(*q);
-
-    // g_i terms: a_final * s[i]
-    for i in 0..n {
-        scalars.push(a_final * s[i]);
-        points.push(g_vec[i]);
-    }
-
-    // h_i terms: b_final * s[i]^{-1}
-    for i in 0..n {
-        scalars.push(b_final * s[i].invert());
-        points.push(h_vec[i]);
-    }
-
-    // L, R terms
-    for (j, u_j) in challenges.iter().enumerate() {
-        let l_pt = curve25519_dalek::ristretto::CompressedRistretto(proof.l_vec[j])
-            .decompress()
-            .unwrap();
-        let r_pt = curve25519_dalek::ristretto::CompressedRistretto(proof.r_vec[j])
-            .decompress()
-            .unwrap();
-        scalars.push(-(u_j * u_j));
-        points.push(l_pt);
-        scalars.push(-(u_j.invert() * u_j.invert()));
-        points.push(r_pt);
-    }
-
-    let expected = multiexp(&scalars, &points);
-    &expected == p
+    // Complementing every index bit exchanges u and 1/u in every round.
+    let scalars = std::iter::once(terms.a * terms.b)
+        .chain(terms.weights.iter().map(|s| terms.a * s))
+        .chain(terms.weights.iter().rev().map(|s| terms.b * s))
+        .chain(terms.round_scalars.iter().map(|s| -s));
+    let points = std::iter::once(q)
+        .chain(g_vec)
+        .chain(h_vec)
+        .chain(&terms.round_points);
+    RistrettoPoint::vartime_multiscalar_mul(scalars, points) == *p
 }

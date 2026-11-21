@@ -122,4 +122,4 @@ jobs:
         run: cargo build -p hyphen-node --locked
       - name: Verify devnet chain identity
         shell: pwsh
-        run: ./target/debug/hyphen-node.exe --network devnet --print-chain-identity
+        run: ./target/debug/hyphen-node.exe --network neural-devnet --print-chain-identity

@@ -2,30 +2,18 @@
 //!
 //! # The rule
 //!
-//! A post-genesis block must carry one accepted solution to the epoch's
-//! one-way work challenge. The challenge is fully determined by public data:
-//!
-//! ```text
-//! seed        = parent block hash
-//! epoch       = this block's height
-//! weights     = PRF(seed, epoch)                 // hyphen-neural::work
-//! solution    = x in [-1, 1]^input_dim, encoded as the header's witness list
-//! accept      <=> score(A_weights(x)) < threshold
-//! ```
-//!
-//! The seed fixes the network, never the answer, so a solution can only be
-//! found by running forward passes. Because the seed is the parent hash, no
-//! work found for one block is useful for any other, and because the header
-//! commits to the threshold, a miner cannot relax it after searching.
+//! HYN3 carries one nonce. The parent hash, height and miner key determine
+//! the seed. The verifier derives the input from the nonce, recomputes the
+//! fixed-point MLP score and checks the fixed neural gate. A qualifying nonce
+//! must also produce a BLAKE3 scratchpad digest below the branch-specific threshold.
+//! Archived v1 blocks carry a full input vector and use the original MLP rule.
 //!
 //! # Difficulty
 //!
-//! [`retarget_threshold`] adjusts the acceptance threshold so that the expected
-//! number of forward passes per block tracks [`WORK_TARGET_SECS`]. The expected
-//! attempts for threshold `t` are `2^64 / t`, so keeping the block rate constant
-//! requires `t` to stay proportional to `elapsed / target`. The adjustment is
-//! integer-only and floored. After the first full window, each block scales
-//! its parent's threshold by at most a factor of four.
+//! [`expected_threshold`] estimates work per millisecond over 16 completed
+//! intervals between mined blocks. It targets [`WORK_TARGET_SECS`] and limits
+//! the change to a factor of four per block. [`retarget_threshold`] implements
+//! the archived v1 adjustment.
 //!
 //! Every rule here is a pure function of public data: no clocks, no floating
 //! point, no host-dependent rounding.
@@ -34,11 +22,11 @@ use hyphen_core::block::{Block, BlockHeader};
 use hyphen_crypto::Hash256;
 use hyphen_neural::{MlpSpec, WorkDescriptor};
 
-/// Domain tag of the header commitment.
-pub const WORK_COMMITMENT_DOMAIN: &[u8] = b"Hyphen/neural-work-commitment/v1";
-
-/// Domain tag of the per-miner seed derivation.
-pub const WORK_SEED_DOMAIN: &[u8] = b"Hyphen/neural-work-seed/v1";
+pub use hyphen_core::{
+    NEURAL_WORK_COMMITMENT_DOMAIN as WORK_COMMITMENT_DOMAIN,
+    NEURAL_WORK_SEED_DOMAIN as WORK_SEED_DOMAIN, neural_work_commitment as work_commitment,
+    neural_work_seed as work_seed,
+};
 
 /// Number of intervals one retarget covers. The window is `WORK_RETARGET_WINDOW`
 /// intervals, which needs `WORK_RETARGET_WINDOW + 1` headers.
@@ -62,10 +50,9 @@ pub const WORK_MAX_ADJUST: u64 = 4;
 
 /// Highest threshold any block may declare.
 ///
-/// `2^62` means one accepted candidate in four trials: still work, never free.
-/// Without the cap a chain whose hashrate collapses would walk its threshold to
-/// `u64::MAX`, where the acceptance test `score < threshold` passes with
-/// probability `1 - 2^-64` and the proof of work stops proving anything.
+/// Under uniform, independent low words, `2^62` accepts one in four
+/// scratchpad finalists. With the fixed `1/16` HYN3 gate this gives a
+/// per-nonce probability of `1/64` at the ceiling.
 pub const NEURAL_WORK_MAX_THRESHOLD: u64 = 1 << 62;
 
 /// A ceiling that reached `u64::MAX` would accept every candidate, so the
@@ -81,13 +68,7 @@ pub const WORK_MEDIAN_WINDOW: usize = 11;
 /// cannot drift apart.
 pub const NEURAL_WORK_SPEC: MlpSpec = hyphen_neural::PROFILE_SPEC;
 
-/// Threshold of the first [`WORK_RETARGET_WINDOW`] intervals.
-///
-/// `2^56` is one accepted candidate in 256 trials — a deliberately soft start,
-/// because the operator's hashrate is unknown when the chain is created. It only
-/// carries the chain until the first full window exists; from there
-/// [`expected_threshold`] walks the threshold toward the configured block time
-/// at no more than a factor of [`WORK_MAX_ADJUST`] per block.
+/// Historical initial threshold for the archived v1 neural profile.
 pub const NEURAL_WORK_INITIAL_THRESHOLD: u64 = 1 << 56;
 
 /// Parameters of the compiled-in neural-work profile.
@@ -103,7 +84,7 @@ pub fn neural_work_params(cfg: &hyphen_core::ChainConfig) -> NeuralWorkParams {
 /// Work parameters of a chain profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NeuralWorkParams {
-    /// The nonce and Argon2id rule introduced at the v2 genesis.
+    /// Enables the single-nonce, two-stage predicate.
     pub memory_work: bool,
     /// Network shape. Every block of the profile uses the same shape.
     pub spec: MlpSpec,
@@ -148,31 +129,6 @@ pub enum NeuralWorkError {
     InsufficientWork,
     /// The timestamp does not advance past the median of recent history.
     TimestampNotAfterMedian { median: u64, got: u64 },
-}
-
-/// Seed the block's network is derived from.
-///
-/// It mixes in the miner's public key, not just the parent hash. Without that,
-/// a solution found by one miner is a valid solution for *any* miner's block at
-/// the same height — a bystander could copy it from the mempool and claim the
-/// block. Binding the seed to the miner makes every solution worthless to
-/// everyone else, while staying fully public and reproducible.
-pub fn work_seed(parent_hash: &Hash256, height: u64, miner_pubkey: &[u8; 32]) -> Hash256 {
-    hyphen_core::neural_work_seed(parent_hash, height, miner_pubkey)
-}
-
-/// Commitment the header stores in `pow_commitment`.
-///
-/// It binds the parent hash, the height, the threshold, the miner and the exact
-/// solution, so none of them can change after a solution is found.
-pub fn work_commitment(
-    parent_hash: &Hash256,
-    height: u64,
-    threshold: u64,
-    miner_pubkey: &[u8; 32],
-    solution: &[u64],
-) -> Hash256 {
-    hyphen_core::neural_work_commitment(parent_hash, height, threshold, miner_pubkey, solution)
 }
 
 /// Threshold for the next block.
@@ -271,8 +227,8 @@ pub fn expected_threshold(history: &[BlockHeader], params: &NeuralWorkParams) ->
 /// `threshold`.
 ///
 /// The neural profile stores a *threshold* in the header's `difficulty` field,
-/// and a smaller threshold is harder. The v1 rule uses the integer quotient
-/// `(2^64 - 1) / threshold`. At the initial threshold `2^56` it contributes 255.
+/// and a smaller threshold is harder. The quotient `(2^64 - 1) / threshold`
+/// contributes 15 at the HYN3 initial threshold `2^60`.
 ///
 /// A zero threshold is unreachable — [`NeuralWorkParams::validate`] and the
 /// descriptor reject it — and saturates to the maximum weight so a malformed

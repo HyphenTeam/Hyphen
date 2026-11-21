@@ -108,6 +108,8 @@ struct Header {
 #[derive(Deserialize)]
 struct BlockDetail {
     hash: String,
+    canonical: Option<bool>,
+    neural_work_nonce: Option<String>,
     header: Header,
     tx_count: usize,
     tx_hashes: Vec<String>,
@@ -215,6 +217,7 @@ fn metric(output: &mut String, label: &str, value: &str, tone: &str) {
 
 fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
     let data: HomePayload = serde_json::from_str(payload).map_err(|error| error.to_string())?;
+    let neural = data.info.network == "hyphen-neural-devnet-v3";
     let mut output = String::with_capacity(16_384);
     output.push_str("<section class=\"metrics\">");
     metric(
@@ -225,13 +228,21 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
     );
     metric(
         &mut output,
-        "DIFFICULTY",
-        &grouped(data.info.difficulty),
+        if neural {
+            "WORK THRESHOLD"
+        } else {
+            "DIFFICULTY"
+        },
+        &if neural && data.info.height == 0 {
+            "—".into()
+        } else {
+            grouped(data.info.difficulty)
+        },
         "amber",
     );
     metric(
         &mut output,
-        "AETHER REWARD",
+        "BLOCK REWARD",
         &format!("{} HPN", data.info.current_reward),
         "green",
     );
@@ -274,12 +285,20 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
         escape(&data.info.total_supply)
     );
     output.push_str("</section><div class=\"section-head\"><div><span class=\"kicker\">CANONICAL LEDGER</span><h1>Recent blocks</h1></div><span class=\"live\">LIVE</span></div>");
-    output.push_str("<div class=\"data-table\"><table><thead><tr><th>Height</th><th>Age</th><th>Block</th><th>Transactions</th><th>Bytes</th><th>Work units</th><th>Reward</th><th>Producer</th></tr></thead><tbody>");
+    let target_label = if neural {
+        "Work threshold"
+    } else {
+        "Difficulty"
+    };
+    let _ = write!(
+        output,
+        "<div class=\"data-table\"><table><thead><tr><th>Height</th><th>Age</th><th>Block</th><th>Transactions</th><th>Bytes</th><th>{target_label}</th><th>Reward</th><th>Producer</th></tr></thead><tbody>"
+    );
     for block in &data.blocks.blocks {
         let _ = write!(
             output,
             "<tr><td><a href=\"#/block/{}\">#{}</a></td><td>{}</td><td><a class=\"hash\" title=\"{}\" href=\"#/block/{}\">{}</a></td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"amount\">{} HPN</span><small>fee {}</small></td><td class=\"hash\" title=\"{}\">{}</td></tr>",
-            block.height,
+            escape(&block.hash),
             grouped(block.height),
             age(block.timestamp, now_ms),
             escape(&block.hash),
@@ -287,7 +306,11 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
             short(&block.hash),
             grouped(block.tx_count as u64),
             grouped(block.block_size as u64),
-            grouped(block.difficulty),
+            if neural && block.height == 0 {
+                "—".into()
+            } else {
+                grouped(block.difficulty)
+            },
             escape(&block.reward),
             escape(&block.total_fee),
             escape(&block.miner_pubkey),
@@ -295,9 +318,11 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
         );
     }
     output.push_str("</tbody></table></div>");
-    let page_count = (data.blocks.total_height + 1)
-        .div_ceil(data.blocks.limit)
-        .max(1);
+    let last_page = data
+        .blocks
+        .total_height
+        .checked_div(data.blocks.limit)
+        .ok_or("invalid block page limit")?;
     let _ = write!(
         output,
         "<nav class=\"pager\"><button data-action=\"newer\" {}>NEWER</button><span>{} / {}</span><button data-action=\"older\" {}>OLDER</button></nav>",
@@ -306,9 +331,9 @@ fn render_home(payload: &str, now_ms: u64) -> Result<String, String> {
         } else {
             ""
         },
-        data.blocks.page + 1,
-        page_count,
-        if data.blocks.page + 1 >= page_count {
+        u128::from(data.blocks.page) + 1,
+        u128::from(last_page) + 1,
+        if data.blocks.page >= last_page {
             "disabled"
         } else {
             ""
@@ -331,7 +356,7 @@ fn render_science(payload: &str) -> Result<String, String> {
     let mut output = String::with_capacity(12_000);
     output.push_str("<div class=\"section-head\"><div><span class=\"kicker\">AETHERCOMPUTE</span><h1>Verifiable scientific work</h1></div><span class=\"privacy-mark\">COMMITMENTS ONLY</span></div>");
     output.push_str("<div class=\"domain-band\"><b>QCD</b><b>MANIFOLD DYNAMICS</b><b>CONNECTOMICS</b><span>fixed-point deterministic kernels</span></div>");
-    output.push_str("<div class=\"data-table\"><table><thead><tr><th>Task</th><th>State</th><th>Domain</th><th>Budget</th><th>Reward</th><th>Published</th><th>Retention</th></tr></thead><tbody>");
+    output.push_str("<div class=\"data-table\"><table><thead><tr><th>Task</th><th>State</th><th>Domain</th><th>Budget</th><th>Declared reward</th><th>Published</th><th>Retention</th></tr></thead><tbody>");
     for task in &data.tasks {
         let _ = write!(
             output,
@@ -351,16 +376,19 @@ fn render_science(payload: &str) -> Result<String, String> {
         );
     }
     output.push_str("</tbody></table></div>");
-    let page = data.offset / data.limit;
+    let page = data
+        .offset
+        .checked_div(data.limit)
+        .ok_or("invalid task page limit")?;
     let pages = data.total.div_ceil(data.limit).max(1);
     let _ = write!(
         output,
         "<nav class=\"pager\"><button data-action=\"science-newer\" {}>PREVIOUS</button><span>{} / {} &middot; {} TASKS</span><button data-action=\"science-older\" {}>NEXT</button></nav>",
         if page == 0 { "disabled" } else { "" },
-        page + 1,
+        page as u128 + 1,
         pages,
         data.total,
-        if page + 1 >= pages { "disabled" } else { "" }
+        if page >= pages - 1 { "disabled" } else { "" }
     );
     Ok(output)
 }
@@ -402,7 +430,11 @@ fn render_task(payload: &str) -> Result<String, String> {
         "Operation ceiling",
         &grouped(task.max_operations),
     );
-    detail_row(&mut output, "Reward", &format!("{} HPN", task.reward));
+    detail_row(
+        &mut output,
+        "Declared reward (unfunded)",
+        &format!("{} HPN", task.reward),
+    );
     detail_row(
         &mut output,
         "Published",
@@ -492,17 +524,27 @@ fn render_block(payload: &str, now_ms: u64) -> Result<String, String> {
     let block: BlockDetail = serde_json::from_str(payload).map_err(|error| error.to_string())?;
     let h = &block.header;
     let mut output = String::with_capacity(12_000);
+    if block.canonical == Some(false) {
+        output.push_str(
+            "<p class=\"status pending\">Validated fork · Outside the current canonical chain</p>",
+        );
+    }
     let _ = write!(
         output,
-        "<div class=\"section-head\"><div><span class=\"kicker\">CANONICAL BLOCK</span><h1>Height #{}</h1></div><span class=\"age-badge\">{} AGO</span></div><section class=\"detail-grid\"><article><h2>Header</h2><dl>",
+        "<div class=\"section-head\"><div><span class=\"kicker\">BLOCK HEADER</span><h1>Height #{}</h1></div><span class=\"age-badge\">{} AGO</span></div><section class=\"detail-grid\"><article><h2>Header</h2><dl>",
         grouped(h.height),
         age(h.timestamp, now_ms)
     );
     hash_row(&mut output, "Block hash", &block.hash);
     hash_row(&mut output, "Previous", &h.prev_hash);
     detail_row(&mut output, "Version", &h.version.to_string());
-    detail_row(&mut output, "Difficulty", &grouped(h.difficulty));
-    detail_row(&mut output, "Nonce", &h.nonce.to_string());
+    if let Some(nonce) = &block.neural_work_nonce {
+        detail_row(&mut output, "Work threshold", &grouped(h.difficulty));
+        detail_row(&mut output, "Neural work nonce", nonce);
+    } else {
+        detail_row(&mut output, "Difficulty", &grouped(h.difficulty));
+    }
+    detail_row(&mut output, "Header nonce", &h.nonce.to_string());
     detail_row(&mut output, "View tag", &h.view_tag.to_string());
     detail_row(
         &mut output,
@@ -621,16 +663,19 @@ fn render_applications(payload: &str) -> Result<String, String> {
         );
     }
     output.push_str("</tbody></table></div>");
-    let page = data.offset / data.limit;
+    let page = data
+        .offset
+        .checked_div(data.limit)
+        .ok_or("invalid application page limit")?;
     let pages = data.total.div_ceil(data.limit).max(1);
     let _ = write!(
         output,
         "<nav class=\"pager\"><button data-action=\"apps-newer\" {}>PREVIOUS</button><span>{} / {} &middot; {} CONTRACTS</span><button data-action=\"apps-older\" {}>NEXT</button></nav>",
         if page == 0 { "disabled" } else { "" },
-        page + 1,
+        page as u128 + 1,
         pages,
         data.total,
-        if page + 1 >= pages { "disabled" } else { "" }
+        if page >= pages - 1 { "disabled" } else { "" }
     );
     Ok(output)
 }

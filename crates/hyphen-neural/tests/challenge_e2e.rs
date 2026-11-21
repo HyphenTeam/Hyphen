@@ -80,6 +80,27 @@ fn descriptors_have_one_encoding() {
     assert_eq!(first, second);
 }
 
+#[test]
+fn solver_reports_improvement_on_its_last_step() {
+    let descriptor = descriptor(32, 11);
+    let initial = verify(&descriptor, &[0; 16]).unwrap();
+    let result = solve(
+        &descriptor,
+        SolveConfig {
+            restarts: 1,
+            max_iterations: 1,
+            ..SolveConfig::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.iterations, 1);
+    assert!(result.max_error < initial.max_error);
+    assert_eq!(
+        verify(&descriptor, &result.input).unwrap().max_error,
+        result.max_error
+    );
+}
+
 /// The controller is measured rather than asserted for a specific width: the
 /// point is that a fast epoch raises the width and a slow one lowers it.
 #[test]
@@ -89,9 +110,8 @@ fn the_controller_reacts_in_the_right_direction() {
     assert_eq!(next_hidden_dim(64, 600, 600), 64);
 }
 
-/// Guards the cost asymmetry that the whole mechanism depends on: a solve must
-/// be orders of magnitude more expensive than a verification. The ratio is
-/// measured at the smallest profiled width where the fixed costs dominate.
+/// Compares the iterative solver and verifier at hidden width 64. The public
+/// reference input is also a valid witness and bypasses iterative search.
 #[test]
 fn verification_is_much_cheaper_than_the_search() {
     let descriptor = descriptor(64, 31);
